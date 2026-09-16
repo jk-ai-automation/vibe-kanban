@@ -285,6 +285,48 @@ mod tests {
         assert_eq!(snapshot.issues[0].creator_user_id, Some(current_user_id));
     }
 
+    /// 团队版场景：同一项目下，甲、乙各自建一条需求；两人共用同一份项目快照
+    /// （本地列表接口不按用户过滤），但各自需求的 creator_user_id 必须互不串号。
+    #[tokio::test]
+    async fn 两个用户各自建需求且都能看到对方的但_creator_user_id_各自正确() {
+        let test_db = TestDb::new().await;
+        let (project_id, status_id) = 准备(&test_db).await;
+        let 甲 = Uuid::from_u128(101);
+        let 乙 = Uuid::from_u128(102);
+
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "甲的需求"),
+            甲,
+        )
+        .await
+        .unwrap();
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "乙的需求"),
+            乙,
+        )
+        .await
+        .unwrap();
+
+        // 列表接口不按请求者过滤：甲、乙都能在同一份快照里看到对方的需求。
+        let body = handle_list(test_db.pool(), project_id).await.unwrap().0;
+        let rows = body["issues"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "甲、乙的需求都应出现在同一份项目快照里");
+
+        let creator_of = |title: &str| -> String {
+            rows.iter()
+                .find(|row| row["title"] == title)
+                .unwrap_or_else(|| panic!("没找到标题为 {title} 的需求"))["creator_user_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(creator_of("甲的需求"), 甲.to_string());
+        assert_eq!(creator_of("乙的需求"), 乙.to_string());
+        assert_ne!(creator_of("甲的需求"), creator_of("乙的需求"));
+    }
+
     #[tokio::test]
     async fn 列表用_issues_作为_key() {
         let test_db = TestDb::new().await;
