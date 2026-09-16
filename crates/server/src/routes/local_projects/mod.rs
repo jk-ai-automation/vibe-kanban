@@ -3,7 +3,9 @@
 //! （个人版不使用 ElectricSQL 事务对账，txid 只是占位）。
 
 pub mod issues;
+pub mod projections;
 pub mod projects;
+pub mod side;
 pub mod statuses;
 
 use axum::{Json, Router};
@@ -42,7 +44,9 @@ pub fn router() -> Router<DeploymentImpl> {
         Router::new()
             .merge(projects::router())
             .merge(statuses::router())
-            .merge(issues::router()),
+            .merge(issues::router())
+            .merge(side::router())
+            .merge(projections::router()),
     )
 }
 
