@@ -5,6 +5,7 @@ use tower_http::{compression::CompressionLayer, validate_request::ValidateReques
 
 use crate::{DeploymentImpl, middleware};
 
+pub mod admin;
 pub mod approvals;
 pub mod config;
 pub mod containers;
@@ -85,6 +86,9 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeServiceWithConnectInfo<Rout
         .merge(host_relay::router(&deployment))
         .merge(relay_signed_routes)
         .merge(local_auth::protected_router())
+        // 管理员组：自带 require_admin_middleware，必须嵌在 require_local_session
+        // 里面（CurrentUser 由后者注入）。
+        .merge(admin::router())
         .layer(axum::middleware::from_fn_with_state(
             deployment.clone(),
             middleware::require_local_session,

@@ -367,6 +367,30 @@ impl LocalUsers {
         .await
     }
 
+    /// 同 [`Self::count_login_capable_admins`]，但排除某一个用户。
+    ///
+    /// 成员管理用它回答「把这个人降权 / 停用之后，还剩下能登录的管理员吗」。
+    /// 判据必须和 `count_login_capable_admins` 完全一致（含「至少有一种凭据」），
+    /// 否则迁移写入的那个没有密码的本机 admin 会被当成「还剩一个」，
+    /// 于是唯一的真管理员被降权，谁也登不进来，也没人能改回来。
+    pub async fn count_login_capable_admins_except(
+        pool: &SqlitePool,
+        exclude_id: Uuid,
+    ) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar!(
+            r#"SELECT COUNT(*) AS "count!: i64"
+               FROM local_users u
+               WHERE u.role = 'admin'
+                 AND u.status = 'active'
+                 AND u.id <> $1
+                 AND (u.password_hash IS NOT NULL
+                      OR EXISTS (SELECT 1 FROM local_user_identities i WHERE i.user_id = u.id))"#,
+            exclude_id
+        )
+        .fetch_one(pool)
+        .await
+    }
+
     /// 单行 UPDATE 的公共外壳：带 busy 重试，打不中行一律 `NotFound`
     /// （不能静默成功，否则「改了不存在的用户」会被当成改成功）。
     async fn update_one<F, Fut>(run: F) -> Result<(), LocalUserError>

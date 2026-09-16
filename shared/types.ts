@@ -334,6 +334,28 @@ role: string, avatar_color: string, };
 
 export type ChangePasswordRequest = { current_password: string, new_password: string, };
 
+export type AdminUserInfo = { id: string, username: string, display_name: string, email: string | null, 
+/**
+ * `"admin"` 或 `"member"`。
+ */
+role: string, 
+/**
+ * `"active"` 或 `"disabled"`。
+ */
+status: string, avatar_color: string, created_at: string, last_login_at: string | null, };
+
+export type ListLocalUsersResponse = { users: Array<AdminUserInfo>, };
+
+export type CreateLocalUserRequest = { username: string, display_name: string, email: string | null, password: string, 
+/**
+ * `"admin"` 或 `"member"`。其它值一律 400，不静默降级成 member。
+ */
+role: string, };
+
+export type UpdateLocalUserRequest = { display_name: string | null, email?: string | null, role: string | null, status: string | null, };
+
+export type AdminResetPasswordRequest = { new_password: string, };
+
 export type StartSpake2EnrollmentRequest = { enrollment_code: string, client_message_b64: string, };
 
 export type FinishSpake2EnrollmentRequest = { enrollment_id: string, client_id: string, client_name: string, client_browser: string, client_os: string, client_device: string, public_key_b64: string, client_proof_b64: string, };
