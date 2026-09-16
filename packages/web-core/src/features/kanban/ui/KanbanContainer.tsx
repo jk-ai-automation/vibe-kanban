@@ -7,6 +7,7 @@ import {
   type MouseEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useLocation, useNavigate } from '@tanstack/react-router';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { useOrgContext } from '@/shared/hooks/useOrgContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
@@ -31,6 +32,14 @@ import {
   selectVisibleStatuses,
   sortStatusesByOrder,
 } from '../model/boardModel';
+import {
+  filtersToSearch,
+  hasKanbanUrlFilters,
+  isSameKanbanSearch,
+  mergeKanbanSearch,
+  searchToFilters,
+  type KanbanUrlSearch,
+} from '../model/kanbanUrlState';
 import { KanbanBoardView } from './KanbanBoardView';
 import {
   bulkUpdateIssues,
@@ -105,6 +114,21 @@ const areKanbanFiltersEqual = (
     left.sortDirection === right.sortDirection
   );
 };
+
+/**
+ * 只改 search、不改 path 的导航。
+ *
+ * web-core 是 local-web 与 remote-web 共用的库，没有注册具体的路由树，
+ * `useNavigate()` 在这里拿到的是 `AnyRouter` 版本，search 的 reducer 被推导成
+ * `never`，无法直接用。这里收窄成一个最小签名。
+ * （`useAppNavigation` 的 goTo* 方法全都不接受 search 参数；
+ * 用当前路由的点号写法做 to 又被 scripts/check-legacy-frontend-paths.sh 禁用，
+ * 所以这里只传 search，不传 to。）
+ */
+type SearchOnlyNavigate = (options: {
+  search: (previous: Record<string, unknown>) => Record<string, unknown>;
+  replace?: boolean;
+}) => void;
 
 function LoadingState() {
   const { t } = useTranslation('common');
@@ -371,8 +395,70 @@ export function KanbanContainer() {
     clearKanbanProjectViewPreferences(projectId, activeViewId);
   }, [activeViewId, clearKanbanProjectViewPreferences, projectId]);
 
+  // ---- 筛选与 URL 的双向同步 ----
+  // 优先级：URL > store（zustand + 服务端 scratch）。
+  // 首次进入某个「项目 + 视图」时，URL 带了筛选参数就以 URL 为准（链接可分享、可刷新）；
+  // URL 干净则把 store 里记住的筛选写回 URL。之后界面上改筛选一律 store -> URL（replace，
+  // 不往历史里灌记录）；URL 被外部改动（前进/后退/改地址栏）则反向拉回 store。
+  const location = useLocation();
+  const navigate = useNavigate() as unknown as SearchOnlyNavigate;
+  const urlSearch = location.search as KanbanUrlSearch;
+  const urlSyncKey = `${projectId}::${activeViewId}`;
+  const urlSyncedKeyRef = useRef<string | null>(null);
+  const lastPushedSearchRef = useRef<KanbanUrlSearch | null>(null);
+
+  useEffect(() => {
+    const fromStore = filtersToSearch(kanbanFilters, defaultKanbanFilters);
+
+    // 两边已经一致：这是打断双向回环的唯一出口。
+    if (isSameKanbanSearch(fromStore, urlSearch)) {
+      urlSyncedKeyRef.current = urlSyncKey;
+      lastPushedSearchRef.current = fromStore;
+      return;
+    }
+
+    const isFirstPass = urlSyncedKeyRef.current !== urlSyncKey;
+    const urlChangedElsewhere =
+      lastPushedSearchRef.current !== null &&
+      !isSameKanbanSearch(lastPushedSearchRef.current, urlSearch);
+
+    if (
+      (isFirstPass && hasKanbanUrlFilters(urlSearch)) ||
+      urlChangedElsewhere
+    ) {
+      urlSyncedKeyRef.current = urlSyncKey;
+      lastPushedSearchRef.current = urlSearch;
+      setKanbanProjectViewFilters(
+        projectId,
+        activeViewId,
+        searchToFilters(urlSearch, defaultKanbanFilters)
+      );
+      return;
+    }
+
+    urlSyncedKeyRef.current = urlSyncKey;
+    lastPushedSearchRef.current = fromStore;
+    navigate({
+      search: (prev: Record<string, unknown>) =>
+        mergeKanbanSearch(prev, fromStore),
+      replace: true,
+    });
+  }, [
+    urlSyncKey,
+    urlSearch,
+    kanbanFilters,
+    defaultKanbanFilters,
+    projectId,
+    activeViewId,
+    setKanbanProjectViewFilters,
+    navigate,
+  ]);
+
   const handleKanbanProjectViewChange = useCallback(
     (viewId: string) => {
+      // 视图切换由界面发起：先把同步标记推到新视图，避免上一视图残留在 URL 里的
+      // 筛选参数被当成「首次进入」而倒灌进新视图。
+      urlSyncedKeyRef.current = `${projectId}::${viewId}`;
       setKanbanProjectView(projectId, viewId);
     },
     [projectId, setKanbanProjectView]
