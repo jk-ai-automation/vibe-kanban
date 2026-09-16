@@ -91,4 +91,112 @@ mod tests {
         let legacy = column_names(test_db.pool(), "projects").await;
         assert!(!legacy.is_empty(), "遗留 projects 表不应被本迁移删除");
     }
+
+    /// 在「只跑到旧迁移」的库上再跑一次全量迁移，验证新迁移能在既有数据上应用，
+    /// 且重复应用不会报错（sqlx 按版本号记账，已应用的不会重跑）。
+    #[tokio::test]
+    async fn 新迁移可以应用在已有旧迁移的库上并且可重复执行() {
+        use sqlx::{Row, sqlite::SqliteConnectOptions};
+
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let path = dir.path().join("legacy.sqlite");
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete);
+        let pool = sqlx::SqlitePool::connect_with(options)
+            .await
+            .expect("连接失败");
+
+        // 只跑到 20260916000000 为止，模拟升级前的库。
+        let migrator = sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+            .await
+            .expect("读取迁移目录失败");
+        let legacy: Vec<_> = migrator
+            .iter()
+            .filter(|m| m.version <= 20260916000000)
+            .cloned()
+            .collect();
+        let mut legacy_migrator =
+            sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+                .await
+                .expect("读取迁移目录失败");
+        legacy_migrator.migrations = legacy.into();
+        legacy_migrator.run(&pool).await.expect("旧迁移应成功");
+
+        // 造一点旧数据：项目 + 状态列 + 两条需求（时间戳走旧的 DEFAULT 格式）。
+        let project_id = uuid::Uuid::new_v4();
+        let status_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO local_projects (id, organization_id, name) VALUES (?1, ?2, 'Legacy Project')")
+            .bind(project_id)
+            .bind(uuid::Uuid::from_u128(1))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO project_statuses (id, project_id, name) VALUES (?1, ?2, '待开发')",
+        )
+        .bind(status_id)
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for number in [1_i64, 7] {
+            sqlx::query(
+                "INSERT INTO issues (id, project_id, issue_number, simple_id, status_id, title) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .bind(uuid::Uuid::new_v4())
+            .bind(project_id)
+            .bind(number)
+            .bind(format!("LP-{number}"))
+            .bind(status_id)
+            .bind(format!("旧需求 {number}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        // 升级到最新。
+        migrator.run(&pool).await.expect("新迁移应能应用在旧库上");
+
+        let row = sqlx::query(
+            "SELECT simple_id_prefix, next_issue_number, created_at FROM local_projects WHERE id = ?1",
+        )
+        .bind(project_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row.get::<String, _>("simple_id_prefix"),
+            "LP",
+            "前缀应沿用已有需求的 simple_id 前缀"
+        );
+        assert_eq!(
+            row.get::<i64, _>("next_issue_number"),
+            8,
+            "编号游标应回填成 MAX(issue_number) + 1"
+        );
+        assert!(
+            row.get::<String, _>("created_at").contains('T'),
+            "旧格式时间戳应被规整成 RFC3339"
+        );
+        let issue_created: String =
+            sqlx::query_scalar("SELECT created_at FROM issues WHERE project_id = ?1 LIMIT 1")
+                .bind(project_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(issue_created.contains('T'), "需求的时间戳也应被规整");
+
+        // 重复执行：已应用的迁移不会重跑，数据也不会被二次改写。
+        migrator.run(&pool).await.expect("重复执行迁移应成功");
+        let again: i64 =
+            sqlx::query_scalar("SELECT next_issue_number FROM local_projects WHERE id = ?1")
+                .bind(project_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(again, 8, "重复执行迁移不得改动已回填的数据");
+    }
 }

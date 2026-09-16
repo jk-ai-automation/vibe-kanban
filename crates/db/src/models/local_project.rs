@@ -76,6 +76,7 @@ impl LocalProjects {
     }
 
     /// 建项目 + 5 个默认状态列，同一事务内完成。
+    /// simple_id 前缀在此刻按项目名定下并持久化，之后改名不会影响已有与新建需求。
     pub async fn create(
         pool: &SqlitePool,
         data: &CreateProjectRequest,
@@ -83,14 +84,19 @@ impl LocalProjects {
         let id = data.id.unwrap_or_else(Uuid::new_v4);
         let name: String = data.name.chars().take(MAX_PROJECT_NAME_LEN).collect();
         let organization_id = DEFAULT_ORGANIZATION_ID;
+        let prefix = Self::simple_id_prefix(&name);
+        let now = Utc::now();
 
         let mut tx = pool.begin().await?;
 
         let project = sqlx::query_as!(
             Project,
-            r#"INSERT INTO local_projects (id, organization_id, name, color, sort_order)
+            r#"INSERT INTO local_projects
+                   (id, organization_id, name, color, sort_order, simple_id_prefix,
+                    created_at, updated_at)
                VALUES ($1, $2, $3, $4,
-                       (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM local_projects))
+                       (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM local_projects),
+                       $5, $6, $6)
                RETURNING id AS "id!: Uuid",
                          organization_id AS "organization_id!: Uuid",
                          name AS "name!",
@@ -101,7 +107,9 @@ impl LocalProjects {
             id,
             organization_id,
             name,
-            data.color
+            data.color,
+            prefix,
+            now
         )
         .fetch_one(&mut *tx)
         .await?;
@@ -111,14 +119,15 @@ impl LocalProjects {
             let sort_order = index as i64;
             sqlx::query!(
                 r#"INSERT INTO project_statuses
-                       (id, project_id, name, color, sort_order, hidden, stage_type)
-                   VALUES ($1, $2, $3, $4, $5, 0, $6)"#,
+                       (id, project_id, name, color, sort_order, hidden, stage_type, created_at)
+                   VALUES ($1, $2, $3, $4, $5, 0, $6, $7)"#,
                 status_id,
                 project.id,
                 status_name,
                 color,
                 sort_order,
-                stage_type
+                stage_type,
+                now
             )
             .execute(&mut *tx)
             .await?;
@@ -141,6 +150,7 @@ impl LocalProjects {
             .map(|n| n.chars().take(MAX_PROJECT_NAME_LEN).collect());
         let set_color = data.color.is_some();
         let set_sort_order = data.sort_order.is_some();
+        let now = Utc::now();
 
         sqlx::query_as!(
             Project,
@@ -148,7 +158,7 @@ impl LocalProjects {
                    name       = CASE WHEN $2 THEN $3 ELSE name END,
                    color      = CASE WHEN $4 THEN $5 ELSE color END,
                    sort_order = CASE WHEN $6 THEN $7 ELSE sort_order END,
-                   updated_at = datetime('now', 'subsec')
+                   updated_at = $8
                WHERE id = $1
                RETURNING id AS "id!: Uuid",
                          organization_id AS "organization_id!: Uuid",
@@ -163,10 +173,24 @@ impl LocalProjects {
             set_color,
             data.color,
             set_sort_order,
-            data.sort_order
+            data.sort_order,
+            now
         )
         .fetch_one(pool)
         .await
+    }
+
+    /// 读取项目的 simple_id 前缀（测试与诊断用）。
+    pub async fn simple_id_prefix_of(
+        pool: &SqlitePool,
+        id: Uuid,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT simple_id_prefix FROM local_projects WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(pool)
+                .await?;
+        Ok(row.map(|r| r.0))
     }
 
     pub async fn delete(pool: &SqlitePool, id: Uuid) -> Result<u64, sqlx::Error> {
@@ -314,5 +338,104 @@ mod tests {
         assert_eq!(LocalProjects::simple_id_prefix("需求管理"), "ISS");
         assert_eq!(LocalProjects::simple_id_prefix("   "), "ISS");
         assert_eq!(LocalProjects::simple_id_prefix(""), "ISS");
+    }
+
+    #[tokio::test]
+    async fn 建项目时把_simple_id_前缀与编号游标定下来() {
+        let test_db = TestDb::new().await;
+        let project = LocalProjects::create(test_db.pool(), &建项目请求("Vibe Kanban Web"))
+            .await
+            .unwrap();
+
+        let row: (String, i64) = sqlx::query_as(
+            "SELECT simple_id_prefix, next_issue_number FROM local_projects WHERE id = ?1",
+        )
+        .bind(project.id)
+        .fetch_one(test_db.pool())
+        .await
+        .unwrap();
+        assert_eq!(row.0, "VKW");
+        assert_eq!(row.1, 1, "新项目的编号游标从 1 开始");
+
+        assert_eq!(
+            LocalProjects::simple_id_prefix_of(test_db.pool(), project.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("VKW")
+        );
+    }
+
+    #[tokio::test]
+    async fn 改名不会改动已定下的前缀() {
+        let test_db = TestDb::new().await;
+        let project = LocalProjects::create(test_db.pool(), &建项目请求("Vibe Kanban"))
+            .await
+            .unwrap();
+
+        LocalProjects::update(
+            test_db.pool(),
+            project.id,
+            &UpdateProjectRequest {
+                name: Some("Zebra Quartz".to_string()),
+                color: None,
+                sort_order: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            LocalProjects::simple_id_prefix_of(test_db.pool(), project.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("VK"),
+            "改名不得让前缀漂移"
+        );
+    }
+
+    #[tokio::test]
+    async fn 无字母项目名回落到_iss_前缀() {
+        let test_db = TestDb::new().await;
+        let project = LocalProjects::create(test_db.pool(), &建项目请求("需求管理"))
+            .await
+            .unwrap();
+        assert_eq!(
+            LocalProjects::simple_id_prefix_of(test_db.pool(), project.id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("ISS")
+        );
+    }
+
+    #[tokio::test]
+    async fn 建项目与状态列的时间戳是_rfc3339() {
+        let test_db = TestDb::new().await;
+        let project = LocalProjects::create(test_db.pool(), &建项目请求("Alpha"))
+            .await
+            .unwrap();
+
+        let row: (String, String) =
+            sqlx::query_as("SELECT created_at, updated_at FROM local_projects WHERE id = ?1")
+                .bind(project.id)
+                .fetch_one(test_db.pool())
+                .await
+                .unwrap();
+        assert!(row.0.contains('T'), "created_at 必须是 RFC3339：{}", row.0);
+        assert_eq!(row.0, row.1);
+
+        let status: (String,) =
+            sqlx::query_as("SELECT created_at FROM project_statuses WHERE project_id = ?1 LIMIT 1")
+                .bind(project.id)
+                .fetch_one(test_db.pool())
+                .await
+                .unwrap();
+        assert!(
+            status.0.contains('T'),
+            "状态列 created_at 必须是 RFC3339：{}",
+            status.0
+        );
     }
 }

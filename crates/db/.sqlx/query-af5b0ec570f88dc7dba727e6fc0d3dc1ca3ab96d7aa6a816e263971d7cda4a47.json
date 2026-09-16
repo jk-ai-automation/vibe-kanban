@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO local_projects (id, organization_id, name, color, sort_order)\n               VALUES ($1, $2, $3, $4,\n                       (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM local_projects))\n               RETURNING id AS \"id!: Uuid\",\n                         organization_id AS \"organization_id!: Uuid\",\n                         name AS \"name!\",\n                         color AS \"color!\",\n                         sort_order AS \"sort_order!: i32\",\n                         created_at AS \"created_at!: DateTime<Utc>\",\n                         updated_at AS \"updated_at!: DateTime<Utc>\"",
+  "query": "INSERT INTO local_projects\n                   (id, organization_id, name, color, sort_order, simple_id_prefix,\n                    created_at, updated_at)\n               VALUES ($1, $2, $3, $4,\n                       (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM local_projects),\n                       $5, $6, $6)\n               RETURNING id AS \"id!: Uuid\",\n                         organization_id AS \"organization_id!: Uuid\",\n                         name AS \"name!\",\n                         color AS \"color!\",\n                         sort_order AS \"sort_order!: i32\",\n                         created_at AS \"created_at!: DateTime<Utc>\",\n                         updated_at AS \"updated_at!: DateTime<Utc>\"",
   "describe": {
     "columns": [
       {
@@ -40,7 +40,7 @@
       }
     ],
     "parameters": {
-      "Right": 4
+      "Right": 6
     },
     "nullable": [
       false,
@@ -52,5 +52,5 @@
       false
     ]
   },
-  "hash": "30c392c76f5686441a2a5fc71361fa65f623ea66a4fbddecb86c5f12d3c2115f"
+  "hash": "af5b0ec570f88dc7dba727e6fc0d3dc1ca3ab96d7aa6a816e263971d7cda4a47"
 }

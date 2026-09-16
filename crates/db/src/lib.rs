@@ -90,8 +90,9 @@ impl DBService {
     /// 在指定路径创建并迁移一个独立数据库。
     /// 供测试与离线工具使用，不读取 asset_dir()，因此不会污染开发数据。
     pub async fn new_at_path(path: &std::path::Path) -> Result<DBService, Error> {
-        let database_url = format!("sqlite://{}", path.to_string_lossy());
-        let options = SqliteConnectOptions::from_str(&database_url)?
+        // 直接给 filename，不拼 URL：路径里的空格、`#`、`?` 等字符不会被当成 URL 语法。
+        let options = SqliteConnectOptions::new()
+            .filename(path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Delete)
             .busy_timeout(std::time::Duration::from_secs(10));

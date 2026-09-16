@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "UPDATE local_projects SET\n                   name       = CASE WHEN $2 THEN $3 ELSE name END,\n                   color      = CASE WHEN $4 THEN $5 ELSE color END,\n                   sort_order = CASE WHEN $6 THEN $7 ELSE sort_order END,\n                   updated_at = datetime('now', 'subsec')\n               WHERE id = $1\n               RETURNING id AS \"id!: Uuid\",\n                         organization_id AS \"organization_id!: Uuid\",\n                         name AS \"name!\",\n                         color AS \"color!\",\n                         sort_order AS \"sort_order!: i32\",\n                         created_at AS \"created_at!: DateTime<Utc>\",\n                         updated_at AS \"updated_at!: DateTime<Utc>\"",
+  "query": "UPDATE local_projects SET\n                   name       = CASE WHEN $2 THEN $3 ELSE name END,\n                   color      = CASE WHEN $4 THEN $5 ELSE color END,\n                   sort_order = CASE WHEN $6 THEN $7 ELSE sort_order END,\n                   updated_at = $8\n               WHERE id = $1\n               RETURNING id AS \"id!: Uuid\",\n                         organization_id AS \"organization_id!: Uuid\",\n                         name AS \"name!\",\n                         color AS \"color!\",\n                         sort_order AS \"sort_order!: i32\",\n                         created_at AS \"created_at!: DateTime<Utc>\",\n                         updated_at AS \"updated_at!: DateTime<Utc>\"",
   "describe": {
     "columns": [
       {
@@ -40,7 +40,7 @@
       }
     ],
     "parameters": {
-      "Right": 7
+      "Right": 8
     },
     "nullable": [
       false,
@@ -52,5 +52,5 @@
       false
     ]
   },
-  "hash": "b61b74bc3c8316bc2a5554b8a9b03f1a95d32638f706271763452438a4ea6a72"
+  "hash": "0465a31a3292ce823a60fe338293184f8101c8fd327808eaf1d68d62f67f196c"
 }
