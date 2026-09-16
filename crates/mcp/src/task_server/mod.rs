@@ -55,10 +55,42 @@ pub struct McpServer {
     mode: McpMode,
 }
 
+/// 由本机令牌拼出的默认请求头。
+///
+/// 读不到令牌就返回空表——**不加空头**：服务端对空令牌一律不匹配
+/// （`LocalAuthRuntime::machine_token_matches`），加一个空头只会被明确拒掉，
+/// 而个人模式下服务端本来就不看这个头。
+fn machine_token_headers(token: Option<String>) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    // 只接受可打印 ASCII。我们生成的令牌是 base64url，本来就满足；
+    // `HeaderValue::from_str` 其实会放行 0x80..0xFF（obs-text），
+    // 但那样的头在服务端 `to_str()` 会失败而被当成「没带令牌」，
+    // 与其发一个注定无效的头，不如在这里就拒掉。
+    if let Some(token) = token
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_graphic()))
+        && let Ok(value) = reqwest::header::HeaderValue::from_str(&token)
+    {
+        headers.insert(utils::assets::MACHINE_TOKEN_HEADER, value);
+    }
+    headers
+}
+
+/// 带本机令牌默认头的 HTTP 客户端。
+///
+/// 团队模式（`VK_MODE=team`）下 `/api/*` 全线要求会话，而本进程既没有
+/// Cookie 也没有 Origin；这个头是它唯一的等价凭据。
+fn build_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .default_headers(machine_token_headers(utils::assets::read_machine_token()))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 impl McpServer {
     pub fn new_global(base_url: &str) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: build_client(),
             base_url: base_url.to_string(),
             tool_router: Self::global_mode_router(),
             context: None,
@@ -68,7 +100,7 @@ impl McpServer {
 
     pub fn new_orchestrator(base_url: &str) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: build_client(),
             base_url: base_url.to_string(),
             tool_router: Self::orchestrator_mode_router(),
             context: None,
@@ -241,5 +273,55 @@ impl McpServer {
         let api_response: ApiResponseEnvelope<api_types::Project> = response.json().await.ok()?;
         let project = api_response.data?;
         Some(project.organization_id)
+    }
+}
+
+#[cfg(test)]
+mod machine_token_tests {
+    use super::*;
+
+    /// 团队模式下这是 MCP 唯一的凭据。头名写错、令牌被改动，
+    /// 表现都是「所有工具静默 401」，所以逐字钉住。
+    #[test]
+    fn 有令牌时按小写头名原样带上() {
+        let headers = machine_token_headers(Some("abc-123_XYZ".to_string()));
+        assert_eq!(
+            headers
+                .get(utils::assets::MACHINE_TOKEN_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some("abc-123_XYZ")
+        );
+        assert_eq!(utils::assets::MACHINE_TOKEN_HEADER, "x-vk-machine-token");
+    }
+
+    /// 文件末尾的换行不能带进请求头：`HeaderValue::from_str` 会直接失败，
+    /// 表现为「头静默消失」。裁掉后再塞。
+    #[test]
+    fn 首尾空白会被裁掉后再带上() {
+        let headers = machine_token_headers(Some("  tok  \n".to_string()));
+        assert_eq!(
+            headers
+                .get(utils::assets::MACHINE_TOKEN_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some("tok")
+        );
+    }
+
+    /// 没令牌、空令牌、只含空白：一律**不加头**，不是加一个空头。
+    #[test]
+    fn 没有令牌时不加头() {
+        for token in [None, Some(String::new()), Some("   ".to_string())] {
+            let headers = machine_token_headers(token.clone());
+            assert!(headers.is_empty(), "{token:?} 不该产生请求头");
+        }
+    }
+
+    /// 令牌里混进非法字符时宁可不加头，也不能 panic 把 MCP 整个打死。
+    #[test]
+    fn 非法字符不会让进程崩溃() {
+        for token in ["a\nb", "a\rb", "a\0b", "令牌"] {
+            let headers = machine_token_headers(Some(token.to_string()));
+            assert!(headers.is_empty(), "{token:?} 不该被塞进请求头");
+        }
     }
 }

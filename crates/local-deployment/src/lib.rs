@@ -37,8 +37,8 @@ use tokio_util::sync::CancellationToken;
 use trusted_key_auth::runtime::TrustedKeyAuthRuntime;
 use utils::{
     assets::{
-        config_path, credentials_path, server_settings_path, server_signing_key_path,
-        trusted_keys_path,
+        config_path, credentials_path, machine_token_path, server_settings_path,
+        server_signing_key_path, trusted_keys_path,
     },
     msg_store::MsgStore,
 };
@@ -112,9 +112,21 @@ impl Deployment for LocalDeployment {
             })
             .map_err(|e| DeploymentError::Other(anyhow::anyhow!("{e}")))?;
         tracing::info!(mode = server_settings.mode.as_str(), "服务端运行模式");
-        // 本机令牌（X-VK-MACHINE-TOKEN）由任务 C5 落盘生成；在那之前是空串，
-        // LocalAuthRuntime::machine_token_matches 对空串一律返回 false。
-        let local_auth = LocalAuthRuntime::new(server_settings, String::new());
+        // 本机令牌（X-VK-MACHINE-TOKEN）：团队模式下 MCP 等本机进程靠它免会话
+        // 访问 /api/*。生成失败**不能**静默降级成空串——那会让 MCP 在团队模式下
+        // 全线 401 且毫无提示；直接让启动失败，问题一眼可见。
+        let machine_token =
+            services::services::local_auth::machine_token::load_or_create_machine_token_at(
+                &machine_token_path(),
+            )
+            .await
+            .map_err(|e| {
+                DeploymentError::Other(anyhow::anyhow!(
+                    "本机令牌读写失败（{}）：{e}",
+                    machine_token_path().display()
+                ))
+            })?;
+        let local_auth = LocalAuthRuntime::new(server_settings, machine_token);
 
         let mut raw_config = load_config_from_file(&config_path()).await;
 

@@ -15,7 +15,10 @@ pub const CSRF_COOKIE: &str = "vk_csrf";
 /// CSRF 请求头名。HeaderMap 按小写存取，常量必须是小写。
 pub const CSRF_HEADER: &str = "x-vk-csrf";
 /// 本机进程（MCP）的免会话凭据请求头名。
-pub const MACHINE_TOKEN_HEADER: &str = "x-vk-machine-token";
+///
+/// 定义在 `utils` 里：发送端 `crates/mcp` 不依赖本 crate，只有 `utils`
+/// 是两边共同的依赖。这里只是转发，保证两端永远是同一个字面量。
+pub const MACHINE_TOKEN_HEADER: &str = utils::assets::MACHINE_TOKEN_HEADER;
 
 /// 令牌熵：32 字节。base64url 无填充后是 43 个字符。
 const TOKEN_BYTES: usize = 32;
