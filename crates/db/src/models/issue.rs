@@ -39,14 +39,21 @@ fn is_retryable_db_error(err: &sqlx::Error) -> bool {
     )
 }
 
-/// extension_metadata 必须是 JSON 对象，且序列化后不超过 [`MAX_METADATA_BYTES`]。
+/// extension_metadata 必须是 JSON 对象或 null，且序列化后不超过 [`MAX_METADATA_BYTES`]。
+///
+/// `null` 按「没有扩展字段」处理，落库成 `{}`：前端新建需求时发的就是
+/// `extension_metadata: null`（见 KanbanIssuePanelContainer 的提交逻辑），
+/// 若按非对象拒绝，个人版会完全无法新建需求。
 fn validate_metadata(value: &Value) -> Result<String, IssueError> {
-    if !value.is_object() {
-        return Err(IssueError::Validation(
-            "extension_metadata 必须是 JSON 对象".to_string(),
-        ));
-    }
-    let text = value.to_string();
+    let text = match value {
+        Value::Null => "{}".to_string(),
+        Value::Object(_) => value.to_string(),
+        _ => {
+            return Err(IssueError::Validation(
+                "extension_metadata 必须是 JSON 对象".to_string(),
+            ));
+        }
+    };
     if text.len() > MAX_METADATA_BYTES {
         return Err(IssueError::Validation(format!(
             "extension_metadata 超过 {MAX_METADATA_BYTES} 字节上限"
@@ -1511,7 +1518,6 @@ mod tests {
             serde_json::json!("字符串"),
             serde_json::json!([1, 2, 3]),
             serde_json::json!(42),
-            serde_json::Value::Null,
         ] {
             let mut request = 建需求请求(&场景, "非对象");
             request.extension_metadata = bad.clone();
@@ -1523,6 +1529,31 @@ mod tests {
                 "metadata {bad} 必须被拒绝"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn null_的_metadata_按空对象处理() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+
+        let mut request = 建需求请求(&场景, "前端默认值");
+        request.extension_metadata = serde_json::Value::Null;
+        let issue = Issues::create(test_db.pool(), &request)
+            .await
+            .expect("null 必须按空对象接受");
+        assert_eq!(issue.extension_metadata, serde_json::json!({}));
+
+        let updated = Issues::update(
+            test_db.pool(),
+            issue.id,
+            &UpdateIssueRequest {
+                extension_metadata: Some(serde_json::Value::Null),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("更新时的 null 也必须接受");
+        assert_eq!(updated.extension_metadata, serde_json::json!({}));
     }
 
     #[tokio::test]

@@ -499,6 +499,74 @@ mod tests {
         断言是_400(handle_create(test_db.pool(), not_object).await.unwrap_err());
     }
 
+    /// 前端 KanbanIssuePanelContainer 新建需求时发出的真实报文：
+    /// 未填的字段一律是 null，`extension_metadata` 也是 null（不是 {}）。
+    /// 这条链路一旦 400，个人版就完全无法新建需求。
+    #[tokio::test]
+    async fn 前端真实新建报文可以成功落库() {
+        let test_db = TestDb::new().await;
+        let (project_id, status_id) = 准备(&test_db).await;
+
+        let body = serde_json::json!({
+            "id": Uuid::new_v4(),
+            "project_id": project_id,
+            "status_id": status_id,
+            "title": "来自前端的需求",
+            "description": null,
+            "priority": null,
+            "sort_order": -1.0,
+            "start_date": null,
+            "target_date": null,
+            "completed_at": null,
+            "parent_issue_id": null,
+            "parent_issue_sort_order": null,
+            "extension_metadata": null
+        });
+        let payload: CreateIssueRequest =
+            serde_json::from_value(body).expect("前端报文必须能反序列化");
+
+        handle_create(test_db.pool(), payload)
+            .await
+            .expect("前端真实报文必须创建成功");
+
+        let list = handle_list(test_db.pool(), project_id).await.unwrap().0;
+        assert_eq!(list["issues"].as_array().unwrap().len(), 1);
+        assert_eq!(list["issues"][0]["title"], "来自前端的需求");
+        assert_eq!(
+            list["issues"][0]["extension_metadata"],
+            serde_json::json!({}),
+            "null 应按空对象落库"
+        );
+    }
+
+    #[tokio::test]
+    async fn 更新时把_extension_metadata_置为_null_等价于清空() {
+        let test_db = TestDb::new().await;
+        let (project_id, status_id) = 准备(&test_db).await;
+        let mut request = 建需求请求(project_id, status_id, "带扩展");
+        request.extension_metadata = serde_json::json!({ "a": 1 });
+        handle_create(test_db.pool(), request).await.unwrap();
+
+        let id: Uuid = handle_list(test_db.pool(), project_id).await.unwrap().0["issues"][0]["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let payload: UpdateIssueRequest =
+            serde_json::from_value(serde_json::json!({ "extension_metadata": null }))
+                .expect("更新报文必须能反序列化");
+        handle_update(test_db.pool(), id, payload)
+            .await
+            .expect("null 的 extension_metadata 必须被接受");
+
+        let after = handle_list(test_db.pool(), project_id).await.unwrap().0;
+        assert_eq!(
+            after["issues"][0]["extension_metadata"],
+            serde_json::json!({})
+        );
+    }
+
     #[tokio::test]
     async fn 更新不存在的需求返回_404() {
         let test_db = TestDb::new().await;
