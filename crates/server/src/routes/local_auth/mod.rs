@@ -11,6 +11,7 @@
 
 pub mod invite_routes;
 pub mod password_routes;
+pub mod setup;
 
 use std::sync::{Mutex, OnceLock};
 
@@ -54,6 +55,8 @@ pub fn public_router() -> Router<DeploymentImpl> {
     register_public("/local-auth/bootstrap", "GET");
     register_public("/local-auth/login", "POST");
     register_public("/local-auth/invites/accept", "POST");
+    register_public("/local-auth/setup", "GET");
+    register_public("/local-auth/setup", "POST");
 
     Router::new()
         .route("/health", get(health::health_check))
@@ -62,6 +65,10 @@ pub fn public_router() -> Router<DeploymentImpl> {
         .route(
             "/local-auth/invites/accept",
             post(invite_routes::accept_invite),
+        )
+        .route(
+            "/local-auth/setup",
+            get(setup::setup_status).post(setup::setup_admin),
         )
 }
 
@@ -135,6 +142,8 @@ mod tests {
                 ("/api/local-auth/bootstrap".to_string(), "GET"),
                 ("/api/local-auth/invites/accept".to_string(), "POST"),
                 ("/api/local-auth/login".to_string(), "POST"),
+                ("/api/local-auth/setup".to_string(), "GET"),
+                ("/api/local-auth/setup".to_string(), "POST"),
             ],
             "免鉴权端点是一份短白名单；新增任何一条都必须显式改这条测试"
         );
@@ -151,8 +160,9 @@ mod tests {
                         (path.as_str(), method),
                         ("/api/local-auth/login", "POST")
                             | ("/api/local-auth/invites/accept", "POST")
+                            | ("/api/local-auth/setup", "POST")
                     ),
-                    "免鉴权的写方法只允许登录与邀请注册，多出来的是：{path} {method}"
+                    "免鉴权的写方法只允许登录、邀请注册与首启初始化，多出来的是：{path} {method}"
                 );
             }
         }

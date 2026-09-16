@@ -378,6 +378,10 @@ export type CreateInviteResponse = { invite: LocalInviteInfo, code: string, };
 
 export type AcceptInviteRequest = { code: string, username: string, display_name: string, password: string, email: string | null, };
 
+export type SetupStatusResponse = { valid: boolean, };
+
+export type SetupAdminRequest = { token: string, username: string, display_name: string, password: string, email: string | null, };
+
 export type StartSpake2EnrollmentRequest = { enrollment_code: string, client_message_b64: string, };
 
 export type FinishSpake2EnrollmentRequest = { enrollment_id: string, client_id: string, client_name: string, client_browser: string, client_os: string, client_device: string, public_key_b64: string, client_proof_b64: string, };
