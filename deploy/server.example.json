@@ -1,0 +1,13 @@
+{
+  "mode": "team",
+  "allow_oauth_signup": false,
+  "session_ttl_days": 30,
+  "sqlite_wal": true,
+  "trust_proxy": false,
+  "public_base_url": "https://kanban.example.com",
+  "oauth": {
+    "feishu": { "client_id": "", "client_secret": "" },
+    "lark": { "client_id": "", "client_secret": "" },
+    "google": { "client_id": "", "client_secret": "" }
+  }
+}
