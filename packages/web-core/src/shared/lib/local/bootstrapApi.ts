@@ -1,0 +1,147 @@
+import type {
+  ApiResponse,
+  ChangePasswordRequest,
+  LocalAuthBootstrap,
+  LocalAuthUser,
+  LocalLoginRequest,
+} from 'shared/types';
+import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
+
+export const LOCAL_AUTH_PATHS = {
+  bootstrap: '/api/local-auth/bootstrap',
+  login: '/api/local-auth/login',
+  logout: '/api/local-auth/logout',
+  me: '/api/local-auth/me',
+  password: '/api/local-auth/password',
+} as const;
+
+/**
+ * 登录失败。
+ *
+ * 后端对「用户不存在」「密码错误」「账号停用」「只有第三方登录」四种情况
+ * 返回**完全相同**的 401 与英文固定文案——这是刻意的安全前提。所以前端
+ * **只按状态码分支**，绝不去匹配 message 文本，否则会把四种情况又变得可区分。
+ */
+export class InvalidCredentialsError extends Error {
+  constructor() {
+    super('Invalid credentials');
+    this.name = 'InvalidCredentialsError';
+  }
+}
+
+/** 登录被限速（429）。 */
+export class RateLimitedError extends Error {
+  constructor() {
+    super('Too many login attempts');
+    this.name = 'RateLimitedError';
+  }
+}
+
+/** 其它请求失败，错误信息里带上状态码方便排查。 */
+export class LocalAuthRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number
+  ) {
+    super(message);
+    this.name = 'LocalAuthRequestError';
+  }
+}
+
+async function readEnvelope<T>(
+  response: Response,
+  path: string
+): Promise<ApiResponse<T>> {
+  let envelope: ApiResponse<T> | null = null;
+  try {
+    envelope = (await response.json()) as ApiResponse<T>;
+  } catch {
+    envelope = null;
+  }
+
+  if (!response.ok) {
+    throw new LocalAuthRequestError(
+      `${path} failed with status ${response.status}`,
+      response.status
+    );
+  }
+
+  if (!envelope || !envelope.success) {
+    throw new LocalAuthRequestError(
+      envelope?.message ?? `${path} returned an unsuccessful response`,
+      response.status
+    );
+  }
+
+  return envelope;
+}
+
+async function getJson<T>(path: string): Promise<T> {
+  const response = await makeLocalApiRequest(path, { method: 'GET' });
+  const envelope = await readEnvelope<T>(response, path);
+  return envelope.data as T;
+}
+
+/**
+ * 读运行时模式与可用登录方式。**免鉴权**，且响应里刻意不含任何用户信息。
+ */
+export function fetchBootstrap(): Promise<LocalAuthBootstrap> {
+  return getJson<LocalAuthBootstrap>(LOCAL_AUTH_PATHS.bootstrap);
+}
+
+export function fetchMe(): Promise<LocalAuthUser> {
+  return getJson<LocalAuthUser>(LOCAL_AUTH_PATHS.me);
+}
+
+export async function login(
+  payload: LocalLoginRequest
+): Promise<LocalAuthUser> {
+  const response = await makeLocalApiRequest(LOCAL_AUTH_PATHS.login, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (response.status === 401) throw new InvalidCredentialsError();
+  if (response.status === 429) throw new RateLimitedError();
+
+  const envelope = await readEnvelope<LocalAuthUser>(
+    response,
+    LOCAL_AUTH_PATHS.login
+  );
+  return envelope.data as LocalAuthUser;
+}
+
+/**
+ * 登出。**幂等**：会话已经没了（401）也算成功，不要因此把用户卡在界面上。
+ */
+export async function logout(): Promise<void> {
+  try {
+    const response = await makeLocalApiRequest(LOCAL_AUTH_PATHS.logout, {
+      method: 'POST',
+    });
+    if (response.status === 401) return;
+    await readEnvelope<string>(response, LOCAL_AUTH_PATHS.logout);
+  } catch (error) {
+    if (error instanceof LocalAuthRequestError && error.status === 401) return;
+    throw error;
+  }
+}
+
+export async function changePassword(
+  payload: ChangePasswordRequest
+): Promise<LocalAuthUser> {
+  const response = await makeLocalApiRequest(LOCAL_AUTH_PATHS.password, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (response.status === 401) throw new InvalidCredentialsError();
+
+  const envelope = await readEnvelope<LocalAuthUser>(
+    response,
+    LOCAL_AUTH_PATHS.password
+  );
+  return envelope.data as LocalAuthUser;
+}
