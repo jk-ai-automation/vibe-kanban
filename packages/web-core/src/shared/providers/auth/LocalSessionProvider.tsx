@@ -3,6 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import type { LocalAuthBootstrap } from 'shared/types';
 import { SetupWizardContainer } from '@/features/local-auth/ui/SetupWizardContainer';
+import { InviteAcceptContainer } from '@/features/local-auth/ui/InviteAcceptContainer';
+import { resolveInviteCode } from '@/features/local-auth/model/inviteAccept';
 import {
   AuthContext,
   type AuthContextValue,
@@ -16,7 +18,10 @@ import {
   fetchMe,
   logout,
 } from '@/shared/lib/local/bootstrapApi';
-import { getBootstrapSnapshot } from '@/shared/lib/local/runtimeMode';
+import {
+  getBootstrapSnapshot,
+  isPersonalMode,
+} from '@/shared/lib/local/runtimeMode';
 import { onSessionExpired } from '@/shared/lib/local/sessionExpiry';
 import { LoginPageContainer } from '@/features/local-auth/ui/LoginPageContainer';
 
@@ -56,6 +61,13 @@ export function LocalSessionProvider({ children }: { children: ReactNode }) {
   const bootstrap = bootstrapQuery.data;
   const needsSetup = bootstrap?.needs_setup === true;
   const authenticated = bootstrap?.authenticated === true && !needsSetup;
+
+  // `isPersonalMode()` 在这里恒为假：本组件只在 `requiresLogin()` 为真时
+  // 才会被 `App.tsx` 挂载。这里仍然调用一遍是双保险，不依赖组件树挂载对。
+  const inviteCode = useMemo(
+    () => resolveInviteCode(window.location.search, isPersonalMode()),
+    []
+  );
 
   const meQuery = useQuery({
     queryKey: ME_QUERY_KEY,
@@ -124,6 +136,12 @@ export function LocalSessionProvider({ children }: { children: ReactNode }) {
   }
 
   if (!authenticated) {
+    // 带着 `?invite=<code>` 打开且还没登录：渲染注册表单而不是登录表单——
+    // 邀请链接本来就是给「还没有账号的人」用的，两个入口混在一起反而增加
+    // 一次点击。已登录状态下打开这个链接会跳过这个分支，不受影响。
+    if (inviteCode) {
+      return <InviteAcceptContainer code={inviteCode} />;
+    }
     // bootstrap 拉不到时也渲染登录页：团队模式下反正要登录，
     // 直接给一个可操作的界面比白屏或崩溃页有用。
     return (

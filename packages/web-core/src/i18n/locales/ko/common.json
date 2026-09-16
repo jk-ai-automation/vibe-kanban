@@ -156,6 +156,11 @@
       "backHome": "홈으로 돌아가기",
       "empty": "아직 다른 멤버가 없습니다."
     },
+    "inviteAcceptBackToLogin": "이미 계정이 있으신가요? 로그인",
+    "inviteAcceptSubmit": "계정 생성",
+    "inviteAcceptSubmitting": "생성 중…",
+    "inviteAcceptSubtitle": "이 팀에 참여하도록 초대받았습니다. 계정을 만들어 시작하세요.",
+    "inviteAcceptTitle": "팀에 참여",
     "invites": {
       "addInvite": "초대 코드 생성",
       "role": "역할",

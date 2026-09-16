@@ -156,6 +156,11 @@
       "backHome": "返回首頁",
       "empty": "還沒有其他成員。"
     },
+    "inviteAcceptBackToLogin": "已有帳號？前往登入",
+    "inviteAcceptSubmit": "建立帳號",
+    "inviteAcceptSubmitting": "建立中…",
+    "inviteAcceptSubtitle": "你收到了加入這個團隊的邀請，建立一個帳號即可開始使用。",
+    "inviteAcceptTitle": "加入團隊",
     "invites": {
       "addInvite": "產生邀請碼",
       "role": "角色",

@@ -1,4 +1,5 @@
 import type {
+  AcceptInviteRequest,
   ApiResponse,
   ChangePasswordRequest,
   LocalAuthBootstrap,
@@ -17,6 +18,7 @@ export const LOCAL_AUTH_PATHS = {
   me: '/api/local-auth/me',
   password: '/api/local-auth/password',
   setup: '/api/local-auth/setup',
+  inviteAccept: '/api/local-auth/invites/accept',
 } as const;
 
 /**
@@ -193,6 +195,44 @@ export async function submitSetupAdmin(
   const envelope = await readEnvelope<LocalAuthUser>(
     response,
     LOCAL_AUTH_PATHS.setup
+  );
+  return envelope.data as LocalAuthUser;
+}
+
+/**
+ * 邀请码自助注册（`POST /api/local-auth/invites/accept`，免鉴权）。
+ *
+ * 和 `submitSetupAdmin` 一样：失败文案是**特意写给人看的**（“邀请码无效或
+ * 已过期”“用户名已被占用”“尝试过于频繁，请 N 秒后再试”……），400/409/429
+ * 都把 `message` 透出给调用方，由
+ * `features/local-auth/model/inviteAccept.ts::describeInviteAcceptError`
+ * 决定怎么展示；调用方不应该再按状态码之外的东西（比如 message 文本）
+ * 去猜是三种邀请码失败里的哪一种——那是后端刻意做的防枚举设计。
+ *
+ * 成功即登录：响应会带上 `vk_session` / `vk_csrf` 两条 Cookie，
+ * 和登录、首启建号一样不需要调用方另外再登录一次。
+ */
+export async function acceptInvite(
+  payload: AcceptInviteRequest
+): Promise<LocalAuthUser> {
+  const response = await makeLocalApiRequest(LOCAL_AUTH_PATHS.inviteAccept, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const { message } = await parseEnvelopeError(response);
+    throw new LocalAuthRequestError(
+      message ??
+        `${LOCAL_AUTH_PATHS.inviteAccept} failed with status ${response.status}`,
+      response.status
+    );
+  }
+
+  const envelope = await readEnvelope<LocalAuthUser>(
+    response,
+    LOCAL_AUTH_PATHS.inviteAccept
   );
   return envelope.data as LocalAuthUser;
 }

@@ -156,6 +156,11 @@
       "backHome": "ホームへ戻る",
       "empty": "他のメンバーはまだいません。"
     },
+    "inviteAcceptBackToLogin": "すでにアカウントをお持ちですか？サインイン",
+    "inviteAcceptSubmit": "アカウントを作成",
+    "inviteAcceptSubmitting": "作成中…",
+    "inviteAcceptSubtitle": "このチームへの招待を受け取りました。アカウントを作成して始めましょう。",
+    "inviteAcceptTitle": "チームに参加",
     "invites": {
       "addInvite": "招待コードを生成",
       "role": "役割",

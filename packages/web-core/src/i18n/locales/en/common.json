@@ -160,6 +160,11 @@
       "backHome": "Back to home",
       "empty": "No other members yet."
     },
+    "inviteAcceptBackToLogin": "Already have an account? Sign in",
+    "inviteAcceptSubmit": "Create account",
+    "inviteAcceptSubmitting": "Creating…",
+    "inviteAcceptSubtitle": "You've been invited to join this team. Create an account to get started.",
+    "inviteAcceptTitle": "Join the team",
     "invites": {
       "addInvite": "New invite code",
       "role": "Role",

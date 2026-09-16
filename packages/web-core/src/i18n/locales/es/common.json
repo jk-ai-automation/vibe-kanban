@@ -156,6 +156,11 @@
       "backHome": "Volver al inicio",
       "empty": "Todavía no hay más miembros."
     },
+    "inviteAcceptBackToLogin": "¿Ya tienes una cuenta? Inicia sesión",
+    "inviteAcceptSubmit": "Crear cuenta",
+    "inviteAcceptSubmitting": "Creando…",
+    "inviteAcceptSubtitle": "Te han invitado a unirte a este equipo. Crea una cuenta para empezar.",
+    "inviteAcceptTitle": "Únete al equipo",
     "invites": {
       "addInvite": "Generar código de invitación",
       "role": "Rol",

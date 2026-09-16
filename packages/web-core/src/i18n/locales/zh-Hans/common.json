@@ -156,6 +156,11 @@
       "backHome": "返回首页",
       "empty": "还没有其他成员。"
     },
+    "inviteAcceptBackToLogin": "已有账号？去登录",
+    "inviteAcceptSubmit": "创建账号",
+    "inviteAcceptSubmitting": "创建中…",
+    "inviteAcceptSubtitle": "你收到了加入这个团队的邀请，创建一个账号即可开始使用。",
+    "inviteAcceptTitle": "加入团队",
     "invites": {
       "addInvite": "生成邀请码",
       "role": "角色",
