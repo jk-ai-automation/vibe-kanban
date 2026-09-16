@@ -314,4 +314,74 @@ impl EventService {
         let initial_stream = futures::stream::iter(vec![Ok(initial_msg), Ok(LogMsg::Ready)]);
         Ok(initial_stream.chain(filtered_stream).boxed())
     }
+
+    /// 需求看板流：首帧给出 issues / project_statuses 全量，
+    /// 之后只转发属于该项目的增量 patch。
+    pub async fn stream_issues_raw(
+        &self,
+        project_id: uuid::Uuid,
+    ) -> Result<
+        futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>,
+        super::types::EventError,
+    > {
+        use db::models::{issue::Issues, local_project_status::ProjectStatuses};
+
+        let issues = Issues::find_by_project(&self.db.pool, project_id).await?;
+        let issues_map: serde_json::Map<String, serde_json::Value> = issues
+            .issues
+            .into_iter()
+            .map(|issue| (issue.id.to_string(), serde_json::to_value(issue).unwrap()))
+            .collect();
+
+        let statuses = ProjectStatuses::find_by_project(&self.db.pool, project_id).await?;
+        let statuses_map: serde_json::Map<String, serde_json::Value> = statuses
+            .into_iter()
+            .map(|status| (status.id.to_string(), serde_json::to_value(status).unwrap()))
+            .collect();
+
+        let initial_patch = json!([
+            { "op": "replace", "path": "/issues", "value": issues_map },
+            { "op": "replace", "path": "/project_statuses", "value": statuses_map }
+        ]);
+        let initial_msg = LogMsg::JsonPatch(serde_json::from_value(initial_patch).unwrap());
+
+        let project_id_string = project_id.to_string();
+        let filtered_stream =
+            BroadcastStream::new(self.msg_store.get_receiver()).filter_map(move |msg_result| {
+                let project_id_string = project_id_string.clone();
+                async move {
+                    let Ok(LogMsg::JsonPatch(patch)) = msg_result else {
+                        return None;
+                    };
+                    let op = patch.0.first()?;
+                    let path = op.path().to_string();
+                    if !(path.starts_with("/issues")
+                        || path.starts_with("/project_statuses")
+                        || path.starts_with("/issue_comments"))
+                    {
+                        return None;
+                    }
+
+                    let value = match op {
+                        json_patch::PatchOperation::Add(a) => Some(&a.value),
+                        json_patch::PatchOperation::Replace(r) => Some(&r.value),
+                        // 删除操作拿不到 project_id，直接透传，
+                        // 客户端对不认识的 id 会忽略。
+                        _ => return Some(Ok(LogMsg::JsonPatch(patch))),
+                    };
+
+                    // issue_comments 没有 project_id，按 issue 归属交给客户端过滤。
+                    let belongs = value
+                        .and_then(|v| v.get("project_id"))
+                        .and_then(|v| v.as_str())
+                        .map(|id| id == project_id_string)
+                        .unwrap_or(true);
+
+                    belongs.then(|| Ok(LogMsg::JsonPatch(patch)))
+                }
+            });
+
+        let initial_stream = futures::stream::iter(vec![Ok(initial_msg), Ok(LogMsg::Ready)]);
+        Ok(initial_stream.chain(filtered_stream).boxed())
+    }
 }

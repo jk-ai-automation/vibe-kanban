@@ -7,7 +7,7 @@ use uuid::Uuid;
 /// 本地状态列行。字段与 api_types::ProjectStatus 一一对应，
 /// 额外多出 stage_type（个人版专有，用于状态自动流转；
 /// 多出的 JSON 字段前端会原样忽略，不影响 shared/remote-types.ts）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct LocalProjectStatus {
     pub id: Uuid,
     pub project_id: Uuid,
