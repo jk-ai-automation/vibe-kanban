@@ -42,11 +42,14 @@ impl ProjectTags {
         .await
     }
 
-    pub async fn create(pool: &SqlitePool, data: &CreateTagRequest) -> Result<Tag, sqlx::Error> {
+    pub async fn create(pool: &SqlitePool, data: &CreateTagRequest) -> Result<Tag, IssueError> {
         let id = data.id.unwrap_or_else(Uuid::new_v4);
         let name = truncate(data.name.trim(), MAX_TAG_NAME_LEN);
+        if name.is_empty() {
+            return Err(IssueError::Validation("标签名不能为空".to_string()));
+        }
 
-        sqlx::query_as!(
+        let tag = sqlx::query_as!(
             Tag,
             r#"INSERT INTO project_tags (id, project_id, name, color)
                VALUES ($1, $2, $3, $4)
@@ -60,22 +63,30 @@ impl ProjectTags {
             data.color
         )
         .fetch_one(pool)
-        .await
+        .await?;
+
+        Ok(tag)
     }
 
     pub async fn update(
         pool: &SqlitePool,
         id: Uuid,
         data: &UpdateTagRequest,
-    ) -> Result<Tag, sqlx::Error> {
+    ) -> Result<Tag, IssueError> {
         let set_name = data.name.is_some();
-        let name: Option<String> = data
-            .name
-            .as_ref()
-            .map(|n| truncate(n.trim(), MAX_TAG_NAME_LEN));
+        let name: Option<String> = match data.name.as_ref() {
+            Some(raw) => {
+                let trimmed = truncate(raw.trim(), MAX_TAG_NAME_LEN);
+                if trimmed.is_empty() {
+                    return Err(IssueError::Validation("标签名不能为空".to_string()));
+                }
+                Some(trimmed)
+            }
+            None => None,
+        };
         let set_color = data.color.is_some();
 
-        sqlx::query_as!(
+        let tag = sqlx::query_as!(
             Tag,
             r#"UPDATE project_tags SET
                    name  = CASE WHEN $2 THEN $3 ELSE name END,
@@ -92,7 +103,9 @@ impl ProjectTags {
             data.color
         )
         .fetch_one(pool)
-        .await
+        .await?;
+
+        Ok(tag)
     }
 
     pub async fn delete(pool: &SqlitePool, id: Uuid) -> Result<u64, sqlx::Error> {
@@ -131,9 +144,24 @@ impl IssueTags {
     pub async fn create(
         pool: &SqlitePool,
         data: &CreateIssueTagRequest,
-    ) -> Result<IssueTag, sqlx::Error> {
+    ) -> Result<IssueTag, IssueError> {
+        // 标签与需求必须属于同一项目，否则会把别的项目的标签挂到本项目需求上。
+        let same_project: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM issues i JOIN project_tags t ON t.project_id = i.project_id \
+             WHERE i.id = ?1 AND t.id = ?2",
+        )
+        .bind(data.issue_id)
+        .bind(data.tag_id)
+        .fetch_optional(pool)
+        .await?;
+        if same_project.is_none() {
+            return Err(IssueError::Validation(
+                "标签与需求不属于同一项目".to_string(),
+            ));
+        }
+
         let id = data.id.unwrap_or_else(Uuid::new_v4);
-        sqlx::query_as!(
+        let issue_tag = sqlx::query_as!(
             IssueTag,
             r#"INSERT INTO issue_tags (id, issue_id, tag_id)
                VALUES ($1, $2, $3)
@@ -145,7 +173,9 @@ impl IssueTags {
             data.tag_id
         )
         .fetch_one(pool)
-        .await
+        .await?;
+
+        Ok(issue_tag)
     }
 
     pub async fn delete(pool: &SqlitePool, id: Uuid) -> Result<u64, sqlx::Error> {
@@ -214,10 +244,27 @@ impl IssueComments {
         }
         let id = data.id.unwrap_or_else(Uuid::new_v4);
 
+        // 父评论必须挂在同一条需求下，否则会串到别的需求的评论树里。
+        if let Some(parent_id) = data.parent_id {
+            let same_issue: Option<(i64,)> =
+                sqlx::query_as("SELECT 1 FROM issue_comments WHERE id = ?1 AND issue_id = ?2")
+                    .bind(parent_id)
+                    .bind(data.issue_id)
+                    .fetch_optional(pool)
+                    .await?;
+            if same_issue.is_none() {
+                return Err(IssueError::Validation(
+                    "父评论不存在或不属于该需求".to_string(),
+                ));
+            }
+        }
+
+        let now = Utc::now();
         let comment = sqlx::query_as!(
             IssueComment,
-            r#"INSERT INTO issue_comments (id, issue_id, author_id, parent_id, message)
-               VALUES ($1, $2, $3, $4, $5)
+            r#"INSERT INTO issue_comments
+                   (id, issue_id, author_id, parent_id, message, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $6)
                RETURNING id AS "id!: Uuid",
                          issue_id AS "issue_id!: Uuid",
                          author_id AS "author_id: Uuid",
@@ -229,7 +276,8 @@ impl IssueComments {
             data.issue_id,
             DEFAULT_USER_ID,
             data.parent_id,
-            message
+            message,
+            now
         )
         .fetch_one(pool)
         .await?;
@@ -256,12 +304,35 @@ impl IssueComments {
         let set_parent = data.parent_id.is_some();
         let parent_id = data.parent_id.flatten();
 
+        if let Some(parent_id) = parent_id {
+            if parent_id == id {
+                return Err(IssueError::Validation(
+                    "评论不能把自己当作父评论".to_string(),
+                ));
+            }
+            let same_issue: Option<(i64,)> = sqlx::query_as(
+                "SELECT 1 FROM issue_comments parent \
+                 JOIN issue_comments child ON child.issue_id = parent.issue_id \
+                 WHERE parent.id = ?1 AND child.id = ?2",
+            )
+            .bind(parent_id)
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+            if same_issue.is_none() {
+                return Err(IssueError::Validation(
+                    "父评论不存在或不属于该需求".to_string(),
+                ));
+            }
+        }
+
+        let now = Utc::now();
         let comment = sqlx::query_as!(
             IssueComment,
             r#"UPDATE issue_comments SET
                    message    = CASE WHEN $2 THEN $3 ELSE message END,
                    parent_id  = CASE WHEN $4 THEN $5 ELSE parent_id END,
-                   updated_at = datetime('now', 'subsec')
+                   updated_at = $6
                WHERE id = $1
                RETURNING id AS "id!: Uuid",
                          issue_id AS "issue_id!: Uuid",
@@ -274,7 +345,8 @@ impl IssueComments {
             set_message,
             message,
             set_parent,
-            parent_id
+            parent_id,
+            now
         )
         .fetch_one(pool)
         .await?;
@@ -312,12 +384,16 @@ mod tests {
     };
 
     async fn 准备(test_db: &TestDb) -> (Uuid, Uuid) {
+        准备具名(test_db, "Vibe Kanban").await
+    }
+
+    async fn 准备具名(test_db: &TestDb, name: &str) -> (Uuid, Uuid) {
         let project = LocalProjects::create(
             test_db.pool(),
             &CreateProjectRequest {
                 id: None,
                 organization_id: DEFAULT_ORGANIZATION_ID,
-                name: "Vibe Kanban".to_string(),
+                name: name.to_string(),
                 color: "#6366f1".to_string(),
             },
         )
@@ -573,5 +649,272 @@ mod tests {
         )
         .await;
         assert!(result.is_err(), "空白评论必须拒绝");
+    }
+
+    #[tokio::test]
+    async fn 跨项目的标签不能挂到需求上() {
+        let test_db = TestDb::new().await;
+        let (_, issue_a) = 准备具名(&test_db, "Alpha").await;
+        let (project_b, _) = 准备具名(&test_db, "Beta").await;
+
+        let 别家标签 = ProjectTags::create(
+            test_db.pool(),
+            &CreateTagRequest {
+                id: None,
+                project_id: project_b,
+                name: "别家".to_string(),
+                color: "#22c55e".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let err = IssueTags::create(
+            test_db.pool(),
+            &CreateIssueTagRequest {
+                id: None,
+                issue_id: issue_a,
+                tag_id: 别家标签.id,
+            },
+        )
+        .await
+        .expect_err("跨项目标签必须拒绝");
+        assert!(
+            matches!(err, crate::models::issue::IssueError::Validation(_)),
+            "应是校验错误：{err:?}"
+        );
+
+        assert!(
+            IssueTags::find_by_project(test_db.pool(), project_b)
+                .await
+                .unwrap()
+                .is_empty(),
+            "被拒绝的关联不得落库"
+        );
+    }
+
+    #[tokio::test]
+    async fn 不存在的标签不能挂到需求上() {
+        let test_db = TestDb::new().await;
+        let (_, issue_id) = 准备(&test_db).await;
+
+        let err = IssueTags::create(
+            test_db.pool(),
+            &CreateIssueTagRequest {
+                id: None,
+                issue_id,
+                tag_id: Uuid::from_u128(9911),
+            },
+        )
+        .await
+        .expect_err("标签不存在必须拒绝");
+        assert!(matches!(
+            err,
+            crate::models::issue::IssueError::Validation(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn 空名标签被拒绝() {
+        let test_db = TestDb::new().await;
+        let (project_id, _) = 准备(&test_db).await;
+
+        for name in ["", "   ", "\n\t "] {
+            let err = ProjectTags::create(
+                test_db.pool(),
+                &CreateTagRequest {
+                    id: None,
+                    project_id,
+                    name: name.to_string(),
+                    color: "#22c55e".to_string(),
+                },
+            )
+            .await
+            .expect_err("空名标签必须拒绝");
+            assert!(matches!(
+                err,
+                crate::models::issue::IssueError::Validation(_)
+            ));
+        }
+
+        let tag = ProjectTags::create(
+            test_db.pool(),
+            &CreateTagRequest {
+                id: None,
+                project_id,
+                name: "有效".to_string(),
+                color: "#22c55e".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let err = ProjectTags::update(
+            test_db.pool(),
+            tag.id,
+            &UpdateTagRequest {
+                name: Some("  ".to_string()),
+                color: None,
+            },
+        )
+        .await
+        .expect_err("改成空名也必须拒绝");
+        assert!(matches!(
+            err,
+            crate::models::issue::IssueError::Validation(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn 评论的父评论必须属于同一需求() {
+        let test_db = TestDb::new().await;
+        let (project_id, issue_a) = 准备(&test_db).await;
+
+        let todo = ProjectStatuses::find_stage(test_db.pool(), project_id, StageType::Todo)
+            .await
+            .unwrap()
+            .unwrap();
+        let issue_b = Issues::create(
+            test_db.pool(),
+            &CreateIssueRequest {
+                id: None,
+                project_id,
+                status_id: todo.id,
+                title: "另一条需求".to_string(),
+                description: None,
+                priority: None,
+                start_date: None,
+                target_date: None,
+                completed_at: None,
+                sort_order: 0.0,
+                parent_issue_id: None,
+                parent_issue_sort_order: None,
+                extension_metadata: serde_json::json!({}),
+            },
+        )
+        .await
+        .unwrap();
+
+        let 甲的评论 = IssueComments::create(
+            test_db.pool(),
+            &CreateIssueCommentRequest {
+                id: None,
+                issue_id: issue_a,
+                message: "甲".to_string(),
+                parent_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // 新建：父评论挂在别的需求上
+        let err = IssueComments::create(
+            test_db.pool(),
+            &CreateIssueCommentRequest {
+                id: None,
+                issue_id: issue_b.id,
+                message: "串台".to_string(),
+                parent_id: Some(甲的评论.id),
+            },
+        )
+        .await
+        .expect_err("跨需求的父评论必须拒绝");
+        assert!(matches!(
+            err,
+            crate::models::issue::IssueError::Validation(_)
+        ));
+
+        // 更新：把父评论改成别的需求下的评论
+        let 乙的评论 = IssueComments::create(
+            test_db.pool(),
+            &CreateIssueCommentRequest {
+                id: None,
+                issue_id: issue_b.id,
+                message: "乙".to_string(),
+                parent_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let err = IssueComments::update(
+            test_db.pool(),
+            乙的评论.id,
+            &UpdateIssueCommentRequest {
+                message: None,
+                parent_id: Some(Some(甲的评论.id)),
+            },
+        )
+        .await
+        .expect_err("跨需求的父评论必须拒绝");
+        assert!(matches!(
+            err,
+            crate::models::issue::IssueError::Validation(_)
+        ));
+
+        // 同需求的父评论可以通过
+        let 同需求 = IssueComments::create(
+            test_db.pool(),
+            &CreateIssueCommentRequest {
+                id: None,
+                issue_id: issue_a,
+                message: "回复甲".to_string(),
+                parent_id: Some(甲的评论.id),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(同需求.parent_id, Some(甲的评论.id));
+    }
+
+    #[tokio::test]
+    async fn 评论不能把自己当父评论() {
+        let test_db = TestDb::new().await;
+        let (_, issue_id) = 准备(&test_db).await;
+        let comment = IssueComments::create(
+            test_db.pool(),
+            &CreateIssueCommentRequest {
+                id: None,
+                issue_id,
+                message: "自己".to_string(),
+                parent_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let err = IssueComments::update(
+            test_db.pool(),
+            comment.id,
+            &UpdateIssueCommentRequest {
+                message: None,
+                parent_id: Some(Some(comment.id)),
+            },
+        )
+        .await
+        .expect_err("自引用必须拒绝");
+        assert!(matches!(
+            err,
+            crate::models::issue::IssueError::Validation(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn 补齐的索引确实建出来了() {
+        let test_db = TestDb::new().await;
+        let names: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM sqlite_master WHERE type = 'index'")
+                .fetch_all(test_db.pool())
+                .await
+                .unwrap();
+        let names: Vec<String> = names.into_iter().map(|r| r.0).collect();
+        for expected in [
+            "idx_issues_project_sort",
+            "idx_issue_tags_tag",
+            "idx_issue_comments_parent",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "缺少索引 {expected}，实际：{names:?}"
+            );
+        }
     }
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO issue_comments (id, issue_id, author_id, parent_id, message)\n               VALUES ($1, $2, $3, $4, $5)\n               RETURNING id AS \"id!: Uuid\",\n                         issue_id AS \"issue_id!: Uuid\",\n                         author_id AS \"author_id: Uuid\",\n                         parent_id AS \"parent_id: Uuid\",\n                         message AS \"message!\",\n                         created_at AS \"created_at!: DateTime<Utc>\",\n                         updated_at AS \"updated_at!: DateTime<Utc>\"",
+  "query": "UPDATE issue_comments SET\n                   message    = CASE WHEN $2 THEN $3 ELSE message END,\n                   parent_id  = CASE WHEN $4 THEN $5 ELSE parent_id END,\n                   updated_at = $6\n               WHERE id = $1\n               RETURNING id AS \"id!: Uuid\",\n                         issue_id AS \"issue_id!: Uuid\",\n                         author_id AS \"author_id: Uuid\",\n                         parent_id AS \"parent_id: Uuid\",\n                         message AS \"message!\",\n                         created_at AS \"created_at!: DateTime<Utc>\",\n                         updated_at AS \"updated_at!: DateTime<Utc>\"",
   "describe": {
     "columns": [
       {
@@ -40,7 +40,7 @@
       }
     ],
     "parameters": {
-      "Right": 5
+      "Right": 6
     },
     "nullable": [
       false,
@@ -52,5 +52,5 @@
       false
     ]
   },
-  "hash": "ca54c1251aaea928dddb57ce71e7cb703af2d96b2ec046ad2a6f6b1072d87939"
+  "hash": "fca37f4d757a73f94b437b5864408163a63695ae3a038fb12fed46f6556143e6"
 }
