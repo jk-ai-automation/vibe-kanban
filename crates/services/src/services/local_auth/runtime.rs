@@ -3,8 +3,9 @@
 //! 名字刻意避开 `AuthContext`——那个名字已被云端 OAuth
 //! （`services::services::auth::AuthContext`）占用。
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
+use super::rate_limit::LoginRateLimiter;
 use crate::services::server_settings::{ServerMode, ServerSettings};
 
 /// 本地认证运行时。`Deployment::local_auth()` 返回它的引用。
@@ -16,6 +17,7 @@ use crate::services::server_settings::{ServerMode, ServerSettings};
 pub struct LocalAuthRuntime {
     settings: Arc<ServerSettings>,
     machine_token: Arc<str>,
+    login_limiter: Arc<Mutex<LoginRateLimiter>>,
 }
 
 impl LocalAuthRuntime {
@@ -25,7 +27,23 @@ impl LocalAuthRuntime {
         Self {
             settings: Arc::new(settings),
             machine_token: Arc::from(machine_token.as_str()),
+            login_limiter: Arc::new(Mutex::new(LoginRateLimiter::new())),
         }
+    }
+
+    /// 登录限速器。跨请求共享，**不要**在持锁期间 `await`。
+    ///
+    /// 锁中毒（某个线程在持锁时 panic）时取回内部值继续用：限速状态本身
+    /// 不是一致性敏感的数据，而「锁中毒就 panic」会让整台服务器登不上去。
+    pub fn login_limiter(&self) -> MutexGuard<'_, LoginRateLimiter> {
+        self.login_limiter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 要不要采信 `X-Forwarded-For`。默认 false，见 `rate_limit::client_ip`。
+    pub fn trust_proxy(&self) -> bool {
+        self.settings.trust_proxy
     }
 
     pub fn mode(&self) -> ServerMode {

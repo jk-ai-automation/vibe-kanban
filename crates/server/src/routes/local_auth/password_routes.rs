@@ -8,9 +8,11 @@
 //! （`scripts/prepare-db.js` 只覆盖 `crates/db/.sqlx`），所有编译期校验的 SQL
 //! 一律留在 `crates/db`。
 
+use std::{net::SocketAddr, time::Instant};
+
 use axum::{
-    extract::State,
-    http::{HeaderMap, HeaderValue, header},
+    extract::{ConnectInfo, State},
+    http::{Extensions, HeaderMap, HeaderValue, header},
     response::Json as ResponseJson,
 };
 use chrono::Utc;
@@ -22,6 +24,7 @@ use deployment::Deployment;
 use services::services::{
     local_auth::{
         password::{dummy_password_hash, hash_password, verify_password},
+        rate_limit::client_ip,
         runtime::LocalAuthRuntime,
         token::{
             build_csrf_clear_cookie, build_csrf_cookie, build_session_clear_cookie,
@@ -165,6 +168,20 @@ pub(crate) async fn handle_login(
     ip: Option<String>,
 ) -> Result<LoginOutcome, ApiError> {
     let username = normalize_username(&payload.username);
+    let ip_key = ip.as_deref().unwrap_or("");
+
+    // **限速必须在读库与 Argon2 之前**：否则被限速的请求照样会吃掉一次
+    // 19 MiB 的哈希，限速就只剩装饰作用，CPU 一样被打满。
+    if let Err(等待) = runtime
+        .login_limiter()
+        .check(&username, ip_key, Instant::now())
+    {
+        return Err(ApiError::TooManyRequests(format!(
+            "登录尝试过于频繁，请 {} 秒后再试",
+            等待.as_secs().max(1)
+        )));
+    }
+
     let user = LocalUsers::find_by_username(pool, &username)
         .await
         .map_err(ApiError::from)?;
@@ -183,11 +200,22 @@ pub(crate) async fn handle_login(
     let password_ok = verify_password(&payload.password, &hash_to_check);
 
     let Some(user) = user else {
+        // 用户不存在也要记一次失败：否则攻击者用不存在的用户名就能
+        // 无限次探测（还顺带确认了「这个用户名不存在」）。
+        runtime
+            .login_limiter()
+            .record_failure(&username, ip_key, Instant::now());
         return Err(ApiError::Unauthorized);
     };
     if !password_ok || user.status != LocalUserStatus::Active {
+        runtime
+            .login_limiter()
+            .record_failure(&username, ip_key, Instant::now());
         return Err(ApiError::Unauthorized);
     }
+
+    // 登录成功，清掉这个「用户名 + IP」的计数（IP 桶刻意不清，见 reset 的文档）。
+    runtime.login_limiter().reset(&username, ip_key);
 
     let outcome = start_session(pool, runtime, &user, user_agent, ip).await?;
     if let Err(err) = LocalUsers::touch_last_login(pool, user.id, Utc::now()).await {
@@ -230,17 +258,45 @@ async fn start_session(
     })
 }
 
+/// `X-Forwarded-For` 请求头名。HeaderMap 按小写存取。
+const FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
+
+/// 本次请求的客户端 IP。
+///
+/// 对端地址从 request extensions 里取，而不是用 `ConnectInfo` 提取器：
+/// `ConnectInfo` 在没装 `into_make_service_with_connect_info` 时会直接 500，
+/// 而 `axum 0.8` 的 `ConnectInfo` 没有实现 `OptionalFromRequestParts`，
+/// 包成 `Option<_>` 也编不过。tauri 等复用 `ServerHandle` 的场景可能没装，
+/// 那时必须降级成 `"unknown"`（限速上共用一只桶），**不能**把登录打死。
+fn request_client_ip(
+    runtime: &LocalAuthRuntime,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+) -> String {
+    client_ip(
+        runtime.trust_proxy(),
+        headers
+            .get(FORWARDED_FOR_HEADER)
+            .and_then(|value| value.to_str().ok()),
+        extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(addr)| addr.ip()),
+    )
+}
+
 pub(crate) async fn login(
     State(deployment): State<DeploymentImpl>,
+    extensions: Extensions,
     headers: HeaderMap,
     axum::Json(payload): axum::Json<LocalLoginRequest>,
 ) -> Result<(HeaderMap, ResponseJson<ApiResponse<LocalAuthUser>>), ApiError> {
+    let ip = request_client_ip(deployment.local_auth(), &headers, &extensions);
     let outcome = handle_login(
         &deployment.db().pool,
         deployment.local_auth(),
         &payload,
         header_text(&headers, header::USER_AGENT),
-        None, // 客户端 IP 需要 ConnectInfo，由任务 C3 接上
+        Some(ip),
     )
     .await?;
     let response_headers = outcome.headers()?;
@@ -364,16 +420,18 @@ pub(crate) async fn handle_change_password(
 pub(crate) async fn change_password(
     State(deployment): State<DeploymentImpl>,
     current: CurrentUser,
+    extensions: Extensions,
     headers: HeaderMap,
     axum::Json(payload): axum::Json<ChangePasswordRequest>,
 ) -> Result<(HeaderMap, ResponseJson<ApiResponse<LocalAuthUser>>), ApiError> {
+    let ip = request_client_ip(deployment.local_auth(), &headers, &extensions);
     let outcome = handle_change_password(
         &deployment.db().pool,
         deployment.local_auth(),
         current.id,
         &payload,
         header_text(&headers, header::USER_AGENT),
-        None,
+        Some(ip),
     )
     .await?;
     let response_headers = outcome.headers()?;
@@ -1068,5 +1126,261 @@ mod tests {
         .await
         .expect_err("停用用户不得改密");
         assert!(matches!(err, ApiError::Unauthorized));
+    }
+
+    // ------------------------------------------------------- C3：登录限速接线
+
+    /// 纯函数的限速逻辑在 `services::local_auth::rate_limit` 里单测过；
+    /// 这一组只钉「handler 真的调用了它」——接线断了纯函数全绿也没用。
+    mod 限速接线 {
+        use services::services::local_auth::rate_limit::USER_IP_MAX_FAILURES;
+
+        use super::*;
+
+        async fn 失败登录(
+            test_db: &TestDb,
+            rt: &LocalAuthRuntime,
+            username: &str,
+            ip: &str,
+        ) -> ApiError {
+            handle_login(
+                test_db.pool(),
+                rt,
+                &登录请求(username, "wrong-password-here"),
+                None,
+                Some(ip.to_string()),
+            )
+            .await
+            .expect_err("密码错误应失败")
+        }
+
+        #[tokio::test]
+        async fn 连续失败到阈值后返回_429() {
+            let test_db = TestDb::new().await;
+            let rt = runtime(ServerMode::Team);
+            建用户(&test_db, "alice", Some("correct-horse-battery")).await;
+
+            for i in 0..USER_IP_MAX_FAILURES {
+                let err = 失败登录(&test_db, &rt, "alice", "1.2.3.4").await;
+                assert!(
+                    matches!(err, ApiError::Unauthorized),
+                    "第 {i} 次应是 401，实际 {err:?}"
+                );
+            }
+            let err = 失败登录(&test_db, &rt, "alice", "1.2.3.4").await;
+            assert!(
+                matches!(err, ApiError::TooManyRequests(_)),
+                "第 {} 次必须是 429，实际 {err:?}",
+                USER_IP_MAX_FAILURES + 1
+            );
+        }
+
+        /// 被限速后连**正确**密码也登不上——否则限速等于没有。
+        #[tokio::test]
+        async fn 被限速时正确密码也登不上() {
+            let test_db = TestDb::new().await;
+            let rt = runtime(ServerMode::Team);
+            建用户(&test_db, "alice", Some("correct-horse-battery")).await;
+            for _ in 0..USER_IP_MAX_FAILURES {
+                let _ = 失败登录(&test_db, &rt, "alice", "1.2.3.4").await;
+            }
+            let err = handle_login(
+                test_db.pool(),
+                &rt,
+                &登录请求("alice", "correct-horse-battery"),
+                None,
+                Some("1.2.3.4".to_string()),
+            )
+            .await
+            .expect_err("限速期内必须拒绝");
+            assert!(matches!(err, ApiError::TooManyRequests(_)), "{err:?}");
+        }
+
+        /// 攻击样例：拿不存在的用户名刷。必须同样计数，
+        /// 否则「换个不存在的用户名」就能无限探测。
+        #[tokio::test]
+        async fn 不存在的用户名同样计数() {
+            let test_db = TestDb::new().await;
+            let rt = runtime(ServerMode::Team);
+            for _ in 0..USER_IP_MAX_FAILURES {
+                let _ = 失败登录(&test_db, &rt, "ghost", "1.2.3.4").await;
+            }
+            let err = 失败登录(&test_db, &rt, "ghost", "1.2.3.4").await;
+            assert!(matches!(err, ApiError::TooManyRequests(_)), "{err:?}");
+        }
+
+        #[tokio::test]
+        async fn 限速按_ip_分桶() {
+            let test_db = TestDb::new().await;
+            let rt = runtime(ServerMode::Team);
+            建用户(&test_db, "alice", Some("correct-horse-battery")).await;
+            for _ in 0..USER_IP_MAX_FAILURES {
+                let _ = 失败登录(&test_db, &rt, "alice", "1.2.3.4").await;
+            }
+            // 另一个 IP 还没被限，仍然是 401 而不是 429。
+            let err = 失败登录(&test_db, &rt, "alice", "5.6.7.8").await;
+            assert!(matches!(err, ApiError::Unauthorized), "{err:?}");
+        }
+
+        #[tokio::test]
+        async fn 成功登录后计数重置() {
+            let test_db = TestDb::new().await;
+            let rt = runtime(ServerMode::Team);
+            建用户(&test_db, "alice", Some("correct-horse-battery")).await;
+
+            for _ in 0..(USER_IP_MAX_FAILURES - 1) {
+                let _ = 失败登录(&test_db, &rt, "alice", "1.2.3.4").await;
+            }
+            handle_login(
+                test_db.pool(),
+                &rt,
+                &登录请求("alice", "correct-horse-battery"),
+                None,
+                Some("1.2.3.4".to_string()),
+            )
+            .await
+            .expect("正确密码应能登录");
+
+            // 计数已清零，再失败 10 次都还是 401。
+            for i in 0..USER_IP_MAX_FAILURES {
+                let err = 失败登录(&test_db, &rt, "alice", "1.2.3.4").await;
+                assert!(matches!(err, ApiError::Unauthorized), "第 {i} 次 {err:?}");
+            }
+        }
+
+        /// 大小写变体不能把计数洗掉。
+        #[tokio::test]
+        async fn 换用户名大小写不能绕过限速() {
+            let test_db = TestDb::new().await;
+            let rt = runtime(ServerMode::Team);
+            建用户(&test_db, "alice", Some("correct-horse-battery")).await;
+            for _ in 0..USER_IP_MAX_FAILURES {
+                let _ = 失败登录(&test_db, &rt, "alice", "1.2.3.4").await;
+            }
+            for 变体 in ["Alice", "ALICE", " alice "] {
+                let err = 失败登录(&test_db, &rt, 变体, "1.2.3.4").await;
+                assert!(
+                    matches!(err, ApiError::TooManyRequests(_)),
+                    "{变体} → {err:?}"
+                );
+            }
+        }
+
+        /// 没有 IP（拿不到对端地址）时不是放行，而是共用 `unknown` 桶。
+        #[tokio::test]
+        async fn ip_缺失时仍然限速() {
+            let test_db = TestDb::new().await;
+            let rt = runtime(ServerMode::Team);
+            建用户(&test_db, "alice", Some("correct-horse-battery")).await;
+            for _ in 0..USER_IP_MAX_FAILURES {
+                let _ = handle_login(
+                    test_db.pool(),
+                    &rt,
+                    &登录请求("alice", "nope-nope-nope"),
+                    None,
+                    None,
+                )
+                .await
+                .expect_err("密码错误应失败");
+            }
+            let err = handle_login(
+                test_db.pool(),
+                &rt,
+                &登录请求("alice", "nope-nope-nope"),
+                None,
+                None,
+            )
+            .await
+            .expect_err("必须被限速");
+            assert!(matches!(err, ApiError::TooManyRequests(_)), "{err:?}");
+        }
+    }
+
+    // ------------------------------------------------------- C3：客户端 IP 提取
+
+    mod 客户端_ip {
+        use std::net::{Ipv4Addr, SocketAddr};
+
+        use super::*;
+
+        fn 头(xff: Option<&str>) -> HeaderMap {
+            let mut headers = HeaderMap::new();
+            if let Some(value) = xff {
+                headers.insert(FORWARDED_FOR_HEADER, value.parse().unwrap());
+            }
+            headers
+        }
+
+        fn 带对端(ip: [u8; 4], port: u16) -> Extensions {
+            let mut ext = Extensions::new();
+            ext.insert(ConnectInfo(SocketAddr::new(
+                std::net::IpAddr::V4(Ipv4Addr::from(ip)),
+                port,
+            )));
+            ext
+        }
+
+        fn 信任代理的运行时(trust: bool) -> LocalAuthRuntime {
+            LocalAuthRuntime::new(
+                ServerSettings {
+                    mode: ServerMode::Team,
+                    trust_proxy: trust,
+                    ..ServerSettings::default()
+                },
+                String::new(),
+            )
+        }
+
+        #[test]
+        fn 默认取对端地址并丢掉端口() {
+            let rt = 信任代理的运行时(false);
+            assert_eq!(
+                request_client_ip(&rt, &头(None), &带对端([10, 0, 0, 7], 54321)),
+                "10.0.0.7"
+            );
+        }
+
+        /// **攻击样例**：客户端自己伪造 `X-Forwarded-For`。
+        /// 默认不信任代理，必须被忽略，否则每次换一个假 IP 就绕开了限速。
+        #[test]
+        fn 不信任代理时伪造的_x_forwarded_for_被忽略() {
+            let rt = 信任代理的运行时(false);
+            for 伪造 in ["1.2.3.4", "1.2.3.4, 5.6.7.8", "::1", "garbage"] {
+                assert_eq!(
+                    request_client_ip(&rt, &头(Some(伪造)), &带对端([10, 0, 0, 7], 1)),
+                    "10.0.0.7",
+                    "{伪造} 不该被采信"
+                );
+            }
+        }
+
+        #[test]
+        fn 显式信任代理后才读第一段() {
+            let rt = 信任代理的运行时(true);
+            assert_eq!(
+                request_client_ip(
+                    &rt,
+                    &头(Some("1.2.3.4, 5.6.7.8")),
+                    &带对端([10, 0, 0, 7], 1)
+                ),
+                "1.2.3.4"
+            );
+            // 垃圾值回落到对端，不能把垃圾当限速 key。
+            assert_eq!(
+                request_client_ip(&rt, &头(Some("not-an-ip")), &带对端([10, 0, 0, 7], 1)),
+                "10.0.0.7"
+            );
+        }
+
+        /// 没装 `into_make_service_with_connect_info` 的场景（tauri / 测试）
+        /// 必须降级成 `unknown`，不能 500 把登录打死。
+        #[test]
+        fn 没有_connect_info_时降级成_unknown() {
+            let rt = 信任代理的运行时(false);
+            assert_eq!(
+                request_client_ip(&rt, &头(None), &Extensions::new()),
+                "unknown"
+            );
+        }
     }
 }

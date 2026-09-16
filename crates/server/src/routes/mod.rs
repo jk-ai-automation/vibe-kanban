@@ -1,7 +1,6 @@
-use axum::{
-    Router,
-    routing::{IntoMakeService, get},
-};
+use std::net::SocketAddr;
+
+use axum::{Router, extract::connect_info::IntoMakeServiceWithConnectInfo, routing::get};
 use tower_http::{compression::CompressionLayer, validate_request::ValidateRequestHeaderLayer};
 
 use crate::{DeploymentImpl, middleware};
@@ -36,7 +35,12 @@ pub mod terminal;
 pub mod webrtc;
 pub mod workspaces;
 
-pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
+/// 带 `ConnectInfo<SocketAddr>` 的 make service。
+///
+/// 必须是 `with_connect_info` 版本：登录限速要按真实对端 IP 分桶，
+/// 换回 `into_make_service()` 会让 handler 里的 `ConnectInfo` 永远取不到，
+/// 所有请求挤进 `"unknown"` 一只桶，限速退化成全局锁死。
+pub fn router(deployment: DeploymentImpl) -> IntoMakeServiceWithConnectInfo<Router, SocketAddr> {
     // /health 从这一组移到免鉴权组（local_auth::public_router）。
     let relay_signed_routes = Router::new()
         .merge(config::router())
@@ -100,5 +104,5 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         .route("/{*path}", get(frontend::serve_frontend))
         .nest("/api", api_routes)
         .layer(CompressionLayer::new())
-        .into_make_service()
+        .into_make_service_with_connect_info::<SocketAddr>()
 }
