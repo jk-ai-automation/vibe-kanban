@@ -5,4 +5,5 @@
 //! [`runtime::LocalAuthRuntime`]。
 
 pub mod password;
+pub mod runtime;
 pub mod token;

@@ -25,6 +25,7 @@ use services::services::{
     file::FileService,
     file_search::FileSearchCache,
     filesystem::FilesystemService,
+    local_auth::runtime::LocalAuthRuntime,
     oauth_credentials::OAuthCredentials,
     pr_monitor::PrMonitorService,
     queued_message::QueuedMessageService,
@@ -35,7 +36,10 @@ use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 use trusted_key_auth::runtime::TrustedKeyAuthRuntime;
 use utils::{
-    assets::{config_path, credentials_path, server_signing_key_path, trusted_keys_path},
+    assets::{
+        config_path, credentials_path, server_settings_path, server_signing_key_path,
+        trusted_keys_path,
+    },
     msg_store::MsgStore,
 };
 use uuid::Uuid;
@@ -66,6 +70,7 @@ pub struct LocalDeployment {
     queued_message_service: QueuedMessageService,
     remote_client: Result<RemoteClient, RemoteClientNotConfigured>,
     auth_context: AuthContext,
+    local_auth: LocalAuthRuntime,
     oauth_handoffs: Arc<RwLock<HashMap<Uuid, PendingHandoff>>>,
     trusted_key_auth: TrustedKeyAuthRuntime,
     relay_signing: RelaySigningService,
@@ -94,6 +99,22 @@ impl Deployment for LocalDeployment {
         services::services::execution_process::migrate_execution_logs_to_files()
             .await
             .map_err(|e| DeploymentError::Other(anyhow::anyhow!("Migration failed: {}", e)))?;
+
+        // 运行模式与本地认证设置。配置文件非法一律让启动失败，不静默退回
+        // personal（免登录）——那是 fail-open。
+        let settings_file =
+            services::services::server_settings::read_server_settings_file(&server_settings_path())
+                .await
+                .map_err(|e| DeploymentError::Other(anyhow::anyhow!("{e}")))?;
+        let server_settings =
+            services::services::server_settings::load_server_settings(settings_file, &|key| {
+                std::env::var(key).ok()
+            })
+            .map_err(|e| DeploymentError::Other(anyhow::anyhow!("{e}")))?;
+        tracing::info!(mode = server_settings.mode.as_str(), "服务端运行模式");
+        // 本机令牌（X-VK-MACHINE-TOKEN）由任务 C5 落盘生成；在那之前是空串，
+        // LocalAuthRuntime::machine_token_matches 对空串一律返回 false。
+        let local_auth = LocalAuthRuntime::new(server_settings, String::new());
 
         let mut raw_config = load_config_from_file(&config_path()).await;
 
@@ -280,6 +301,7 @@ impl Deployment for LocalDeployment {
             queued_message_service,
             remote_client,
             auth_context,
+            local_auth,
             oauth_handoffs,
             trusted_key_auth,
             relay_signing,
@@ -352,6 +374,10 @@ impl Deployment for LocalDeployment {
 
     fn auth_context(&self) -> &AuthContext {
         &self.auth_context
+    }
+
+    fn local_auth(&self) -> &LocalAuthRuntime {
+        &self.local_auth
     }
 
     fn relay_control(&self) -> &Arc<RelayControl> {
