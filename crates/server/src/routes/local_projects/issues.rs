@@ -47,9 +47,9 @@ pub(crate) async fn handle_get(pool: &SqlitePool, id: Uuid) -> Result<Json<Value
 pub(crate) async fn handle_create(
     pool: &SqlitePool,
     payload: CreateIssueRequest,
+    current_user_id: Uuid,
 ) -> Result<Json<TxidResponse>, ApiError> {
-    // TODO(B4)：改用请求上下文里的当前用户，这里先保持个人版行为不变。
-    Issues::create(pool, &payload, db::models::local_project::DEFAULT_USER_ID)
+    Issues::create(pool, &payload, current_user_id)
         .await
         .map_err(map_issue_error)?;
     Ok(txid())
@@ -143,9 +143,10 @@ async fn get_one(
 
 async fn create(
     State(deployment): State<DeploymentImpl>,
+    current_user: crate::middleware::local_session::CurrentUser,
     Json(payload): Json<CreateIssueRequest>,
 ) -> Result<Json<TxidResponse>, ApiError> {
-    handle_create(&deployment.db().pool, payload).await
+    handle_create(&deployment.db().pool, payload, current_user.id).await
 }
 
 async fn update(
@@ -198,7 +199,7 @@ mod tests {
     };
     use db::{
         models::{
-            local_project::{DEFAULT_ORGANIZATION_ID, LocalProjects},
+            local_project::{DEFAULT_ORGANIZATION_ID, DEFAULT_USER_ID, LocalProjects},
             local_project_status::{ProjectStatuses, StageType},
         },
         test_support::TestDb,
@@ -265,12 +266,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn 建需求时落的是传入的当前用户() {
+        let test_db = TestDb::new().await;
+        let (project_id, status_id) = 准备(&test_db).await;
+        let current_user_id = Uuid::from_u128(7);
+
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "指定当前用户"),
+            current_user_id,
+        )
+        .await
+        .unwrap();
+
+        let snapshot = db::models::issue::Issues::find_by_project(test_db.pool(), project_id)
+            .await
+            .unwrap();
+        assert_eq!(snapshot.issues[0].creator_user_id, Some(current_user_id));
+    }
+
+    #[tokio::test]
     async fn 列表用_issues_作为_key() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "第一条"))
-            .await
-            .unwrap();
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "第一条"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         let body = handle_list(test_db.pool(), project_id).await.unwrap().0;
         let rows = body["issues"].as_array().unwrap();
@@ -283,9 +308,13 @@ mod tests {
     async fn 快照不包含任何本地文件路径字段() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "第一条"))
-            .await
-            .unwrap();
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "第一条"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         let body = handle_list(test_db.pool(), project_id).await.unwrap().0;
         let text = body.to_string();
@@ -306,7 +335,12 @@ mod tests {
         let (project_a, _) = 准备(&test_db).await;
         let (_, status_b) = 准备(&test_db).await;
 
-        let result = handle_create(test_db.pool(), 建需求请求(project_a, status_b, "越权")).await;
+        let result = handle_create(
+            test_db.pool(),
+            建需求请求(project_a, status_b, "越权"),
+            DEFAULT_USER_ID,
+        )
+        .await;
         assert!(result.is_err(), "状态列不属于该项目时必须拒绝");
     }
 
@@ -314,12 +348,20 @@ mod tests {
     async fn 批量更新排序成功后按新顺序返回() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "A"))
-            .await
-            .unwrap();
-        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "B"))
-            .await
-            .unwrap();
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "A"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "B"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         let body = handle_list(test_db.pool(), project_id).await.unwrap().0;
         let rows = body["issues"].as_array().unwrap().clone();
@@ -370,6 +412,7 @@ mod tests {
             let _ = handle_create(
                 test_db.pool(),
                 建需求请求(project_id, status_id, &format!("需求 {index}")),
+                DEFAULT_USER_ID,
             )
             .await
             .unwrap();
@@ -395,12 +438,20 @@ mod tests {
     async fn 删除需求只影响目标行() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "留"))
-            .await
-            .unwrap();
-        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "删"))
-            .await
-            .unwrap();
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "留"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "删"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         let body = handle_list(test_db.pool(), project_id).await.unwrap().0;
         let victim: Uuid = body["issues"]
@@ -460,9 +511,13 @@ mod tests {
         let (project_a, _) = 准备(&test_db).await;
         let (_, status_b) = 准备(&test_db).await;
 
-        let err = handle_create(test_db.pool(), 建需求请求(project_a, status_b, "越权"))
-            .await
-            .expect_err("状态列不属于该项目时必须拒绝");
+        let err = handle_create(
+            test_db.pool(),
+            建需求请求(project_a, status_b, "越权"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .expect_err("状态列不属于该项目时必须拒绝");
         断言是_400(err);
     }
 
@@ -472,9 +527,13 @@ mod tests {
         let (project_a, status_a) = 准备(&test_db).await;
         let (project_b, status_b) = 准备(&test_db).await;
 
-        let _ = handle_create(test_db.pool(), 建需求请求(project_b, status_b, "别家的"))
-            .await
-            .unwrap();
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_b, status_b, "别家的"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
         let parent_id: Uuid = handle_list(test_db.pool(), project_b).await.unwrap().0["issues"][0]
             ["id"]
             .as_str()
@@ -484,7 +543,11 @@ mod tests {
 
         let mut request = 建需求请求(project_a, status_a, "子需求");
         request.parent_issue_id = Some(parent_id);
-        断言是_400(handle_create(test_db.pool(), request).await.unwrap_err());
+        断言是_400(
+            handle_create(test_db.pool(), request, DEFAULT_USER_ID)
+                .await
+                .unwrap_err(),
+        );
     }
 
     #[tokio::test]
@@ -494,11 +557,19 @@ mod tests {
 
         let mut request = 建需求请求(project_id, status_id, "超大");
         request.extension_metadata = serde_json::json!({ "blob": "x".repeat(40_000) });
-        断言是_400(handle_create(test_db.pool(), request).await.unwrap_err());
+        断言是_400(
+            handle_create(test_db.pool(), request, DEFAULT_USER_ID)
+                .await
+                .unwrap_err(),
+        );
 
         let mut not_object = 建需求请求(project_id, status_id, "非对象");
         not_object.extension_metadata = serde_json::json!([1, 2, 3]);
-        断言是_400(handle_create(test_db.pool(), not_object).await.unwrap_err());
+        断言是_400(
+            handle_create(test_db.pool(), not_object, DEFAULT_USER_ID)
+                .await
+                .unwrap_err(),
+        );
     }
 
     /// 前端 KanbanIssuePanelContainer 新建需求时发出的真实报文：
@@ -527,7 +598,7 @@ mod tests {
         let payload: CreateIssueRequest =
             serde_json::from_value(body).expect("前端报文必须能反序列化");
 
-        let _ = handle_create(test_db.pool(), payload)
+        let _ = handle_create(test_db.pool(), payload, DEFAULT_USER_ID)
             .await
             .expect("前端真实报文必须创建成功");
 
@@ -547,7 +618,9 @@ mod tests {
         let (project_id, status_id) = 准备(&test_db).await;
         let mut request = 建需求请求(project_id, status_id, "带扩展");
         request.extension_metadata = serde_json::json!({ "a": 1 });
-        let _ = handle_create(test_db.pool(), request).await.unwrap();
+        let _ = handle_create(test_db.pool(), request, DEFAULT_USER_ID)
+            .await
+            .unwrap();
 
         let id: Uuid = handle_list(test_db.pool(), project_id).await.unwrap().0["issues"][0]["id"]
             .as_str()
@@ -589,9 +662,13 @@ mod tests {
     async fn 批量更新里有不存在的需求返回_404() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "A"))
-            .await
-            .unwrap();
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "A"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         let err = handle_bulk_update(
             test_db.pool(),
@@ -695,12 +772,18 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "待开发"))
-            .await
-            .unwrap();
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "待开发"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
         let mut in_dev = 建需求请求(project_id, status_id, "开发中");
         in_dev.status_id = dev.id;
-        let _ = handle_create(test_db.pool(), in_dev).await.unwrap();
+        let _ = handle_create(test_db.pool(), in_dev, DEFAULT_USER_ID)
+            .await
+            .unwrap();
 
         let body = handle_search(
             test_db.pool(),
@@ -721,9 +804,13 @@ mod tests {
     async fn 快照在未截断时也带出_truncated_字段() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "A"))
-            .await
-            .unwrap();
+        let _ = handle_create(
+            test_db.pool(),
+            建需求请求(project_id, status_id, "A"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         let body = handle_list(test_db.pool(), project_id).await.unwrap().0;
         assert_eq!(body["truncated"], serde_json::json!(false));
