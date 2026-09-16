@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO issues\n                       (id, project_id, issue_number, simple_id, status_id, title, description,\n                        priority, start_date, target_date, completed_at, sort_order,\n                        parent_issue_id, parent_issue_sort_order, extension_metadata,\n                        creator_user_id)\n                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)\n                   RETURNING id                      AS \"id!: Uuid\",\n                             project_id              AS \"project_id!: Uuid\",\n                             issue_number            AS \"issue_number!: i32\",\n                             simple_id               AS \"simple_id!\",\n                             status_id               AS \"status_id!: Uuid\",\n                             title                   AS \"title!\",\n                             description,\n                             priority,\n                             start_date              AS \"start_date: DateTime<Utc>\",\n                             target_date             AS \"target_date: DateTime<Utc>\",\n                             completed_at            AS \"completed_at: DateTime<Utc>\",\n                             sort_order              AS \"sort_order!: f64\",\n                             parent_issue_id         AS \"parent_issue_id: Uuid\",\n                             parent_issue_sort_order AS \"parent_issue_sort_order: f64\",\n                             extension_metadata      AS \"extension_metadata!\",\n                             creator_user_id         AS \"creator_user_id: Uuid\",\n                             created_at              AS \"created_at!: DateTime<Utc>\",\n                             updated_at              AS \"updated_at!: DateTime<Utc>\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "project_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "issue_number!: i32",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "simple_id!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "status_id!: Uuid",
+        "ordinal": 4,
+        "type_info": "Blob"
+      },
+      {
+        "name": "title!",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "description",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "priority",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "start_date: DateTime<Utc>",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "target_date: DateTime<Utc>",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "completed_at: DateTime<Utc>",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "sort_order!: f64",
+        "ordinal": 11,
+        "type_info": "Float"
+      },
+      {
+        "name": "parent_issue_id: Uuid",
+        "ordinal": 12,
+        "type_info": "Blob"
+      },
+      {
+        "name": "parent_issue_sort_order: f64",
+        "ordinal": 13,
+        "type_info": "Float"
+      },
+      {
+        "name": "extension_metadata!",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "creator_user_id: Uuid",
+        "ordinal": 15,
+        "type_info": "Blob"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 16,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!: DateTime<Utc>",
+        "ordinal": 17,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 16
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "42e4d93053ee75d38e4b5a782f3a3866b5c0f811a213d06aaecf0493ee229d6b"
+}

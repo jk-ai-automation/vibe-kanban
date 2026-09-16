@@ -29,7 +29,7 @@ pub struct CreateProjectStatusRequest {
     pub hidden: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Deserialize, TS)]
 pub struct UpdateProjectStatusRequest {
     #[serde(default, deserialize_with = "some_if_present")]
     pub name: Option<String>,
