@@ -2583,7 +2583,20 @@ GITHUB_BASE_REF=main ./scripts/check-i18n.sh
 
 ### 12.3 本仓库内未核实的点
 
-13. **`/api/*` 里是否存在用 GET 做写操作的路由**（C1.5）。`registered_endpoints()` 只覆盖 `/api/local`，其余 60+ 个路由文件需人工扫一遍。**这是 SameSite=Lax 安全性的前提。**
+13. ~~**`/api/*` 里是否存在用 GET 做写操作的路由**（C1.5）~~ → **已核实（任务 C 执行时，2026-09-17）：存在，共 4 处。**
+
+    扫描方法：`crates/server/src/routes/` 下 64 个 `.rs` 文件，`grep -n "\bget("` 得 119 处字面匹配，剔除 26 处非路由用法（`HashMap::get`、`headers.get`、`Assets::get`、`reqwest::Client::get` 等），剩 93 处真实 `axum::routing::get` 注册；其中 `local_projects/projections.rs` 的一处在 `for table in EMPTY_TABLES`（8 个表名）里展开，故 `/api/*` 下 GET 路由合计约 **100 条**，逐条读 handler 函数体并追进 service / model 层判定副作用。
+
+    | 路由 | 位置 | 副作用 | 严重性 |
+    |---|---|---|---|
+    | `GET /api/auth/handoff/complete` | `routes/oauth.rs:86`，handler `:156-213`，`finalize_login` `:328-423` | 用 query 里的 `handoff_id`/`app_code` 换 token，`save_credentials` 写凭据文件、`save_config_to_file` 改配置、`tokio::spawn` 拉起 relay 与远端同步 | **高**：经典「OAuth 登录 CSRF」，诱导受害者 GET 一次即可把攻击者账号的凭据写进受害者本机 |
+    | `GET /api/workspaces/{id}/git/status` | `routes/workspaces/git.rs:139,373-389` | `ensure_container_exists` → 建 workspace 目录与 git worktree、`UPDATE workspaces` | 中 |
+    | `GET /api/workspaces/{id}/integration/editor/path` | `routes/workspaces/integration.rs:141,154-163` | 同上，外加 `container().touch()` | 中 |
+    | `GET /api/workspaces/{id}/git/diff/ws` | `routes/workspaces/streams.rs:40-46` | 升级前 `container().touch()` → `UPDATE workspaces SET updated_at` | 低（有防抖，数据不可控） |
+
+    另有两个 WS 端点升级后具备任意命令执行能力（`GET /api/terminal/ws`、`GET /api/ssh-session`），但 `new WebSocket()` 属于子资源请求而非顶层导航，`SameSite=Lax` 不会给它放行 Cookie；C1 的 CSWSH 规则已额外把它们盖住。`GET /api/host/{host_id}/{*tail}` 会把上述攻击面原样代理到配对主机，是放大器而非独立漏洞。
+
+    **结论：`SameSite=Lax` 的前提在本仓库并不成立。** 任务 C 的范围内没有改这 4 条路由（改 `/auth/handoff/complete` 为 POST 会牵连云端登录流程与前端，属于独立任务）。C1 落地后的实际覆盖是：带 Cookie 的**写方法**与 **WebSocket 升级**强制 Origin；带 Cookie 的普通 GET 仍放行缺失 Origin（否则 `<img src="/api/attachments/...">` 这类子资源会被打死）。**遗留风险与后续任务：把 `/api/auth/handoff/complete` 改成 POST，并把 `ensure_container_exists` 从两条 GET 路由里挪走。**
 14. **`publish.yml` 的构建路径是否经过 `local-build.sh`**（I6.1）。
 15. **`useAppNavigation`（`packages/web-core/src/shared/hooks/useAppNavigation.ts`）暴露了哪个「只改 search 不改 path」的方法**（H5.4）。禁止用 `navigate({to:'.'})` 和 `appNavigation.navigate(...)`，守卫脚本会拒。
 16. **`crates/services` 是否可以依赖 `axum`**（E2.1）。当前 `crates/services/Cargo.toml` 没有 axum；本计划已决定把 mock IdP 放 `crates/server`，但若执行者想放 services 需先确认。
