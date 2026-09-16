@@ -420,6 +420,14 @@
     "markIndependentIssue": "标记为独立问题",
     "parentIssue": "父级",
     "subIssueIndicator": "↳",
+    "stage": {
+      "backlog": "待规划",
+      "todo": "待开发",
+      "dev": "开发中",
+      "review": "待评审",
+      "test": "测试中",
+      "done": "已完成"
+    },
     "viewTabs": {
       "active": "活动",
       "all": "全部"

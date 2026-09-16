@@ -420,6 +420,14 @@
     "markIndependentIssue": "独立した課題としてマーク",
     "parentIssue": "親",
     "subIssueIndicator": "↳",
+    "stage": {
+      "backlog": "バックログ",
+      "todo": "未着手",
+      "dev": "開発中",
+      "review": "レビュー中",
+      "test": "テスト中",
+      "done": "完了"
+    },
     "viewTabs": {
       "active": "アクティブ",
       "all": "すべて"

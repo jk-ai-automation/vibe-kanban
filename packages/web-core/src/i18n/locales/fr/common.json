@@ -420,6 +420,14 @@
     "markIndependentIssue": "Marquer comme problème indépendant",
     "parentIssue": "Parent",
     "subIssueIndicator": "↳",
+    "stage": {
+      "backlog": "À planifier",
+      "todo": "À faire",
+      "dev": "En développement",
+      "review": "En revue",
+      "test": "En test",
+      "done": "Terminé"
+    },
     "viewTabs": {
       "active": "Actif",
       "all": "Tout"

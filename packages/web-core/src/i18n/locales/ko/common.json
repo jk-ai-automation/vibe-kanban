@@ -420,6 +420,14 @@
     "markIndependentIssue": "독립 이슈로 표시",
     "parentIssue": "상위",
     "subIssueIndicator": "↳",
+    "stage": {
+      "backlog": "백로그",
+      "todo": "할 일",
+      "dev": "개발 중",
+      "review": "검토 중",
+      "test": "테스트 중",
+      "done": "완료"
+    },
     "viewTabs": {
       "active": "활성",
       "all": "전체"
