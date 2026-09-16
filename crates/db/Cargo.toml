@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 utils = { path = "../utils" }
 executors = { path = "../executors" }
+api-types = { path = "../api-types" }
+tokio = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -19,3 +21,4 @@ serde_with = { workspace = true }
 strum = "0.27.2"
 strum_macros = "0.27.2"
 futures = "0.3.32"
+tempfile = "3"

@@ -8,6 +8,7 @@ use sqlx::{
 use utils::assets::asset_dir;
 
 pub mod models;
+pub mod test_support;
 
 async fn run_migrations(pool: &Pool<Sqlite>) -> Result<(), Error> {
     use std::collections::HashSet;
@@ -81,6 +82,19 @@ impl DBService {
         let options = SqliteConnectOptions::from_str(&database_url)?
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Delete);
+        let pool = SqlitePool::connect_with(options).await?;
+        run_migrations(&pool).await?;
+        Ok(DBService { pool })
+    }
+
+    /// 在指定路径创建并迁移一个独立数据库。
+    /// 供测试与离线工具使用，不读取 asset_dir()，因此不会污染开发数据。
+    pub async fn new_at_path(path: &std::path::Path) -> Result<DBService, Error> {
+        let database_url = format!("sqlite://{}", path.to_string_lossy());
+        let options = SqliteConnectOptions::from_str(&database_url)?
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Delete)
+            .busy_timeout(std::time::Duration::from_secs(10));
         let pool = SqlitePool::connect_with(options).await?;
         run_migrations(&pool).await?;
         Ok(DBService { pool })
