@@ -12,6 +12,7 @@ import { router } from '@web/app/router';
 import { oauthApi } from '@/shared/lib/api';
 import { tokenManager } from '@/shared/lib/auth/tokenManager';
 import { configureAuthRuntime } from '@/shared/lib/auth/runtime';
+import { configureDataSource } from '@/shared/lib/local/dataSource';
 import '@/shared/types/modals';
 import { queryClient } from '@/shared/lib/queryClient';
 import { isTauriApp } from '@/shared/lib/platform';
@@ -76,6 +77,16 @@ if (isTauriApp()) {
   document.addEventListener('gesturestart', (e) => e.preventDefault());
   document.addEventListener('gesturechange', (e) => e.preventDefault());
 }
+
+// 数据源：显式设置 VITE_VK_DATA_SOURCE 时以它为准；
+// 否则没有配置云端基址（VITE_VK_SHARED_API_BASE 为空）就走个人版。
+const dataSourceEnv = import.meta.env.VITE_VK_DATA_SOURCE as
+  | 'local'
+  | 'remote'
+  | undefined;
+configureDataSource(
+  dataSourceEnv ?? (import.meta.env.VITE_VK_SHARED_API_BASE ? 'remote' : 'local')
+);
 
 configureAuthRuntime({
   getToken: () => tokenManager.getToken(),
