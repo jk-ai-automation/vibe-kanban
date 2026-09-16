@@ -78,6 +78,33 @@
   "error": "錯誤",
   "signIn": "登入",
   "signOut": "登出",
+  "localAuth": {
+    "signInTitle": "登入 Vibe Kanban",
+    "signInSubtitle": "此伺服器執行於團隊模式，需要帳號登入。",
+    "username": "使用者名稱",
+    "password": "密碼",
+    "signIn": "登入",
+    "signingIn": "登入中…",
+    "invalidCredentials": "使用者名稱或密碼錯誤。",
+    "rateLimited": "嘗試次數過多，請稍後再試。",
+    "networkError": "無法連線伺服器，請檢查網路後重試。",
+    "loading": "載入中…",
+    "checking": "檢查中…",
+    "retry": "重新檢查",
+    "orContinueWith": "或使用以下方式登入",
+    "setupTitle": "初始化團隊",
+    "setupDescription": "已啟用團隊模式，但尚無管理員帳號。",
+    "setupPending": "目前的伺服器版本尚未提供初始化精靈介面。請先在伺服器上建立第一個管理員，再點擊重新檢查。",
+    "errors": {
+      "usernameRequired": "請輸入使用者名稱。",
+      "passwordRequired": "請輸入密碼。"
+    },
+    "providers": {
+      "feishu": "飛書",
+      "lark": "Lark",
+      "google": "Google"
+    }
+  },
   "oauth": {
     "title": "登入 Vibe Kanban",
     "description": "登入以加入組織並與團隊共享任務",

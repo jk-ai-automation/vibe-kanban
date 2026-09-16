@@ -82,6 +82,33 @@
   "personal": "Personal",
   "signIn": "Sign in",
   "signOut": "Sign out",
+  "localAuth": {
+    "signInTitle": "Sign in to Vibe Kanban",
+    "signInSubtitle": "This server runs in team mode and requires an account.",
+    "username": "Username",
+    "password": "Password",
+    "signIn": "Sign in",
+    "signingIn": "Signing in…",
+    "invalidCredentials": "Incorrect username or password.",
+    "rateLimited": "Too many attempts. Please wait a moment and try again.",
+    "networkError": "Cannot reach the server. Please check your connection and try again.",
+    "loading": "Loading…",
+    "checking": "Checking…",
+    "retry": "Check again",
+    "orContinueWith": "Or continue with",
+    "setupTitle": "Set up your team",
+    "setupDescription": "Team mode is enabled but no administrator account exists yet.",
+    "setupPending": "The setup wizard endpoint is not available on this server build yet. Create the first administrator from the server host, then check again.",
+    "errors": {
+      "usernameRequired": "Enter your username.",
+      "passwordRequired": "Enter your password."
+    },
+    "providers": {
+      "feishu": "Feishu",
+      "lark": "Lark",
+      "google": "Google"
+    }
+  },
   "oauth": {
     "title": "Sign in to Vibe Kanban",
     "description": "Sign in to join organizations and share tasks with your team",

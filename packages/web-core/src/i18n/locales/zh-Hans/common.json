@@ -78,6 +78,33 @@
   "error": "错误",
   "signIn": "登录",
   "signOut": "退出登录",
+  "localAuth": {
+    "signInTitle": "登录 Vibe Kanban",
+    "signInSubtitle": "此服务器运行在团队模式，需要账号登录。",
+    "username": "用户名",
+    "password": "密码",
+    "signIn": "登录",
+    "signingIn": "登录中…",
+    "invalidCredentials": "用户名或密码错误。",
+    "rateLimited": "尝试次数过多，请稍后再试。",
+    "networkError": "无法连接服务器，请检查网络后重试。",
+    "loading": "加载中…",
+    "checking": "检测中…",
+    "retry": "重新检测",
+    "orContinueWith": "或使用以下方式登录",
+    "setupTitle": "初始化团队",
+    "setupDescription": "已开启团队模式，但还没有管理员账号。",
+    "setupPending": "当前服务端版本还没有提供初始化向导接口。请在服务器上创建第一个管理员后，再点击重新检测。",
+    "errors": {
+      "usernameRequired": "请输入用户名。",
+      "passwordRequired": "请输入密码。"
+    },
+    "providers": {
+      "feishu": "飞书",
+      "lark": "Lark",
+      "google": "Google"
+    }
+  },
   "oauth": {
     "title": "登录 Vibe Kanban",
     "description": "登录以加入组织并与团队共享任务",

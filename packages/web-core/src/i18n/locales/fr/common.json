@@ -78,6 +78,33 @@
   "error": "Erreur",
   "signIn": "Se connecter",
   "signOut": "Se déconnecter",
+  "localAuth": {
+    "signInTitle": "Connexion à Vibe Kanban",
+    "signInSubtitle": "Ce serveur fonctionne en mode équipe et nécessite un compte.",
+    "username": "Nom d'utilisateur",
+    "password": "Mot de passe",
+    "signIn": "Se connecter",
+    "signingIn": "Connexion…",
+    "invalidCredentials": "Nom d'utilisateur ou mot de passe incorrect.",
+    "rateLimited": "Trop de tentatives. Patientez un instant puis réessayez.",
+    "networkError": "Impossible de joindre le serveur. Vérifiez votre connexion et réessayez.",
+    "loading": "Chargement…",
+    "checking": "Vérification…",
+    "retry": "Vérifier à nouveau",
+    "orContinueWith": "Ou continuer avec",
+    "setupTitle": "Configurer votre équipe",
+    "setupDescription": "Le mode équipe est activé mais aucun compte administrateur n'existe encore.",
+    "setupPending": "Cette version du serveur ne propose pas encore l'assistant de configuration. Créez le premier administrateur depuis le serveur puis vérifiez à nouveau.",
+    "errors": {
+      "usernameRequired": "Saisissez votre nom d'utilisateur.",
+      "passwordRequired": "Saisissez votre mot de passe."
+    },
+    "providers": {
+      "feishu": "Feishu",
+      "lark": "Lark",
+      "google": "Google"
+    }
+  },
   "oauth": {
     "title": "Se connecter à Vibe Kanban",
     "description": "Connectez-vous pour rejoindre des organisations et partager des tâches avec votre équipe",

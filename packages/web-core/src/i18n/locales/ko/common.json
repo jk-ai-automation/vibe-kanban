@@ -78,6 +78,33 @@
   "error": "오류",
   "signIn": "로그인",
   "signOut": "로그아웃",
+  "localAuth": {
+    "signInTitle": "Vibe Kanban에 로그인",
+    "signInSubtitle": "이 서버는 팀 모드로 실행 중이며 계정이 필요합니다.",
+    "username": "사용자 이름",
+    "password": "비밀번호",
+    "signIn": "로그인",
+    "signingIn": "로그인 중…",
+    "invalidCredentials": "사용자 이름 또는 비밀번호가 올바르지 않습니다.",
+    "rateLimited": "시도가 너무 많습니다. 잠시 후 다시 시도하세요.",
+    "networkError": "서버에 연결할 수 없습니다. 연결을 확인한 후 다시 시도하세요.",
+    "loading": "불러오는 중…",
+    "checking": "확인 중…",
+    "retry": "다시 확인",
+    "orContinueWith": "또는 다음으로 계속",
+    "setupTitle": "팀 초기 설정",
+    "setupDescription": "팀 모드가 켜져 있지만 관리자 계정이 아직 없습니다.",
+    "setupPending": "이 서버 빌드에는 아직 초기 설정 마법사 엔드포인트가 없습니다. 서버에서 첫 관리자를 만든 후 다시 확인하세요.",
+    "errors": {
+      "usernameRequired": "사용자 이름을 입력하세요.",
+      "passwordRequired": "비밀번호를 입력하세요."
+    },
+    "providers": {
+      "feishu": "Feishu",
+      "lark": "Lark",
+      "google": "Google"
+    }
+  },
   "oauth": {
     "title": "Vibe Kanban 로그인",
     "description": "로그인하여 조직에 참여하고 팀과 작업을 공유하세요",
