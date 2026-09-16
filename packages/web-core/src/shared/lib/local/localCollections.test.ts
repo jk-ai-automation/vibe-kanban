@@ -47,9 +47,9 @@ describe('patchToWrites', () => {
   });
 
   it('remove 变成 delete，并带上 id 以便按主键删除', () => {
-    expect(patchToWrites([{ op: 'remove', path: '/issues/a' }], 'issues')).toEqual(
-      [{ type: 'delete', value: { id: 'a' } }]
-    );
+    expect(
+      patchToWrites([{ op: 'remove', path: '/issues/a' }], 'issues')
+    ).toEqual([{ type: 'delete', value: { id: 'a' } }]);
   });
 
   it('忽略其他表的 patch', () => {
@@ -175,13 +175,11 @@ describe('buildLocalMutationHandlers', () => {
   });
 
   it('接口报错时抛出服务端文案，且不刷新集合', async () => {
-    const request = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ message: '需求标题不能为空' }), {
-          status: 400,
-        })
-      );
+    const request = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: '需求标题不能为空' }), {
+        status: 400,
+      })
+    );
     const refresh = vi.fn().mockResolvedValue(undefined);
     const handlers = buildLocalMutationHandlers({
       name: 'Issue',

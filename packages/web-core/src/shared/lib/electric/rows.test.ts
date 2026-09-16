@@ -34,9 +34,7 @@ describe('extractFallbackRows', () => {
   });
 
   it('响应不是对象时抛错', () => {
-    expect(() => extractFallbackRows(null, 'issues')).toThrow(
-      /not an object/
-    );
+    expect(() => extractFallbackRows(null, 'issues')).toThrow(/not an object/);
   });
 
   it('缺少目标数组时抛错并带上表名', () => {

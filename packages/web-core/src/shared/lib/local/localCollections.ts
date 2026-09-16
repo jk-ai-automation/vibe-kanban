@@ -301,7 +301,10 @@ export function createLocalShapeCollection<TRow extends ElectricRow>(
             JsonPatch?: Operation[];
           };
           if (!message.JsonPatch) return;
-          applyWrites(syncParams, patchToWrites(message.JsonPatch, shape.table));
+          applyWrites(
+            syncParams,
+            patchToWrites(message.JsonPatch, shape.table)
+          );
         } catch {
           // 收到无法解析的帧时忽略，下一次快照会纠正状态
         }

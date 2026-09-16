@@ -65,7 +65,11 @@ export function resolveLocalShapeEndpoint(
 
   const paramName = ALLOWED_PARAM[shape.table] ?? null;
   if (paramName === null) {
-    return { kind: 'rest', path: `${LOCAL_API_PREFIX}/${resource}`, wsPath: null };
+    return {
+      kind: 'rest',
+      path: `${LOCAL_API_PREFIX}/${resource}`,
+      wsPath: null,
+    };
   }
 
   const value = params[paramName];
