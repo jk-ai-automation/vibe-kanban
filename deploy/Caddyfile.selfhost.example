@@ -1,0 +1,58 @@
+# 自建部署的 HTTPS 反向代理样例（Caddy v2）。
+#
+# 仓库根目录还有一个 Caddyfile.example，那是开发用的 relay 反代，用途完全不同，
+# 不要互相覆盖。
+#
+# 用法：把 kanban.example.com 换成你自己的域名，放到 /etc/caddy/Caddyfile，
+# `caddy reload`。Caddy 会自动申请并续期 Let's Encrypt 证书——前提是这个域名
+# 能从公网解析到这台机器，且 80/443 可达。只在内网用域名的话，用 Caddy 的
+# internal CA（见文件末尾）或者自己签证书。
+
+kanban.example.com {
+    encode gzip
+
+    reverse_proxy 127.0.0.1:8080 {
+        # X-Forwarded-For 必须**覆写**而不是追加。Caddy 的 header_up 用
+        # {remote_host}（直连对端 IP）整个替换掉这个头，客户端自己伪造的
+        # X-Forwarded-For 会被丢弃。
+        #
+        # 这一条是安全要求，不是可选项：后端的 VK_TRUST_PROXY=1 会**无条件**
+        # 采信 X-Forwarded-For 的第一段（crates/services/.../rate_limit.rs 的
+        # client_ip），不校验上游 IP。反代若改成 header_up +X-Forwarded-For
+        # （追加模式），攻击者只要自带一个头，就能给每次登录尝试换一个假 IP，
+        # 登录限速直接失效。
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        # WebSocket（实时看板推送）：Caddy v2 默认透传 Upgrade，不用额外配置。
+        # 长任务的日志流别被代理提前掐断。
+        flush_interval -1
+    }
+}
+
+# 配套的后端环境变量（三条缺一不可）：
+#
+#   VK_MODE=team
+#   HOST=127.0.0.1                  # 只监听回环，外部一律走 Caddy
+#   BACKEND_PORT=8080
+#   VK_TRUST_PROXY=1                # 否则限速按代理 IP 分桶，一个人触发，所有人被封
+#   VK_PUBLIC_BASE_URL=https://kanban.example.com   # Cookie 带 Secure、OAuth 回调正确
+#   VK_ALLOWED_ORIGINS=https://kanban.example.com
+#
+# HOST=127.0.0.1 很重要：上了反代之后如果后端还监听 0.0.0.0，同网段的人可以
+# 绕过 Caddy 直连 8080，明文、且带着 VK_TRUST_PROXY=1（这时他们自带的
+# X-Forwarded-For 会被原样采信，限速形同虚设）。
+
+# ---------------------------------------------------------------------------
+# 内网域名、拿不到公网证书时：用 Caddy 的内部 CA 自签。
+# 每台客户端都要手工信任 Caddy 的根证书，否则浏览器会报警告。
+#
+# kanban.lan {
+#     tls internal
+#     encode gzip
+#     reverse_proxy 127.0.0.1:8080 {
+#         header_up X-Forwarded-For {remote_host}
+#         header_up X-Forwarded-Proto {scheme}
+#         flush_interval -1
+#     }
+# }
