@@ -22,6 +22,17 @@ pub const HANDOFF_NONCE_COOKIE: &str = "vk_handoff";
 /// 泄漏面比 `Path=/` 小一圈。清除时的 `Path` 必须与下发时**逐字一致**，
 /// 否则浏览器会认为是另一条 Cookie 而删不掉——所以抽成常量共用。
 pub const HANDOFF_NONCE_PATH: &str = "/api/auth/handoff/complete";
+/// 第三方登录（飞书/Lark/Google）的一次性 nonce Cookie 名。
+///
+/// 与云端 handoff 的 `vk_handoff` **刻意分开**：两条流程的 `Path`、生命周期、
+/// 适用模式都不同，共用一个名字会让其中一条的清除把另一条也删掉。
+pub const OAUTH_NONCE_COOKIE: &str = "vk_oauth";
+/// nonce Cookie 的 `Path`。
+///
+/// 收窄到第三方登录这一组路径（`/start` 与 `/{provider}/callback` 都在它下面）。
+/// 清除时的属性必须与下发时逐字一致，所以抽成常量共用。
+pub const OAUTH_NONCE_PATH: &str = "/api/local-auth/oauth";
+
 /// 本机进程（MCP）的免会话凭据请求头名。
 ///
 /// 定义在 `utils` 里：发送端 `crates/mcp` 不依赖本 crate，只有 `utils`
@@ -54,6 +65,25 @@ pub fn generate_invite_code() -> String {
 
 /// 生成首启初始化令牌。同上，一次性、只存在于进程内存里。
 pub fn generate_setup_token() -> String {
+    random_token()
+}
+
+/// 生成第三方登录的 `state`。它会出现在授权链接与回调 URL 里
+/// （也就是浏览器历史、代理日志里），所以熵必须取满 256 位。
+pub fn generate_oauth_state() -> String {
+    random_token()
+}
+
+/// 生成第三方登录的浏览器绑定 nonce。只走 Cookie，不进 URL。
+pub fn generate_oauth_nonce() -> String {
+    random_token()
+}
+
+/// 生成 PKCE 的 `code_verifier`。
+///
+/// RFC 7636 要求 43-128 个 unreserved 字符；43 个 base64url 字符正好在下界，
+/// 且与本模块其它令牌同源（32 字节 `OsRng`）。
+pub fn generate_pkce_verifier() -> String {
     random_token()
 }
 
@@ -170,6 +200,34 @@ pub fn build_handoff_nonce_cookie(nonce: &str, max_age_secs: u64, secure: bool) 
 pub fn build_handoff_nonce_clear_cookie(secure: bool) -> String {
     let mut cookie = format!(
         "{HANDOFF_NONCE_COOKIE}=; HttpOnly; SameSite=Lax; Path={HANDOFF_NONCE_PATH}; Max-Age=0"
+    );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+/// 第三方登录的一次性 nonce Cookie。
+///
+/// - **HttpOnly**：前端从不需要读它，XSS 也偷不走。
+/// - **SameSite=Lax**：回调是从提供方跳回来的**跨站顶层导航**，`Strict`
+///   会让浏览器不带这条 Cookie，第三方登录就永远失败。
+/// - `max_age_secs` 取 `state` 的 TTL（10 分钟），不跟会话 TTL 走。
+pub fn build_oauth_nonce_cookie(nonce: &str, max_age_secs: u64, secure: bool) -> String {
+    let mut cookie = format!(
+        "{OAUTH_NONCE_COOKIE}={}; HttpOnly; SameSite=Lax; Path={OAUTH_NONCE_PATH}; Max-Age={max_age_secs}",
+        sanitize_cookie_value(nonce),
+    );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+/// 用完即焚：属性必须与 [`build_oauth_nonce_cookie`] 一致才删得掉。
+pub fn build_oauth_nonce_clear_cookie(secure: bool) -> String {
+    let mut cookie = format!(
+        "{OAUTH_NONCE_COOKIE}=; HttpOnly; SameSite=Lax; Path={OAUTH_NONCE_PATH}; Max-Age=0"
     );
     if secure {
         cookie.push_str("; Secure");
@@ -308,6 +366,58 @@ mod tests {
         assert!(csrf.starts_with("vk_csrf=; "));
         assert!(csrf.contains("Max-Age=0"));
         assert!(!csrf.contains("HttpOnly"));
+    }
+
+    /// 第三方登录的 nonce Cookie：HttpOnly（XSS 偷不走）、Lax（跨站顶层导航
+    /// 回来时必须带上）、Path 收窄到 oauth 那一组、TTL 跟 state 走。
+    #[test]
+    fn oauth_nonce_cookie_属性() {
+        let cookie = build_oauth_nonce_cookie("nonce-1", 600, false);
+        assert_eq!(
+            cookie,
+            "vk_oauth=nonce-1; HttpOnly; SameSite=Lax; Path=/api/local-auth/oauth; Max-Age=600"
+        );
+        assert!(build_oauth_nonce_cookie("n", 600, true).ends_with("; Secure"));
+
+        // `Strict` 会让提供方跳回来的那一次导航带不上 Cookie，登录必然失败。
+        assert!(!cookie.contains("SameSite=Strict"));
+        // 会话 Cookie 的 Path=/ 覆盖面更大，nonce 不该跟着放宽。
+        assert!(!cookie.contains("Path=/;"));
+
+        let cleared = build_oauth_nonce_clear_cookie(false);
+        assert!(cleared.starts_with("vk_oauth=; "));
+        assert!(cleared.contains("Max-Age=0"));
+        // 清除时属性必须与下发时逐字一致，否则浏览器当成另一条 Cookie 删不掉。
+        assert!(cleared.contains("Path=/api/local-auth/oauth"));
+        assert!(cleared.contains("HttpOnly") && cleared.contains("SameSite=Lax"));
+    }
+
+    /// 与云端 handoff 的 nonce 是两条独立的 Cookie，互不覆盖。
+    #[test]
+    fn oauth_nonce_与云端_handoff_nonce_不同名() {
+        assert_ne!(OAUTH_NONCE_COOKIE, HANDOFF_NONCE_COOKIE);
+        assert_ne!(OAUTH_NONCE_PATH, HANDOFF_NONCE_PATH);
+    }
+
+    #[test]
+    fn oauth_相关令牌都是高熵随机串() {
+        let mut seen = HashSet::new();
+        for _ in 0..200 {
+            for token in [
+                generate_oauth_state(),
+                generate_oauth_nonce(),
+                generate_pkce_verifier(),
+            ] {
+                assert_eq!(token.len(), 43);
+                assert!(
+                    token
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                    "{token} 含非 unreserved 字符"
+                );
+                assert!(seen.insert(token), "出现重复，随机源有问题");
+            }
+        }
     }
 
     /// 令牌是我们自己生成的，正常不会含 Cookie 语法字符；但万一哪天有调用方

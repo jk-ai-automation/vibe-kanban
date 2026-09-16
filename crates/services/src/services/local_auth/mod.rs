@@ -6,6 +6,7 @@
 
 pub mod csrf;
 pub mod machine_token;
+pub mod oauth;
 pub mod password;
 pub mod rate_limit;
 pub mod runtime;

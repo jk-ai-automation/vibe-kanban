@@ -37,11 +37,26 @@ pub const DEFAULT_SESSION_TTL_DAYS: u32 = 30;
 /// 会话有效期上限（天）。挡住「写个超大数当成永不过期」。
 pub const MAX_SESSION_TTL_DAYS: u32 = 3650;
 
-/// `server.json` 里的 OAuth 凭据。两项都可能缺失，缺一即视为未配置。
+/// `server.json` 里的 OAuth 凭据与端点覆盖。
+///
+/// `client_id` / `client_secret` 缺一即视为未配置。
+///
+/// 四个端点/权限项之所以可覆盖，是因为它们**在本机无法核实**：
+/// 飞书的换令牌端点已经从 v2 迁到 v3 而 Lark 侧仍是 v2，两边的版本节奏不同步；
+/// 拿到 `union_id` / `name` / `email` 所需的最小权限点字符串必须在各自的
+/// 开发者后台权限管理页核对。把它们写死在代码里意味着「对方改了版本就得发版」，
+/// 所以一律做成配置项，预置值只是初值。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OAuthCredentialsFile {
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+    pub authorize_url: Option<String>,
+    pub token_url: Option<String>,
+    pub userinfo_url: Option<String>,
+    pub scopes: Option<String>,
+    /// 是否在授权请求里带 PKCE（`code_challenge` / `code_verifier`）。
+    /// 不配则按提供方的预置值，见 `local_auth::oauth`。
+    pub pkce: Option<bool>,
 }
 
 /// `asset_dir()/server.json` 的原始形态。全部字段可选，缺失即用默认值。
@@ -58,10 +73,17 @@ pub struct ServerSettingsFile {
 }
 
 /// 一个提供方的完整凭据。只有 id 与 secret 都非空才会构造出来。
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// 四个 `Option` 覆盖项为 `None` 时用 `local_auth::oauth` 里的预置值。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OAuthClientCredentials {
     pub client_id: String,
     pub client_secret: String,
+    pub authorize_url: Option<String>,
+    pub token_url: Option<String>,
+    pub userinfo_url: Option<String>,
+    pub scopes: Option<String>,
+    pub pkce: Option<bool>,
 }
 
 /// 环境变量与配置文件合并后的最终设置。
@@ -173,11 +195,37 @@ pub fn load_server_settings(
             .or_else(|| non_blank(from_file.and_then(|c| c.client_secret.as_deref())));
         // 缺一不可：半配置的提供方会在登录页露出一个必然失败的按钮。
         if let (Some(client_id), Some(client_secret)) = (client_id, client_secret) {
+            let override_url = |suffix: &str, from_file: Option<&str>| {
+                env_str(env, &format!("VK_OAUTH_{upper}_{suffix}")).or_else(|| non_blank(from_file))
+            };
+            let pkce = match env_str(env, &format!("VK_OAUTH_{upper}_PKCE")) {
+                Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                    "1" | "true" => Some(true),
+                    "0" | "false" => Some(false),
+                    // 拼错不应静默改变行为，回落到「按提供方预置值」。
+                    _ => from_file.and_then(|c| c.pkce),
+                },
+                None => from_file.and_then(|c| c.pkce),
+            };
             providers.insert(
                 provider.to_string(),
                 OAuthClientCredentials {
                     client_id,
                     client_secret,
+                    authorize_url: override_url(
+                        "AUTHORIZE_URL",
+                        from_file.and_then(|c| c.authorize_url.as_deref()),
+                    ),
+                    token_url: override_url(
+                        "TOKEN_URL",
+                        from_file.and_then(|c| c.token_url.as_deref()),
+                    ),
+                    userinfo_url: override_url(
+                        "USERINFO_URL",
+                        from_file.and_then(|c| c.userinfo_url.as_deref()),
+                    ),
+                    scopes: override_url("SCOPES", from_file.and_then(|c| c.scopes.as_deref())),
+                    pkce,
                 },
             );
         }
@@ -378,6 +426,7 @@ mod tests {
             OAuthCredentialsFile {
                 client_id: Some("from-file".to_string()),
                 client_secret: Some("file-secret".to_string()),
+                ..Default::default()
             },
         );
         let file = ServerSettingsFile {
@@ -390,6 +439,57 @@ mod tests {
         assert_eq!(creds.client_secret, "file-secret");
     }
 
+    /// 端点与权限点必须可覆盖：飞书/Lark 的令牌端点版本节奏不同步，
+    /// 最小权限点字符串也只能在各自后台核对，写死等于「对方改版就得发版」。
+    #[test]
+    fn oauth_端点与权限点可以被配置覆盖() {
+        let mut oauth = BTreeMap::new();
+        oauth.insert(
+            "lark".to_string(),
+            OAuthCredentialsFile {
+                client_id: Some("a".to_string()),
+                client_secret: Some("b".to_string()),
+                token_url: Some(
+                    "https://open.larksuite.com/open-apis/authen/v3/oauth/token".into(),
+                ),
+                scopes: Some("contact:user.id:readonly".to_string()),
+                pkce: Some(true),
+                ..Default::default()
+            },
+        );
+        let file = ServerSettingsFile {
+            oauth: Some(oauth),
+            ..Default::default()
+        };
+        let creds = load(Some(file.clone()), &[]).unwrap().providers["lark"].clone();
+        assert_eq!(
+            creds.token_url.as_deref(),
+            Some("https://open.larksuite.com/open-apis/authen/v3/oauth/token")
+        );
+        assert_eq!(creds.scopes.as_deref(), Some("contact:user.id:readonly"));
+        assert_eq!(creds.pkce, Some(true));
+        assert!(creds.authorize_url.is_none(), "没覆盖的项应保持 None");
+
+        // 环境变量优先，且能把 pkce 关掉。
+        let creds = load(
+            Some(file),
+            &[
+                ("VK_OAUTH_LARK_TOKEN_URL", "https://mock.test/token"),
+                ("VK_OAUTH_LARK_USERINFO_URL", " https://mock.test/user "),
+                ("VK_OAUTH_LARK_PKCE", "0"),
+            ],
+        )
+        .unwrap()
+        .providers["lark"]
+            .clone();
+        assert_eq!(creds.token_url.as_deref(), Some("https://mock.test/token"));
+        assert_eq!(
+            creds.userinfo_url.as_deref(),
+            Some("https://mock.test/user")
+        );
+        assert_eq!(creds.pkce, Some(false));
+    }
+
     #[test]
     fn 未知提供方不会被读进来() {
         let mut oauth = BTreeMap::new();
@@ -398,6 +498,7 @@ mod tests {
             OAuthCredentialsFile {
                 client_id: Some("a".to_string()),
                 client_secret: Some("b".to_string()),
+                ..Default::default()
             },
         );
         let file = ServerSettingsFile {

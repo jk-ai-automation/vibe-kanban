@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::rate_limit::LoginRateLimiter;
+use super::{oauth::OAuthStateStore, rate_limit::LoginRateLimiter};
 use crate::services::server_settings::{ServerMode, ServerSettings};
 
 /// 首启初始化令牌的有效期：30 分钟。
@@ -37,6 +37,7 @@ pub struct LocalAuthRuntime {
     machine_token: Arc<str>,
     login_limiter: Arc<Mutex<LoginRateLimiter>>,
     setup_token: Arc<Mutex<Option<SetupToken>>>,
+    oauth_states: Arc<Mutex<OAuthStateStore>>,
 }
 
 impl LocalAuthRuntime {
@@ -48,7 +49,22 @@ impl LocalAuthRuntime {
             machine_token: Arc::from(machine_token.as_str()),
             login_limiter: Arc::new(Mutex::new(LoginRateLimiter::new())),
             setup_token: Arc::new(Mutex::new(None)),
+            oauth_states: Arc::new(Mutex::new(OAuthStateStore::new())),
         }
+    }
+
+    /// 第三方登录的 `state` 表。跨请求共享（`/start` 写、`/callback` 读），
+    /// 所以必须挂在运行时上；**不要**在持锁期间 `await`。
+    pub fn oauth_states(&self) -> MutexGuard<'_, OAuthStateStore> {
+        self.oauth_states
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 成员实际访问的地址。第三方登录的 `redirect_uri` 从它拼出来——
+    /// **不能**用请求的 `Host` 头，那是攻击者可控的。
+    pub fn public_base_url(&self) -> Option<&str> {
+        self.settings.public_base_url.as_deref()
     }
 
     /// 登录限速器。跨请求共享，**不要**在持锁期间 `await`。
@@ -169,7 +185,7 @@ impl LocalAuthRuntime {
 /// 长度不同时提前返回——长度本来就能从别处观察到，不是秘密。
 /// 全仓库的令牌比对都必须走这里，**不得**用 `==`：`==` 在第一个不同字节
 /// 就短路返回，攻击者可以按字节逐位试出正确令牌。
-fn constant_time_eq(expected: &str, candidate: &str) -> bool {
+pub fn constant_time_eq(expected: &str, candidate: &str) -> bool {
     use subtle::ConstantTimeEq;
 
     if expected.is_empty() || candidate.is_empty() {
@@ -236,6 +252,7 @@ mod tests {
                 OAuthClientCredentials {
                     client_id: "id".to_string(),
                     client_secret: "secret".to_string(),
+                    ..OAuthClientCredentials::default()
                 },
             );
         }
