@@ -314,7 +314,6 @@ mod tests {
         assert!(!cookie.contains('\r') && !cookie.contains('\n'), "{cookie}");
     }
 
-    #[test]
     /// handoff nonce Cookie 的每一条属性都是安全前提，逐条钉死。
     #[test]
     fn handoff_nonce_cookie_属性() {
