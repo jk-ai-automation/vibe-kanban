@@ -19,10 +19,10 @@
 |---|---|---|
 | 本地 `/api/*` **无任何身份认证**，只有 Origin 同源校验 | `crates/server/src/routes/mod.rs:38-90`、`middleware/origin.rs:56-79` | 一旦监听 `0.0.0.0`，同网段任何浏览器都是全权限。团队版必须先补认证 |
 | 本地 SQLite **没有** users/sessions/权限表 | `crates/db/migrations/` 80 个迁移里没有 | 需要新建，字段可复用已预留的 `creator_user_id`/`author_id` |
-| 所有写入硬编码默认用户/组织 | `crates/db/src/models/local_project.rs:9-11` 及约十处引用 | 换成请求上下文里的当前用户即可，**不需要改表结构** |
-| 数据变更推送是 **SSE**（`/api/events`），不是 WebSocket | `crates/services/src/services/events.rs`、`routes/events.rs:13-21` | 认证走 Cookie 时 SSE 天然带凭据，改动最小 |
+| 所有写入硬编码默认用户/组织；生产代码只有 4 处 | `local_project.rs:88`、`issue.rs:429`、`issue_side.rs:332`、`projections.rs:115`（其余 30+ 处在 `#[cfg(test)]`） | 换成请求上下文里的当前用户即可，**不需要改表结构** |
+| 后端有 SSE `/api/events`，但**前端不消费它**；实时通道是 WebSocket `/api/issues/streams/ws` | `routes/events.rs:15-27`、`routes/issues.rs:21-77`、前端 `localCollections.ts:288-321` | Cookie 会自动带上，但 WebSocket 不受同源策略保护，必须在握手时校验 Origin（见 6.3） |
 | 变更钩子表白名单：workspaces、execution_processes、scratch、issues、project_statuses、issue_comments | `events.rs:87-141` | 新表若要推送需登记；且 `id` 必须是第 0 列 |
-| 前端本地请求是裸 `fetch`，不带任何凭据 | `shared/lib/localApiTransport.ts:91-103` | 改成 `credentials: 'include'` 即可，无需自建 token 管理 |
+| 前端本地请求是裸 `fetch`，唯一收口在 `localApiTransport.ts:111-116` | 同源 fetch 默认就带 Cookie，**不需要** `credentials:'include'`（反而会触发 CORS 预检）；要加的是 CSRF 头 |
 | 监听地址默认 `127.0.0.1`，端口来自 `BACKEND_PORT`/`PORT` | `crates/server/src/main.rs:115-121` | 团队版显式设 `0.0.0.0`，不是硬编码死锁 |
 | 前端 dist 编译期嵌入二进制 | `routes/frontend.rs:7-9`（RustEmbed） | 部署就是「拷一个可执行文件」，天然满足「无 Docker 直接部署」 |
 | 数据目录 `ProjectDirs::from("ai","bloop","vibe-kanban")` | `crates/utils/src/assets.rs:23-27` | 备份 = 备份该目录 |
@@ -40,7 +40,7 @@
 4. 运行模式：`personal`（默认，免登录）/ `team`（强制登录），一个二进制两种模式。
 5. 成员管理：管理员建号/停用/重置密码/改角色；邀请链接注册。
 6. 身份落地：写入记录时用真实用户；个人版继续用固定本机用户，历史数据不受影响。
-7. 鉴权中间件覆盖 `/api/*` 与 `/api/events`；写操作做 CSRF 双重校验。
+7. 鉴权中间件覆盖 `/api/*`、SSE 与 WebSocket；写操作做 CSRF 双重校验；本机工具用 `X-VK-MACHINE-TOKEN` 豁免。
 8. 界面优化：信息架构、流程化看板、需求详情三段式、工作区与需求联动、筛选与快捷键、团队版的人员元素。
 9. 部署：一键启动脚本、launchd/systemd 模板、首启向导、备份与恢复脚本、局域网访问与 HTTPS 说明。
 
@@ -56,16 +56,18 @@
 
 ```
 浏览器（成员 A/B/C…）
-  │  Cookie: vk_session（HttpOnly, SameSite=Strict）
+  │  Cookie: vk_session（HttpOnly, SameSite=Lax）
   ▼
 单个可执行文件 vibe-kanban
   ├─ 静态前端（RustEmbed，编译期嵌入）
-  ├─ /api/auth/*          登录、登出、当前用户、改密、OAuth 回调
+  ├─ /api/local-auth/*    登录、登出、当前用户、改密、OAuth 回调
+│                       （`/api/auth/*` 已被云端 OAuth 路由占用，见 routes/oauth.rs:81-92）
   ├─ /api/admin/users/*   成员管理（仅 admin）
   ├─ 鉴权中间件           team 模式强制会话；personal 模式注入本机用户
   ├─ /api/local/*         需求、项目、状态列（写入带真实用户）
   ├─ /api/workspaces/*    工作区与编码智能体
-  └─ /api/events          SSE 变更推送（同样鉴权）
+  ├─ /api/events          SSE 变更推送（同样鉴权）
+  └─ /api/issues/streams/ws  WebSocket 实时通道（握手校验 Origin，防跨站劫持）
         ▼
    SQLite（单文件，WAL）
 ```
@@ -96,13 +98,13 @@
 | 模式 | 触发 | 行为 |
 |---|---|---|
 | `personal` | 默认；或 `VK_MODE=personal` | 不要求登录；中间件注入本机用户；隐藏登录/成员管理入口；监听 `127.0.0.1` |
-| `team` | `VK_MODE=team` | `/api/*` 全部要求有效会话（`/api/auth/login`、`/api/auth/providers`、健康检查除外）；首次启动强制走「创建管理员」向导；建议监听 `0.0.0.0` |
+| `team` | `VK_MODE=team` | `/api/*` 全部要求有效会话（`/api/local-auth/login`、`/api/local-auth/providers`、健康检查除外）；首次启动强制走「创建管理员」向导；建议监听 `0.0.0.0`。**relay 请求一律 401——团队模式不支持云端 relay** |
 
-模式来自环境变量与配置文件 `asset_dir()/server.json`，配置文件优先级低于环境变量。前端启动时从 `/api/auth/bootstrap` 读取当前模式与可用登录方式，不再依赖构建期的 `VITE_VK_DATA_SOURCE`。
+模式来自环境变量与配置文件 `asset_dir()/server.json`，配置文件优先级低于环境变量。前端启动时从 `/api/local-auth/bootstrap` 读取当前模式与可用登录方式，不再依赖构建期的 `VITE_VK_DATA_SOURCE`。
 
 ### 6.2 会话
 
-- 登录成功 → `Set-Cookie: vk_session=<明文令牌>; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`，HTTPS 下追加 `Secure`。
+- 登录成功 → `Set-Cookie: vk_session=<明文令牌>; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`，HTTPS 下追加 `Secure`。**用 `Lax` 而非 `Strict`**：`Strict` 会让 OAuth 提供方跳回来的那次导航带不上 Cookie。`Lax` 的安全前提是「GET 不做写操作」，落地前必须扫一遍现有路由确认。
 - 中间件：取 Cookie → SHA-256 → 查 `local_sessions` → 校验未撤销、未过期 → 取用户 → 校验 `status=active` → 挂进 request extension。
 - 每次命中更新 `last_seen_at`（节流：距上次超过 5 分钟才写库，避免每请求一次写）。
 - 登出撤销当前会话；改密撤销该用户全部会话。
@@ -111,9 +113,11 @@
 ### 6.3 CSRF
 
 Cookie 会话天生受 CSRF 威胁。三道防线：
-1. `SameSite=Strict`。
+1. `SameSite=Lax`（不能用 `Strict`，见 6.2）。
 2. 现有 Origin 校验对写方法（POST/PATCH/PUT/DELETE）强制要求 `Origin` 存在且匹配（当前实现允许缺失 Origin 时放行，需收紧）。
 3. 登录时下发 `vk_csrf` 非 HttpOnly Cookie，前端写操作带 `X-VK-CSRF` 头，服务端比对（双提交）。
+4. **WebSocket 单独防跨站劫持（CSWSH）**：浏览器不对 WebSocket 施加同源策略，带 Cookie 的升级请求会被自动发出。`/api/issues/streams/ws` 等端点握手时强制校验 `Origin`，不匹配直接拒绝升级。
+5. **本机工具豁免**：`vibe-kanban-mcp` 用裸 `reqwest` 直连本地端口，不带 Origin 也不带 Cookie（`crates/mcp/src/task_server/mod.rs:59-77`）。收紧 Origin 后它会被打死，因此引入本机令牌 `X-VK-MACHINE-TOKEN`（随端口文件落在数据目录，仅本机可读）作为等价凭据。
 
 ### 6.4 第三方登录
 
@@ -126,12 +130,12 @@ Cookie 会话天生受 CSRF 威胁。三道防线：
 | `google` | 标准 OIDC discovery 端点 |
 
 - 凭据从 `asset_dir()/server.json` 或环境变量读取；未配置的提供方不出现在登录页。
-- 回调 `/api/auth/oauth/:provider/callback`：校验 `state`（服务端生成、一次性、10 分钟过期）→ 换 token → 拉用户信息 → 按 `(provider, subject)` 查 `local_user_identities`：
+- 回调 `/api/local-auth/oauth/:provider/callback`：校验 `state`（服务端生成、一次性、10 分钟过期）→ 换 token → 拉用户信息 → 按 `(provider, subject)` 查 `local_user_identities`：
   - 已绑定 → 建会话登录。
   - 未绑定但 email 命中已有用户 → 需该用户已登录状态下手动绑定，**不自动合并**（防账号劫持）。
   - 未绑定且允许自助注册（配置项 `allow_oauth_signup`，默认关）→ 建新用户，角色 `member`。
   - 否则 → 提示「请联系管理员开通」。
-- 全流程不记录 access token，只记 `subject`。
+- 全流程不记录 access token，只记 `subject`。飞书/Lark 的 `subject` 取 `open_id`（应用内稳定），同时保存 `union_id` 备查；**换应用凭据会导致 open_id 变化、需要重新绑定**，文档要写明。三家的 authorize/token/userinfo 端点与字段在实现前必须查官方文档核实，不得凭记忆写死。
 - 无法在本机验证真实提供方，因此测试用一个本地 mock OIDC 服务（仅测试期启动）覆盖成功、state 失效、token 失败、userinfo 缺字段、subject 冲突等分支。
 
 ### 6.5 权限
@@ -231,6 +235,10 @@ VK_MODE=team HOST=0.0.0.0 BACKEND_PORT=8080 vibe-kanban
 ### 8.6 构建
 
 `local-build.sh` 的 `VK_SHARED_API_BASE` 参数化（默认空＝纯本地，不连任何云端），新增 `pnpm run build:selfhost` 产出自建部署包（可执行文件 + deploy/ 模板 + README）。
+
+### 8.7 与云端 relay 的关系
+
+现有 relay 中间件（主机对主机签名）位于会话中间件之内，会话层看不到它的验证结果。团队模式下 relay 请求一律 401，即**团队模式不支持把本机暴露给云端 relay**；需要外网访问用 8.5 的反向代理方案。
 
 ## 9. 并发与数据安全
 
