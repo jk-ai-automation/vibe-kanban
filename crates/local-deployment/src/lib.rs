@@ -27,6 +27,7 @@ use services::services::{
     filesystem::FilesystemService,
     local_auth::runtime::LocalAuthRuntime,
     oauth_credentials::OAuthCredentials,
+    oauth_handoff::{HandoffRejection, HandoffStore, NonceBinding, PendingHandoff},
     pr_monitor::PrMonitorService,
     queued_message::QueuedMessageService,
     remote_client::{RemoteClient, RemoteClientError},
@@ -71,7 +72,7 @@ pub struct LocalDeployment {
     remote_client: Result<RemoteClient, RemoteClientNotConfigured>,
     auth_context: AuthContext,
     local_auth: LocalAuthRuntime,
-    oauth_handoffs: Arc<RwLock<HashMap<Uuid, PendingHandoff>>>,
+    oauth_handoffs: Arc<HandoffStore>,
     trusted_key_auth: TrustedKeyAuthRuntime,
     relay_signing: RelaySigningService,
     relay_control: Arc<RelayControl>,
@@ -84,12 +85,6 @@ pub struct LocalDeployment {
     ssh_config: Arc<russh::server::Config>,
     pty: PtyService,
     pr_sync_notify: Arc<Notify>,
-}
-
-#[derive(Debug, Clone)]
-struct PendingHandoff {
-    provider: String,
-    app_verifier: String,
 }
 
 #[async_trait]
@@ -262,7 +257,7 @@ impl Deployment for LocalDeployment {
             }
         };
 
-        let oauth_handoffs = Arc::new(RwLock::new(HashMap::new()));
+        let oauth_handoffs = Arc::new(HandoffStore::new());
         let trusted_key_auth = TrustedKeyAuthRuntime::new(trusted_keys_path());
         let relay_signing = RelaySigningService::load_or_generate(&server_signing_key_path())
             .expect("Failed to load or generate server signing key");
@@ -515,27 +510,31 @@ impl LocalDeployment {
         }
     }
 
+    /// 记下一条待完成的云端 OAuth handoff。
+    ///
+    /// `binding` 决定回调要不要出示 nonce，**只能由 init 这一侧决定**，
+    /// 细节见 [`NonceBinding`]。
     pub async fn store_oauth_handoff(
         &self,
         handoff_id: Uuid,
         provider: String,
         app_verifier: String,
+        binding: &NonceBinding,
     ) {
-        self.oauth_handoffs.write().await.insert(
-            handoff_id,
-            PendingHandoff {
-                provider,
-                app_verifier,
-            },
-        );
+        self.oauth_handoffs
+            .insert_now(handoff_id, provider, app_verifier, binding)
+            .await;
     }
 
-    pub async fn take_oauth_handoff(&self, handoff_id: &Uuid) -> Option<(String, String)> {
+    /// 消费一条待完成的 handoff。`presented_nonce` 来自请求的 `vk_handoff` Cookie。
+    pub async fn take_oauth_handoff(
+        &self,
+        handoff_id: &Uuid,
+        presented_nonce: Option<&str>,
+    ) -> Result<PendingHandoff, HandoffRejection> {
         self.oauth_handoffs
-            .write()
+            .take_now(handoff_id, presented_nonce)
             .await
-            .remove(handoff_id)
-            .map(|state| (state.provider, state.app_verifier))
     }
 
     pub fn pty(&self) -> &PtyService {

@@ -15,6 +15,7 @@ pub mod issue_flow;
 pub mod local_auth;
 pub mod notification;
 pub mod oauth_credentials;
+pub mod oauth_handoff;
 pub mod pr_monitor;
 
 #[cfg(feature = "qa-mode")]

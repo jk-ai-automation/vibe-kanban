@@ -14,6 +14,14 @@ pub const SESSION_COOKIE: &str = "vk_session";
 pub const CSRF_COOKIE: &str = "vk_csrf";
 /// CSRF 请求头名。HeaderMap 按小写存取，常量必须是小写。
 pub const CSRF_HEADER: &str = "x-vk-csrf";
+/// 云端 OAuth handoff 的一次性 nonce Cookie 名（HttpOnly，前端不需要读它）。
+pub const HANDOFF_NONCE_COOKIE: &str = "vk_handoff";
+/// nonce Cookie 的 `Path`。
+///
+/// 收到只有回调那一条路径，别的请求（包括同源的 XHR）根本带不上它，
+/// 泄漏面比 `Path=/` 小一圈。清除时的 `Path` 必须与下发时**逐字一致**，
+/// 否则浏览器会认为是另一条 Cookie 而删不掉——所以抽成常量共用。
+pub const HANDOFF_NONCE_PATH: &str = "/api/auth/handoff/complete";
 /// 本机进程（MCP）的免会话凭据请求头名。
 ///
 /// 定义在 `utils` 里：发送端 `crates/mcp` 不依赖本 crate，只有 `utils`
@@ -114,6 +122,36 @@ pub fn build_session_clear_cookie(secure: bool) -> String {
 
 pub fn build_csrf_clear_cookie(secure: bool) -> String {
     let mut cookie = format!("{CSRF_COOKIE}=; SameSite=Lax; Path=/; Max-Age=0").to_string();
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+/// 云端 OAuth handoff 的一次性 nonce Cookie。
+///
+/// - **HttpOnly**：前端从不需要读它，挡掉 XSS 直接偷 nonce。
+/// - **SameSite=Lax**：回调是从云端跳回来的**跨站顶层导航**，`Strict` 会让
+///   浏览器不带这条 Cookie，登录就永远失败。Lax 放行顶层 GET 导航正是这里
+///   要的；它不会给跨站 XHR / iframe / 子资源带上。
+/// - **Path** 收到回调那一条路径。
+/// - `max_age_secs` 取 handoff 的 TTL（10 分钟），不跟会话 TTL 走。
+pub fn build_handoff_nonce_cookie(nonce: &str, max_age_secs: u64, secure: bool) -> String {
+    let mut cookie = format!(
+        "{HANDOFF_NONCE_COOKIE}={}; HttpOnly; SameSite=Lax; Path={HANDOFF_NONCE_PATH}; Max-Age={max_age_secs}",
+        sanitize_cookie_value(nonce),
+    );
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+/// 用完即焚：属性必须与 [`build_handoff_nonce_cookie`] 一致才删得掉。
+pub fn build_handoff_nonce_clear_cookie(secure: bool) -> String {
+    let mut cookie = format!(
+        "{HANDOFF_NONCE_COOKIE}=; HttpOnly; SameSite=Lax; Path={HANDOFF_NONCE_PATH}; Max-Age=0"
+    );
     if secure {
         cookie.push_str("; Secure");
     }
@@ -274,6 +312,82 @@ mod tests {
         // 换行同样要挡：拼进响应头就是 HTTP 响应拆分。
         let cookie = build_session_cookie("abc\r\nSet-Cookie: evil=1", 30, false);
         assert!(!cookie.contains('\r') && !cookie.contains('\n'), "{cookie}");
+    }
+
+    #[test]
+    /// handoff nonce Cookie 的每一条属性都是安全前提，逐条钉死。
+    #[test]
+    fn handoff_nonce_cookie_属性() {
+        let cookie = build_handoff_nonce_cookie("abc", 600, false);
+        assert_eq!(
+            cookie,
+            "vk_handoff=abc; HttpOnly; SameSite=Lax; Path=/api/auth/handoff/complete; Max-Age=600"
+        );
+        assert!(build_handoff_nonce_cookie("abc", 600, true).ends_with("; Secure"));
+    }
+
+    /// **必须是 Lax 不是 Strict**：OAuth 回调是跨站顶层导航，
+    /// Strict Cookie 带不过来，登录会 100% 失败。
+    #[test]
+    fn handoff_nonce_cookie_必须是_lax() {
+        let cookie = build_handoff_nonce_cookie("abc", 600, false);
+        assert!(cookie.contains("SameSite=Lax"));
+        assert!(!cookie.contains("SameSite=Strict"));
+        assert!(!cookie.contains("SameSite=None"));
+    }
+
+    /// 前端不读它，必须 HttpOnly——否则一个 XSS 就能把 nonce 捞走。
+    #[test]
+    fn handoff_nonce_cookie_必须_httponly() {
+        assert!(build_handoff_nonce_cookie("abc", 600, false).contains("HttpOnly"));
+        assert!(build_handoff_nonce_clear_cookie(false).contains("HttpOnly"));
+    }
+
+    /// 清除串的属性必须与下发串逐字一致，否则浏览器当成另一条 Cookie 删不掉。
+    #[test]
+    fn handoff_nonce_清除串属性与下发一致() {
+        for secure in [false, true] {
+            let 下发 = build_handoff_nonce_cookie("abc", 600, secure);
+            let 清除 = build_handoff_nonce_clear_cookie(secure);
+            for 属性 in [
+                "HttpOnly",
+                "SameSite=Lax",
+                "Path=/api/auth/handoff/complete",
+            ] {
+                assert!(下发.contains(属性) && 清除.contains(属性), "{属性}");
+            }
+            assert_eq!(下发.contains("; Secure"), 清除.contains("; Secure"));
+            assert!(清除.contains("Max-Age=0"));
+            assert!(清除.starts_with("vk_handoff=;"));
+        }
+    }
+
+    /// nonce 是本模块生成的，正常不含语法字符；这里钉住兜底过滤，
+    /// 防止有人把外部输入当 nonce 传进来拼出第二条属性或响应拆分。
+    #[test]
+    fn handoff_nonce_cookie_过滤注入() {
+        let cookie = build_handoff_nonce_cookie("abc\r\nSet-Cookie: evil=1", 600, false);
+        assert!(!cookie.contains('\r') && !cookie.contains('\n'));
+        assert!(!cookie.to_ascii_lowercase().contains("set-cookie: evil"));
+
+        let cookie = build_handoff_nonce_cookie("abc; Path=/evil", 600, false);
+        assert_eq!(cookie.matches("Path=").count(), 1);
+    }
+
+    /// 真实 nonce 能原样往返：下发 → 浏览器 → `parse_cookie` 取回。
+    #[test]
+    fn handoff_nonce_cookie_可被_parse_cookie_取回() {
+        let nonce = crate::services::oauth_handoff::generate_handoff_nonce();
+        let cookie = build_handoff_nonce_cookie(&nonce, 600, false);
+        // 浏览器回送时只带 name=value，且可能与别的 Cookie 混在一起。
+        let 回送 = format!(
+            "vk_session=zzz; {}; vk_csrf=yyy",
+            cookie.split(';').next().unwrap()
+        );
+        assert_eq!(
+            parse_cookie(Some(&回送), HANDOFF_NONCE_COOKIE).as_deref(),
+            Some(nonce.as_str())
+        );
     }
 
     #[test]
