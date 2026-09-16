@@ -25,6 +25,13 @@ pub const LAST_SEEN_THROTTLE: Duration = Duration::minutes(5);
 pub const MAX_USER_AGENT_LEN: usize = 256;
 pub const MAX_IP_LEN: usize = 64;
 
+/// 过期会话清理任务的间隔。启动时先清一次，之后按这个间隔循环。
+///
+/// 单位是**小时**不是秒：写成 `from_secs(6)` 会让服务器每 6 秒扫一遍全表。
+/// 有一条测试把它钉死。
+pub const SESSION_CLEANUP_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(6 * 60 * 60);
+
 /// 会话行。**不含 `token_hash`**，见模块文档。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalSession {
@@ -226,6 +233,14 @@ impl LocalSessions {
         })
         .await?;
         Ok(done.rows_affected())
+    }
+
+    /// 同 [`Self::delete_expired`]，但用当前时刻。
+    ///
+    /// 给后台清理任务用：`crates/local-deployment` 不依赖 chrono，
+    /// 与其为了一句 `Utc::now()` 给它加一个依赖，不如把时间源留在本层。
+    pub async fn delete_expired_now(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+        Self::delete_expired(pool, Utc::now()).await
     }
 }
 
@@ -615,6 +630,93 @@ mod session_tests {
             .await
             .unwrap();
         assert_eq!(left, 1);
+    }
+
+    /// 防手滑：`from_secs(6)` 会让服务器每 6 秒扫一遍全表。
+    #[test]
+    fn 清理任务的间隔常量是六小时() {
+        assert_eq!(
+            SESSION_CLEANUP_INTERVAL,
+            std::time::Duration::from_secs(6 * 3600)
+        );
+    }
+
+    /// 清理必须只按 `expires_at` 判定，**不能**顺手把「已撤销但未过期」
+    /// 的行也删掉：撤销记录还要留着给「这张 Cookie 为什么失效」的排查用，
+    /// 而且删掉它会让被撤销的令牌哈希重新可用（唯一索引空出来了）。
+    #[tokio::test]
+    async fn 清理不碰已撤销但未过期的会话() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy").await;
+        let 已撤销 = 建会话(&test_db, user_id, "hash-revoked", Duration::days(30)).await;
+        LocalSessions::revoke(test_db.pool(), 已撤销.id, Utc::now())
+            .await
+            .unwrap();
+        建会话(&test_db, user_id, "hash-live", Duration::days(30)).await;
+
+        assert_eq!(
+            LocalSessions::delete_expired(test_db.pool(), Utc::now())
+                .await
+                .unwrap(),
+            0,
+            "没有过期行时不该删任何东西"
+        );
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM local_sessions")
+            .fetch_one(test_db.pool())
+            .await
+            .unwrap();
+        assert_eq!(left, 2);
+    }
+
+    /// 边界：`expires_at` 正好等于 `now` 的行算过期（SQL 是 `<=`）。
+    #[tokio::test]
+    async fn 清理的时间边界是闭区间() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy").await;
+        let session = 建会话(&test_db, user_id, "hash-edge", Duration::days(1)).await;
+        assert_eq!(
+            LocalSessions::delete_expired(test_db.pool(), session.expires_at)
+                .await
+                .unwrap(),
+            1,
+            "expires_at == now 必须算过期"
+        );
+    }
+
+    /// 大量会话时清理仍然是一条 SQL，不会因为条数多而漏删或超时。
+    #[tokio::test]
+    async fn 大量过期会话一次清干净() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy").await;
+        for i in 0..500 {
+            建会话(
+                &test_db,
+                user_id,
+                &format!("hash-old-{i}"),
+                -Duration::days(1),
+            )
+            .await;
+        }
+        for i in 0..50 {
+            建会话(
+                &test_db,
+                user_id,
+                &format!("hash-live-{i}"),
+                Duration::days(30),
+            )
+            .await;
+        }
+        assert_eq!(
+            LocalSessions::delete_expired(test_db.pool(), Utc::now())
+                .await
+                .unwrap(),
+            500
+        );
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM local_sessions")
+            .fetch_one(test_db.pool())
+            .await
+            .unwrap();
+        assert_eq!(left, 50, "有效会话一条都不能少");
     }
 
     /// `LocalSession` 上不能有 `token_hash`，否则会话对象一旦被序列化，

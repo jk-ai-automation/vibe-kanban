@@ -178,6 +178,32 @@ impl Deployment for LocalDeployment {
             });
         }
 
+        // 过期会话清理：启动时先清一次，之后每六小时一次。
+        //
+        // **必须监听 shutdown**：否则这个 loop 会把进程退出拖到下一次
+        // `sleep` 醒来（最坏六小时）。`select!` 放在清理之后，
+        // 保证「启动时立刻清一次」这条语义即使刚启动就收到取消也已经跑过。
+        {
+            let pool = db.pool.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                use db::models::local_auth::{LocalSessions, SESSION_CLEANUP_INTERVAL};
+                loop {
+                    match LocalSessions::delete_expired_now(&pool).await {
+                        Ok(n) if n > 0 => tracing::info!("清理过期会话 {n} 条"),
+                        Ok(_) => {}
+                        // 清理失败不影响服务，下一轮再试。
+                        Err(e) => tracing::warn!("清理过期会话失败: {e}"),
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(SESSION_CLEANUP_INTERVAL) => {}
+                        _ = shutdown.cancelled() => break,
+                    }
+                }
+                tracing::debug!("过期会话清理任务已退出");
+            });
+        }
+
         let approvals = Approvals::new();
         let queued_message_service = QueuedMessageService::new();
 
