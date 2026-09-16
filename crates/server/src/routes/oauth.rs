@@ -648,6 +648,8 @@ fn close_window_response(message: String, skip_auto_close: bool) -> Response<Str
 
 #[cfg(test)]
 mod tests {
+    use services::services::server_settings::ServerMode;
+
     use super::*;
 
     const 网页版: &str = "http://kanban.lan:8080/api/auth/handoff/complete";
@@ -720,6 +722,109 @@ mod tests {
                 "{return_to:?} 不该被当成桌面版"
             );
         }
+    }
+
+    // --------------------------------------------- 个人模式：端到端往返
+
+    /// 模拟浏览器：从 `Set-Cookie` 里取出 `name=value`，拼成下次请求的 `Cookie` 头。
+    ///
+    /// 只取第一段，正是浏览器回送时的行为（属性不回送）。
+    fn 浏览器回送(set_cookie: &str) -> String {
+        format!(
+            "vk_session=sess; {}; vk_csrf=csrf",
+            set_cookie.split(';').next().unwrap()
+        )
+    }
+
+    /// 从请求头里按 complete handler 的方式取 nonce。
+    fn 取回_nonce(cookie_header: &str) -> Option<String> {
+        parse_cookie(Some(cookie_header), HANDOFF_NONCE_COOKIE)
+    }
+
+    /// **验收硬要求**：个人模式下 init → complete 必须照常走通。
+    ///
+    /// 这条串起了真实的管道：生成 nonce → 决定绑定 → 下发 Cookie →
+    /// 浏览器回送 → 解析 Cookie → 消费 handoff。除了云端那两次 HTTP
+    /// （`handoff_init` / `handoff_redeem`），handler 里的每一步都在这里。
+    #[tokio::test]
+    async fn 个人模式网页版端到端往返成功() {
+        use services::services::oauth_handoff::{HandoffStore, PendingHandoff};
+
+        assert_eq!(cloud_handoff_allowed(ServerMode::Personal), Ok(()));
+
+        // --- init 侧
+        let store = HandoffStore::new();
+        let handoff_id = Uuid::new_v4();
+        let nonce = generate_handoff_nonce();
+        let binding = nonce_binding_for(网页版, &nonce);
+        store
+            .insert_now(handoff_id, "google".into(), "verifier-abc".into(), &binding)
+            .await;
+        let set_cookie =
+            build_handoff_nonce_cookie(&nonce, (HANDOFF_TTL_MINUTES * 60) as u64, false);
+
+        // --- 浏览器把 Cookie 带回回调
+        let cookie_header = 浏览器回送(&set_cookie);
+
+        // --- complete 侧
+        let presented = 取回_nonce(&cookie_header);
+        assert_eq!(presented.as_deref(), Some(nonce.as_str()));
+        assert_eq!(
+            store.take_now(&handoff_id, presented.as_deref()).await,
+            Ok(PendingHandoff {
+                provider: "google".into(),
+                app_verifier: "verifier-abc".into(),
+            }),
+            "个人模式正常登录被挡住了"
+        );
+    }
+
+    /// 桌面版同样要走通，且**不需要**任何 Cookie。
+    #[tokio::test]
+    async fn 个人模式桌面版端到端往返成功() {
+        use services::services::oauth_handoff::HandoffStore;
+
+        let store = HandoffStore::new();
+        let handoff_id = Uuid::new_v4();
+        let nonce = generate_handoff_nonce();
+        let binding = nonce_binding_for(桌面版, &nonce);
+        assert_eq!(binding, NonceBinding::SystemBrowser);
+        store
+            .insert_now(handoff_id, "github".into(), "v".into(), &binding)
+            .await;
+
+        // 系统浏览器完全没有本站 Cookie。
+        assert!(store.take_now(&handoff_id, None).await.is_ok());
+    }
+
+    /// **攻击样例（端到端）**：跨站伪造的回调。受害者浏览器会带上
+    /// `SameSite=Lax` 的会话 Cookie，但**没有** `vk_handoff`——
+    /// 它是 init 时才下发的，而攻击者没法让受害者的服务器发起 init。
+    #[tokio::test]
+    async fn 跨站伪造回调被拒() {
+        use services::services::oauth_handoff::{HandoffRejection, HandoffStore};
+
+        let store = HandoffStore::new();
+        let handoff_id = Uuid::new_v4();
+        let nonce = generate_handoff_nonce();
+        store
+            .insert_now(
+                handoff_id,
+                "google".into(),
+                "verifier-abc".into(),
+                &nonce_binding_for(网页版, &nonce),
+            )
+            .await;
+
+        // 攻击者的链接只能让浏览器带上会话/CSRF Cookie，带不来 nonce。
+        let 伪造 = "vk_session=sess; vk_csrf=csrf";
+        assert_eq!(取回_nonce(伪造), None);
+        assert_eq!(
+            store
+                .take_now(&handoff_id, 取回_nonce(伪造).as_deref())
+                .await,
+            Err(HandoffRejection::MissingNonce)
+        );
     }
 
     // --------------------------------------------- 拒绝响应：状态码与不泄漏
