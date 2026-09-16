@@ -1,10 +1,15 @@
 //! 测试用的一次性 SQLite 数据库。
 //! 每个 TestDb 拥有自己的临时目录，Drop 时自动删除。
 
-use sqlx::SqlitePool;
+use std::{future::Future, pin::Pin};
+
+use sqlx::{
+    Error as SqlxError, SqlitePool,
+    sqlite::{SqliteConnection, SqliteJournalMode},
+};
 use tempfile::TempDir;
 
-use crate::DBService;
+use crate::{DBService, journal_mode_from_env};
 
 pub struct TestDb {
     pub db: DBService,
@@ -12,11 +17,59 @@ pub struct TestDb {
 }
 
 impl TestDb {
+    /// journal mode 走 `VK_SQLITE_WAL` 环境变量（默认 WAL），与生产路径一致。
     pub async fn new() -> Self {
+        Self::new_with_journal(journal_mode_from_env()).await
+    }
+
+    /// 显式指定 journal mode，不受环境变量影响。用于对照测试「切 WAL / 退回 Delete
+    /// 两条路径行为一致」。
+    pub async fn new_with_journal(journal_mode: SqliteJournalMode) -> Self {
         let dir = tempfile::tempdir().expect("创建临时目录失败");
-        let db = DBService::new_at_path(&dir.path().join("test.sqlite"))
+        let db = DBService::new_at_path_with_journal(&dir.path().join("test.sqlite"), journal_mode)
             .await
             .expect("初始化测试数据库失败");
+        Self { db, _dir: dir }
+    }
+
+    /// 带 `after_connect` 钩子（例如 `EventService::create_hook` 装的变更钩子），
+    /// journal mode 走环境变量，默认 WAL。
+    pub async fn new_with_hook<F>(after_connect: F) -> Self
+    where
+        F: for<'a> Fn(
+                &'a mut SqliteConnection,
+            )
+                -> Pin<Box<dyn Future<Output = Result<(), SqlxError>> + Send + 'a>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self::new_with_journal_and_hook(journal_mode_from_env(), after_connect).await
+    }
+
+    /// 同 [`Self::new_with_hook`]，但显式指定 journal mode。
+    /// 用来验证「变更钩子在 WAL 下和 Delete 下行为一致」（同一段测试代码跑两遍）。
+    pub async fn new_with_journal_and_hook<F>(
+        journal_mode: SqliteJournalMode,
+        after_connect: F,
+    ) -> Self
+    where
+        F: for<'a> Fn(
+                &'a mut SqliteConnection,
+            )
+                -> Pin<Box<dyn Future<Output = Result<(), SqlxError>> + Send + 'a>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let db = DBService::new_at_path_with_after_connect(
+            &dir.path().join("test.sqlite"),
+            journal_mode,
+            after_connect,
+        )
+        .await
+        .expect("初始化测试数据库失败");
         Self { db, _dir: dir }
     }
 
