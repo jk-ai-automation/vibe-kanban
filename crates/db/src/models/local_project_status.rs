@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+use super::db_retry::retry_on_busy;
+
 /// 本地状态列行。字段与 api_types::ProjectStatus 一一对应，
 /// 额外多出 stage_type（个人版专有，用于状态自动流转；
 /// 多出的 JSON 字段前端会原样忽略，不影响 shared/remote-types.ts）。
@@ -147,12 +149,16 @@ impl ProjectStatuses {
     ) -> Result<LocalProjectStatus, sqlx::Error> {
         let id = data.id.unwrap_or_else(Uuid::new_v4);
         let name: String = data.name.chars().take(MAX_STATUS_NAME_LEN).collect();
+        // 显式绑定 created_at：SQLite 的 DEFAULT 写的是空格分隔格式，
+        // 和代码写入的 RFC3339 混在一起会让 ORDER BY sort_order, created_at
+        // 在 sort_order 并列时排出错误顺序。
+        let now = Utc::now();
 
         sqlx::query_as!(
             LocalProjectStatus,
             r#"INSERT INTO project_statuses
-                   (id, project_id, name, color, sort_order, hidden, stage_type)
-               VALUES ($1, $2, $3, $4, $5, $6, 'todo')
+                   (id, project_id, name, color, sort_order, hidden, stage_type, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, 'todo', $7)
                RETURNING id AS "id!: Uuid",
                          project_id AS "project_id!: Uuid",
                          name AS "name!",
@@ -166,7 +172,8 @@ impl ProjectStatuses {
             name,
             data.color,
             data.sort_order,
-            data.hidden
+            data.hidden,
+            now
         )
         .fetch_one(pool)
         .await
@@ -177,10 +184,13 @@ impl ProjectStatuses {
         id: Uuid,
         data: &UpdateProjectStatusRequest,
     ) -> Result<LocalProjectStatus, sqlx::Error> {
-        let mut tx = pool.begin().await?;
-        let updated = Self::update_in_tx(&mut tx, id, data).await?;
-        tx.commit().await?;
-        Ok(updated)
+        retry_on_busy(|| async {
+            let mut tx = pool.begin().await?;
+            let updated = Self::update_in_tx(&mut tx, id, data).await?;
+            tx.commit().await?;
+            Ok(updated)
+        })
+        .await
     }
 
     /// 批量更新（拖拽排序）。单事务，任一条失败整体回滚。
@@ -188,13 +198,16 @@ impl ProjectStatuses {
         pool: &SqlitePool,
         updates: &[(Uuid, UpdateProjectStatusRequest)],
     ) -> Result<Vec<LocalProjectStatus>, sqlx::Error> {
-        let mut tx = pool.begin().await?;
-        let mut rows = Vec::with_capacity(updates.len());
-        for (id, data) in updates {
-            rows.push(Self::update_in_tx(&mut tx, *id, data).await?);
-        }
-        tx.commit().await?;
-        Ok(rows)
+        retry_on_busy(|| async {
+            let mut tx = pool.begin().await?;
+            let mut rows = Vec::with_capacity(updates.len());
+            for (id, data) in updates {
+                rows.push(Self::update_in_tx(&mut tx, *id, data).await?);
+            }
+            tx.commit().await?;
+            Ok(rows)
+        })
+        .await
     }
 
     async fn update_in_tx(
@@ -363,6 +376,56 @@ mod tests {
         assert_eq!(created.stage_type, "todo");
         assert_eq!(created.sort_order, 9);
         assert!(!created.hidden);
+    }
+
+    /// 用户新建的状态列必须和默认状态列用同一种时间戳格式，
+    /// 否则 `ORDER BY sort_order, created_at` 在 sort_order 并列时会排错。
+    #[tokio::test]
+    async fn 用户新建状态列的时间戳与默认状态列格式一致() {
+        let test_db = TestDb::new().await;
+        let project_id = 建项目(&test_db, "A").await;
+
+        let created = ProjectStatuses::create(
+            test_db.pool(),
+            &CreateProjectStatusRequest {
+                id: None,
+                project_id,
+                name: "联调中".to_string(),
+                // 与默认「待规划」同一个 sort_order，逼出并列排序
+                sort_order: 0,
+                color: "#f59e0b".to_string(),
+                hidden: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let 新建时间: (String,) =
+            sqlx::query_as("SELECT created_at FROM project_statuses WHERE id = ?1")
+                .bind(created.id)
+                .fetch_one(test_db.pool())
+                .await
+                .unwrap();
+        assert!(
+            新建时间.0.contains('T'),
+            "新建状态列的 created_at 必须是 RFC3339：{}",
+            新建时间.0
+        );
+
+        // 并列 sort_order 时，先建的默认状态列必须排在后建的前面
+        let statuses = ProjectStatuses::find_by_project(test_db.pool(), project_id)
+            .await
+            .unwrap();
+        let 并列: Vec<&str> = statuses
+            .iter()
+            .filter(|s| s.sort_order == 0)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(
+            并列,
+            vec!["待规划", "联调中"],
+            "同 sort_order 时必须按创建时间排序"
+        );
     }
 
     #[tokio::test]

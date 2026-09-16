@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO project_statuses\n                   (id, project_id, name, color, sort_order, hidden, stage_type)\n               VALUES ($1, $2, $3, $4, $5, $6, 'todo')\n               RETURNING id AS \"id!: Uuid\",\n                         project_id AS \"project_id!: Uuid\",\n                         name AS \"name!\",\n                         color AS \"color!\",\n                         sort_order AS \"sort_order!: i32\",\n                         hidden AS \"hidden!: bool\",\n                         stage_type AS \"stage_type!\",\n                         created_at AS \"created_at!: DateTime<Utc>\"",
+  "query": "INSERT INTO project_statuses\n                   (id, project_id, name, color, sort_order, hidden, stage_type, created_at)\n               VALUES ($1, $2, $3, $4, $5, $6, 'todo', $7)\n               RETURNING id AS \"id!: Uuid\",\n                         project_id AS \"project_id!: Uuid\",\n                         name AS \"name!\",\n                         color AS \"color!\",\n                         sort_order AS \"sort_order!: i32\",\n                         hidden AS \"hidden!: bool\",\n                         stage_type AS \"stage_type!\",\n                         created_at AS \"created_at!: DateTime<Utc>\"",
   "describe": {
     "columns": [
       {
@@ -45,7 +45,7 @@
       }
     ],
     "parameters": {
-      "Right": 6
+      "Right": 7
     },
     "nullable": [
       false,
@@ -58,5 +58,5 @@
       false
     ]
   },
-  "hash": "e06e63a31a56bb4605f6697b2db7023b45ac7efbbfc0fe4ad2554c3aae772f59"
+  "hash": "7f81afe9d065ed1906a2f5aaa2c2699d559a9e57543c6c82e444aa0d1009d266"
 }

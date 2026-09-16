@@ -3,6 +3,8 @@ use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
+use super::db_retry::retry_on_busy;
+
 /// 个人版固定组织：前端 identity.ts 必须使用同一字符串。
 pub const DEFAULT_ORGANIZATION_ID: Uuid = Uuid::from_u128(1);
 /// 个人版固定用户。
@@ -143,6 +145,37 @@ impl LocalProjects {
         id: Uuid,
         data: &UpdateProjectRequest,
     ) -> Result<Project, sqlx::Error> {
+        retry_on_busy(|| async {
+            let mut tx = pool.begin().await?;
+            let updated = Self::update_in_tx(&mut tx, id, data).await?;
+            tx.commit().await?;
+            Ok(updated)
+        })
+        .await
+    }
+
+    /// 批量更新（项目排序）。单事务，任一条失败整体回滚。
+    pub async fn bulk_update(
+        pool: &SqlitePool,
+        updates: &[(Uuid, UpdateProjectRequest)],
+    ) -> Result<Vec<Project>, sqlx::Error> {
+        retry_on_busy(|| async {
+            let mut tx = pool.begin().await?;
+            let mut rows = Vec::with_capacity(updates.len());
+            for (id, data) in updates {
+                rows.push(Self::update_in_tx(&mut tx, *id, data).await?);
+            }
+            tx.commit().await?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    pub async fn update_in_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        id: Uuid,
+        data: &UpdateProjectRequest,
+    ) -> Result<Project, sqlx::Error> {
         let set_name = data.name.is_some();
         let name: Option<String> = data
             .name
@@ -176,7 +209,7 @@ impl LocalProjects {
             data.sort_order,
             now
         )
-        .fetch_one(pool)
+        .fetch_one(&mut **tx)
         .await
     }
 
@@ -407,6 +440,80 @@ mod tests {
                 .unwrap()
                 .as_deref(),
             Some("ISS")
+        );
+    }
+
+    #[tokio::test]
+    async fn 批量更新项目在单事务内全成或全败() {
+        let test_db = TestDb::new().await;
+        let a = LocalProjects::create(test_db.pool(), &建项目请求("A"))
+            .await
+            .unwrap();
+
+        let 失败 = vec![
+            (
+                a.id,
+                UpdateProjectRequest {
+                    name: None,
+                    color: None,
+                    sort_order: Some(100),
+                },
+            ),
+            (
+                uuid::Uuid::from_u128(987654),
+                UpdateProjectRequest {
+                    name: None,
+                    color: None,
+                    sort_order: Some(200),
+                },
+            ),
+        ];
+        assert!(
+            LocalProjects::bulk_update(test_db.pool(), &失败)
+                .await
+                .is_err(),
+            "含不存在 id 的批量更新必须失败"
+        );
+        let after = LocalProjects::find_by_id(test_db.pool(), a.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.sort_order, 0, "失败必须整体回滚");
+
+        let b = LocalProjects::create(test_db.pool(), &建项目请求("B"))
+            .await
+            .unwrap();
+        let 成功 = vec![
+            (
+                a.id,
+                UpdateProjectRequest {
+                    name: None,
+                    color: None,
+                    sort_order: Some(5),
+                },
+            ),
+            (
+                b.id,
+                UpdateProjectRequest {
+                    name: None,
+                    color: None,
+                    sort_order: Some(3),
+                },
+            ),
+        ];
+        let rows = LocalProjects::bulk_update(test_db.pool(), &成功)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            LocalProjects::find_all(test_db.pool())
+                .await
+                .unwrap()
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            vec![b.id, a.id],
+            "批量更新后的排序必须生效"
         );
     }
 
