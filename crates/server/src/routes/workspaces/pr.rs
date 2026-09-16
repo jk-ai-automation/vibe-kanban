@@ -316,6 +316,16 @@ pub async fn create_pr(
                 tracing::error!("Failed to create local PR record: {}", e);
             }
 
+            if let Err(e) = services::services::issue_flow::advance_issue_for_workspace(
+                &deployment.db().pool,
+                workspace.id,
+                services::services::issue_flow::IssueFlowStage::Review,
+            )
+            .await
+            {
+                tracing::warn!("PR 创建后需求流转失败: {}", e);
+            }
+
             if let Ok(client) = deployment.remote_client() {
                 let request = UpsertPullRequestRequest {
                     url: pr_info.url.clone(),
@@ -465,6 +475,16 @@ pub async fn attach_existing_pr(
             &pr_info.url,
         )
         .await?;
+
+        if let Err(e) = services::services::issue_flow::advance_issue_for_workspace(
+            &deployment.db().pool,
+            workspace.id,
+            services::services::issue_flow::IssueFlowStage::Review,
+        )
+        .await
+        {
+            tracing::warn!("PR 创建后需求流转失败: {}", e);
+        }
 
         // Update status if not open
         if !matches!(pr_info.status, MergeStatus::Open) {
@@ -787,6 +807,16 @@ pub async fn create_workspace_from_pr(
         &payload.pr_url,
     )
     .await?;
+
+    if let Err(e) = services::services::issue_flow::advance_issue_for_workspace(
+        &deployment.db().pool,
+        workspace.id,
+        services::services::issue_flow::IssueFlowStage::Review,
+    )
+    .await
+    {
+        tracing::warn!("PR 创建后需求流转失败: {}", e);
+    }
 
     if payload.run_setup {
         let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;

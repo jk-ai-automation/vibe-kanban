@@ -262,6 +262,16 @@ pub async fn merge_workspace(
         )
         .await;
 
+    if let Err(e) = services::services::issue_flow::advance_issue_for_workspace(
+        &deployment.db().pool,
+        workspace.id,
+        services::services::issue_flow::IssueFlowStage::Done,
+    )
+    .await
+    {
+        tracing::warn!("本地合并后需求流转失败: {}", e);
+    }
+
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
