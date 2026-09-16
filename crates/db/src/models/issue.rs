@@ -19,25 +19,40 @@ pub const MAX_TITLE_LEN: usize = 500;
 pub const MAX_DESCRIPTION_LEN: usize = 100_000;
 /// 单次搜索返回上限，防止前端一次拉取过多行。
 pub const MAX_PAGE_SIZE: usize = 500;
-/// 编号分配的重试次数（并发插入撞 UNIQUE，或 SQLite 在 rollback-journal 模式下
-/// 多个连接同时争抢写锁返回 SQLITE_BUSY/LOCKED 时重试）。
+/// extension_metadata 序列化后的字节上限，防止单行撑爆快照与 WS 推送。
+pub const MAX_METADATA_BYTES: usize = 32_768;
+/// 编号分配的重试次数：编号由 `UPDATE ... RETURNING` 在事务里发放，不会重号，
+/// 这里只为 SQLite 在 rollback-journal 模式下多连接争抢写锁返回 BUSY/LOCKED 时重试。
 const NUMBER_RETRY: u32 = 8;
 
-/// 判断一个数据库错误是否值得重试：唯一约束冲突（并发拿到同一个编号），
-/// 或 SQLite 在没有 WAL 的情况下多连接争抢锁时返回的 BUSY/LOCKED 系列错误码。
+/// 判断一个数据库错误是否值得重试：SQLite 在没有 WAL 的情况下多连接争抢锁时
+/// 返回的 BUSY/LOCKED 系列错误码。
 /// `sqlite3_busy_timeout` 只能缓解、不能完全消除这种情况，因此应用层仍需自行重试。
 fn is_retryable_db_error(err: &sqlx::Error) -> bool {
     let sqlx::Error::Database(db_err) = err else {
         return false;
     };
-    if db_err.is_unique_violation() {
-        return true;
-    }
     // SQLITE_BUSY = 5, SQLITE_LOCKED = 6, SQLITE_BUSY_RECOVERY = 261, SQLITE_BUSY_SNAPSHOT = 517
     matches!(
         db_err.code().as_deref(),
         Some("5") | Some("6") | Some("261") | Some("517")
     )
+}
+
+/// extension_metadata 必须是 JSON 对象，且序列化后不超过 [`MAX_METADATA_BYTES`]。
+fn validate_metadata(value: &Value) -> Result<String, IssueError> {
+    if !value.is_object() {
+        return Err(IssueError::Validation(
+            "extension_metadata 必须是 JSON 对象".to_string(),
+        ));
+    }
+    let text = value.to_string();
+    if text.len() > MAX_METADATA_BYTES {
+        return Err(IssueError::Validation(format!(
+            "extension_metadata 超过 {MAX_METADATA_BYTES} 字节上限"
+        )));
+    }
+    Ok(text)
 }
 
 #[derive(Debug, Error)]
@@ -119,6 +134,31 @@ fn truncate(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
+/// 优先级的业务权重：数据库里存的是字符串，直接 ORDER BY 会按字典序
+/// （high < low < medium < urgent），必须先映射成序号。
+const PRIORITY_RANK_SQL: &str = "CASE priority \
+     WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END";
+
+/// 搜索里按需拼接条件时用到的绑定值。拼进 SQL 的只有占位符编号，值一律走绑定。
+enum Bind {
+    Uuid(Uuid),
+    Text(String),
+    Int(i64),
+}
+
+impl Bind {
+    fn apply<'q, O>(
+        &'q self,
+        query: sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments<'q>>,
+    ) -> sqlx::query::QueryAs<'q, sqlx::Sqlite, O, sqlx::sqlite::SqliteArguments<'q>> {
+        match self {
+            Bind::Uuid(value) => query.bind(*value),
+            Bind::Text(value) => query.bind(value.as_str()),
+            Bind::Int(value) => query.bind(*value),
+        }
+    }
+}
+
 /// 转义 LIKE 通配符，配合 SQL 中的 ESCAPE '\' 使用。
 fn escape_like(input: &str) -> String {
     input
@@ -127,13 +167,23 @@ fn escape_like(input: &str) -> String {
         .replace('_', "\\_")
 }
 
+/// 按项目取快照的结果。`truncated` 为真表示行数触到 [`MAX_SNAPSHOT_ROWS`]，
+/// 调用方（路由层）必须把这一事实透出去，不能静默截断。
+#[derive(Debug)]
+pub struct IssueSnapshot {
+    pub issues: Vec<Issue>,
+    pub truncated: bool,
+}
+
 pub struct Issues;
 
 impl Issues {
     pub async fn find_by_project(
         pool: &SqlitePool,
         project_id: Uuid,
-    ) -> Result<Vec<Issue>, sqlx::Error> {
+    ) -> Result<IssueSnapshot, sqlx::Error> {
+        // 多取一行用来判断是否被截断，返回前丢掉。
+        let probe_limit = MAX_SNAPSHOT_ROWS + 1;
         let rows = sqlx::query_as!(
             IssueRow,
             r#"SELECT id                      AS "id!: Uuid",
@@ -159,12 +209,19 @@ impl Issues {
                ORDER BY sort_order ASC, created_at ASC
                LIMIT $2"#,
             project_id,
-            MAX_SNAPSHOT_ROWS
+            probe_limit
         )
         .fetch_all(pool)
         .await?;
 
-        Ok(rows.into_iter().map(Issue::from).collect())
+        let truncated = rows.len() as i64 > MAX_SNAPSHOT_ROWS;
+        let issues: Vec<Issue> = rows
+            .into_iter()
+            .take(MAX_SNAPSHOT_ROWS as usize)
+            .map(Issue::from)
+            .collect();
+
+        Ok(IssueSnapshot { issues, truncated })
     }
 
     pub async fn find_by_id(pool: &SqlitePool, id: Uuid) -> Result<Option<Issue>, sqlx::Error> {
@@ -242,10 +299,12 @@ impl Issues {
             .as_ref()
             .map(|d| truncate(d, MAX_DESCRIPTION_LEN));
 
-        let project = LocalProjects::find_by_id(pool, data.project_id)
+        if LocalProjects::find_by_id(pool, data.project_id)
             .await?
-            .ok_or_else(|| IssueError::Validation("项目不存在".to_string()))?;
-        let prefix = LocalProjects::simple_id_prefix(&project.name);
+            .is_none()
+        {
+            return Err(IssueError::Validation("项目不存在".to_string()));
+        }
 
         let status = ProjectStatuses::find_by_id(pool, data.status_id).await?;
         match status {
@@ -256,9 +315,26 @@ impl Issues {
             None => return Err(IssueError::Validation("状态列不存在".to_string())),
         }
 
+        // 父需求必须存在且同项目，否则会形成跨项目引用。
+        if let Some(parent_id) = data.parent_issue_id {
+            match Self::find_by_id(pool, parent_id).await? {
+                Some(parent) if parent.project_id == data.project_id => {}
+                Some(_) => {
+                    return Err(IssueError::Validation("父需求不属于该项目".to_string()));
+                }
+                None => return Err(IssueError::Validation("父需求不存在".to_string())),
+            }
+        }
+
         let id = data.id.unwrap_or_else(Uuid::new_v4);
+        if data.parent_issue_id == Some(id) {
+            return Err(IssueError::Validation(
+                "需求不能把自己当作父需求".to_string(),
+            ));
+        }
         let priority = data.priority.map(priority_to_str);
-        let metadata = data.extension_metadata.to_string();
+        let metadata = validate_metadata(&data.extension_metadata)?;
+        let now = Utc::now();
 
         for attempt in 0..NUMBER_RETRY {
             let mut tx = match pool.begin().await {
@@ -271,14 +347,17 @@ impl Issues {
                 Err(err) => return Err(IssueError::Database(err)),
             };
 
-            let next_result: Result<(i64,), sqlx::Error> = sqlx::query_as(
-                "SELECT COALESCE(MAX(issue_number), 0) + 1 FROM issues WHERE project_id = ?1",
+            // 编号从项目行上的游标取，取完即自增：删除末条需求后编号不会被复用。
+            // 前缀也从项目行读，建项目时就定死，之后改名不影响任何需求。
+            let next_result: Result<(String, i64), sqlx::Error> = sqlx::query_as(
+                "UPDATE local_projects SET next_issue_number = next_issue_number + 1 \
+                 WHERE id = ?1 RETURNING simple_id_prefix, next_issue_number - 1",
             )
             .bind(data.project_id)
             .fetch_one(&mut *tx)
             .await;
-            let next = match next_result {
-                Ok(next) => next,
+            let (prefix, next) = match next_result {
+                Ok(row) => row,
                 Err(err) if is_retryable_db_error(&err) && attempt + 1 < NUMBER_RETRY => {
                     let _ = tx.rollback().await;
                     tokio::time::sleep(std::time::Duration::from_millis(5 * (attempt as u64 + 1)))
@@ -287,7 +366,7 @@ impl Issues {
                 }
                 Err(err) => return Err(IssueError::Database(err)),
             };
-            let issue_number = next.0 as i32;
+            let issue_number = next as i32;
             let simple_id = format!("{prefix}-{issue_number}");
 
             let inserted = sqlx::query_as!(
@@ -296,8 +375,9 @@ impl Issues {
                        (id, project_id, issue_number, simple_id, status_id, title, description,
                         priority, start_date, target_date, completed_at, sort_order,
                         parent_issue_id, parent_issue_sort_order, extension_metadata,
-                        creator_user_id)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                        creator_user_id, created_at, updated_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                           $17, $17)
                    RETURNING id                      AS "id!: Uuid",
                              project_id              AS "project_id!: Uuid",
                              issue_number            AS "issue_number!: i32",
@@ -331,7 +411,8 @@ impl Issues {
                 data.parent_issue_id,
                 data.parent_issue_sort_order,
                 metadata,
-                super::local_project::DEFAULT_USER_ID
+                super::local_project::DEFAULT_USER_ID,
+                now
             )
             .fetch_one(&mut *tx)
             .await;
@@ -342,7 +423,7 @@ impl Issues {
                     return Ok(Issue::from(row));
                 }
                 Err(err) if is_retryable_db_error(&err) && attempt + 1 < NUMBER_RETRY => {
-                    // 并发下另一个事务先拿走了这个编号，或写锁被别的连接占用，回滚后重试
+                    // 写锁被别的连接占用，回滚后重试
                     let _ = tx.rollback().await;
                     tokio::time::sleep(std::time::Duration::from_millis(5 * (attempt as u64 + 1)))
                         .await;
@@ -421,7 +502,11 @@ impl Issues {
         let set_parent_sort = data.parent_issue_sort_order.is_some();
         let parent_issue_sort_order = data.parent_issue_sort_order.flatten();
         let set_metadata = data.extension_metadata.is_some();
-        let metadata = data.extension_metadata.as_ref().map(|v| v.to_string());
+        let metadata = match data.extension_metadata.as_ref() {
+            Some(value) => Some(validate_metadata(value)?),
+            None => None,
+        };
+        let now = Utc::now();
 
         let row = sqlx::query_as!(
             IssueRow,
@@ -437,8 +522,16 @@ impl Issues {
                    parent_issue_id         = CASE WHEN $18 THEN $19 ELSE parent_issue_id END,
                    parent_issue_sort_order = CASE WHEN $20 THEN $21 ELSE parent_issue_sort_order END,
                    extension_metadata      = CASE WHEN $22 THEN $23 ELSE extension_metadata END,
-                   updated_at              = datetime('now', 'subsec')
+                   updated_at              = $24
                WHERE id = $1
+                 -- 越权校验直接写进 WHERE：不需要先读后写，避免并发更新时
+                 -- 两个事务各持读锁、再同时申请写锁而互相锁死。
+                 AND ($2 = 0 OR EXISTS (
+                         SELECT 1 FROM project_statuses s
+                         WHERE s.id = $3 AND s.project_id = issues.project_id))
+                 AND ($18 = 0 OR $19 IS NULL OR ($19 <> $1 AND EXISTS (
+                         SELECT 1 FROM issues p
+                         WHERE p.id = $19 AND p.project_id = issues.project_id)))
                RETURNING id                      AS "id!: Uuid",
                          project_id              AS "project_id!: Uuid",
                          issue_number            AS "issue_number!: i32",
@@ -479,12 +572,73 @@ impl Issues {
             set_parent_sort,
             parent_issue_sort_order,
             set_metadata,
-            metadata
+            metadata,
+            now
         )
-        .fetch_one(&mut **tx)
+        .fetch_optional(&mut **tx)
         .await?;
 
-        Ok(Issue::from(row))
+        match row {
+            Some(row) => Ok(Issue::from(row)),
+            // 打不中行：可能是需求不存在，也可能是越权。这条路径只在出错时走，
+            // 多几次查询不影响正常写入的并发。
+            None => Err(Self::diagnose_update_failure(tx, id, data).await),
+        }
+    }
+
+    /// UPDATE 打不中行时，查清到底是「需求不存在」还是「越权」，给出具体原因。
+    async fn diagnose_update_failure(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        id: Uuid,
+        data: &UpdateIssueRequest,
+    ) -> IssueError {
+        let owner: Result<Option<(Uuid,)>, sqlx::Error> =
+            sqlx::query_as("SELECT project_id FROM issues WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&mut **tx)
+                .await;
+        let project_id = match owner {
+            Ok(Some((project_id,))) => project_id,
+            Ok(None) => return IssueError::Database(sqlx::Error::RowNotFound),
+            Err(err) => return IssueError::Database(err),
+        };
+
+        if let Some(status_id) = data.status_id {
+            let owns: Result<Option<(i64,)>, sqlx::Error> =
+                sqlx::query_as("SELECT 1 FROM project_statuses WHERE id = ?1 AND project_id = ?2")
+                    .bind(status_id)
+                    .bind(project_id)
+                    .fetch_optional(&mut **tx)
+                    .await;
+            match owns {
+                Ok(None) => {
+                    return IssueError::Validation("状态列不存在或不属于该项目".to_string());
+                }
+                Err(err) => return IssueError::Database(err),
+                Ok(Some(_)) => {}
+            }
+        }
+
+        if let Some(Some(parent_id)) = data.parent_issue_id {
+            if parent_id == id {
+                return IssueError::Validation("需求不能把自己当作父需求".to_string());
+            }
+            let owns: Result<Option<(i64,)>, sqlx::Error> =
+                sqlx::query_as("SELECT 1 FROM issues WHERE id = ?1 AND project_id = ?2")
+                    .bind(parent_id)
+                    .bind(project_id)
+                    .fetch_optional(&mut **tx)
+                    .await;
+            match owns {
+                Ok(None) => {
+                    return IssueError::Validation("父需求不存在或不属于该项目".to_string());
+                }
+                Err(err) => return IssueError::Database(err),
+                Ok(Some(_)) => {}
+            }
+        }
+
+        IssueError::Database(sqlx::Error::RowNotFound)
     }
 
     pub async fn delete(pool: &SqlitePool, id: Uuid) -> Result<u64, sqlx::Error> {
@@ -537,83 +691,117 @@ impl Issues {
             .unwrap_or(MAX_PAGE_SIZE);
         let offset = request.offset.map(|o| o.max(0) as usize).unwrap_or(0);
 
-        let search_pattern = request
+        // 条件按需拼接：拼进去的只有占位符编号，值一律走绑定，没有 SQL 注入面。
+        // 之所以不用 json_each 传数组：uuid 在 SQLite 里是 BLOB，json_each 只能给出
+        // 文本，比对需要额外的 hex/unhex 转换且用不上索引。
+        let mut conditions: Vec<String> = Vec::new();
+        let mut binds: Vec<Bind> = Vec::new();
+
+        binds.push(Bind::Uuid(request.project_id));
+        conditions.push(format!("project_id = ?{}", binds.len()));
+
+        if let Some(pattern) = request
             .search
             .as_ref()
             .filter(|s| !s.trim().is_empty())
-            .map(|s| format!("%{}%", escape_like(s)));
-        let has_search = search_pattern.is_some();
-        let has_status = request.status_id.is_some();
-        let has_priority = request.priority.is_some();
-        let priority = request.priority.map(priority_to_str);
-        let has_simple_id = request.simple_id.is_some();
+            .map(|s| format!("%{}%", escape_like(s)))
+        {
+            binds.push(Bind::Text(pattern));
+            let n = binds.len();
+            conditions.push(format!(
+                "(title LIKE ?{n} ESCAPE '\\' OR IFNULL(description, '') LIKE ?{n} ESCAPE '\\')"
+            ));
+        }
+
+        if let Some(status_id) = request.status_id {
+            binds.push(Bind::Uuid(status_id));
+            conditions.push(format!("status_id = ?{}", binds.len()));
+        }
+
+        // 空数组视为「不筛选」，避免前端清空筛选器时误把结果清空。
+        if let Some(status_ids) = request.status_ids.as_ref().filter(|ids| !ids.is_empty()) {
+            let mut slots = Vec::with_capacity(status_ids.len());
+            for status_id in status_ids {
+                binds.push(Bind::Uuid(*status_id));
+                slots.push(format!("?{}", binds.len()));
+            }
+            conditions.push(format!("status_id IN ({})", slots.join(", ")));
+        }
+
+        if let Some(priority) = request.priority.map(priority_to_str) {
+            binds.push(Bind::Text(priority.to_string()));
+            conditions.push(format!("priority = ?{}", binds.len()));
+        }
+
+        if let Some(simple_id) = request.simple_id.clone() {
+            binds.push(Bind::Text(simple_id));
+            conditions.push(format!("simple_id = ?{}", binds.len()));
+        }
+
+        if let Some(tag_ids) = request.tag_ids.as_ref().filter(|ids| !ids.is_empty()) {
+            let mut slots = Vec::with_capacity(tag_ids.len());
+            for tag_id in tag_ids {
+                binds.push(Bind::Uuid(*tag_id));
+                slots.push(format!("?{}", binds.len()));
+            }
+            conditions.push(format!(
+                "EXISTS (SELECT 1 FROM issue_tags it \
+                 WHERE it.issue_id = issues.id AND it.tag_id IN ({}))",
+                slots.join(", ")
+            ));
+        }
+
+        let where_sql = conditions.join(" AND ");
+
+        let count_sql = format!("SELECT COUNT(*) FROM issues WHERE {where_sql}");
+        let mut count_query = sqlx::query_as::<_, (i64,)>(&count_sql);
+        for bind in &binds {
+            count_query = bind.apply(count_query);
+        }
+        let total = count_query.fetch_one(pool).await?;
 
         // 排序字段来自枚举，不来自用户输入的字符串，因此不存在 SQL 注入面。
         let ascending = !matches!(request.sort_direction, Some(SortDirection::Desc));
         let sort_field = request.sort_field.unwrap_or(IssueSortField::SortOrder);
-
-        let total: (i64,) = sqlx::query_as(
-            r#"SELECT COUNT(*) FROM issues
-               WHERE project_id = ?1
-                 AND (?2 = 0 OR title LIKE ?3 ESCAPE '\' OR IFNULL(description, '') LIKE ?3 ESCAPE '\')
-                 AND (?4 = 0 OR status_id = ?5)
-                 AND (?6 = 0 OR priority = ?7)
-                 AND (?8 = 0 OR simple_id = ?9)"#,
-        )
-        .bind(request.project_id)
-        .bind(has_search)
-        .bind(search_pattern.clone())
-        .bind(has_status)
-        .bind(request.status_id)
-        .bind(has_priority)
-        .bind(priority)
-        .bind(has_simple_id)
-        .bind(request.simple_id.clone())
-        .fetch_one(pool)
-        .await?;
-
         let order_sql = match (sort_field, ascending) {
-            (IssueSortField::SortOrder, true) => "sort_order ASC, created_at ASC",
-            (IssueSortField::SortOrder, false) => "sort_order DESC, created_at DESC",
-            (IssueSortField::Priority, true) => "priority ASC, created_at ASC",
-            (IssueSortField::Priority, false) => "priority DESC, created_at DESC",
-            (IssueSortField::CreatedAt, true) => "created_at ASC",
-            (IssueSortField::CreatedAt, false) => "created_at DESC",
-            (IssueSortField::UpdatedAt, true) => "updated_at ASC",
-            (IssueSortField::UpdatedAt, false) => "updated_at DESC",
-            (IssueSortField::Title, true) => "title ASC",
-            (IssueSortField::Title, false) => "title DESC",
+            (IssueSortField::SortOrder, true) => "sort_order ASC, created_at ASC".to_string(),
+            (IssueSortField::SortOrder, false) => "sort_order DESC, created_at DESC".to_string(),
+            // priority 存的是字符串，字典序会把 urgent 排到最后，必须按业务权重排。
+            (IssueSortField::Priority, true) => {
+                format!("{PRIORITY_RANK_SQL} ASC, created_at ASC")
+            }
+            (IssueSortField::Priority, false) => {
+                format!("{PRIORITY_RANK_SQL} DESC, created_at DESC")
+            }
+            (IssueSortField::CreatedAt, true) => "created_at ASC".to_string(),
+            (IssueSortField::CreatedAt, false) => "created_at DESC".to_string(),
+            (IssueSortField::UpdatedAt, true) => "updated_at ASC, created_at ASC".to_string(),
+            (IssueSortField::UpdatedAt, false) => "updated_at DESC, created_at DESC".to_string(),
+            (IssueSortField::Title, true) => "title ASC, created_at ASC".to_string(),
+            (IssueSortField::Title, false) => "title DESC, created_at DESC".to_string(),
         };
 
-        let sql = format!(
+        binds.push(Bind::Int(limit as i64));
+        let limit_slot = binds.len();
+        binds.push(Bind::Int(offset as i64));
+        let offset_slot = binds.len();
+
+        let page_sql = format!(
             r#"SELECT id, project_id, issue_number, simple_id, status_id, title, description,
                       priority, start_date, target_date, completed_at, sort_order,
                       parent_issue_id, parent_issue_sort_order, extension_metadata,
                       creator_user_id, created_at, updated_at
                FROM issues
-               WHERE project_id = ?1
-                 AND (?2 = 0 OR title LIKE ?3 ESCAPE '\' OR IFNULL(description, '') LIKE ?3 ESCAPE '\')
-                 AND (?4 = 0 OR status_id = ?5)
-                 AND (?6 = 0 OR priority = ?7)
-                 AND (?8 = 0 OR simple_id = ?9)
+               WHERE {where_sql}
                ORDER BY {order_sql}
-               LIMIT ?10 OFFSET ?11"#
+               LIMIT ?{limit_slot} OFFSET ?{offset_slot}"#
         );
 
-        let rows = sqlx::query_as::<_, IssueSqlRow>(&sql)
-            .bind(request.project_id)
-            .bind(has_search)
-            .bind(search_pattern)
-            .bind(has_status)
-            .bind(request.status_id)
-            .bind(has_priority)
-            .bind(priority)
-            .bind(has_simple_id)
-            .bind(request.simple_id.clone())
-            .bind(limit as i64)
-            .bind(offset as i64)
-            .fetch_all(pool)
-            .await?;
+        let mut page_query = sqlx::query_as::<_, IssueSqlRow>(&page_sql);
+        for bind in &binds {
+            page_query = bind.apply(page_query);
+        }
+        let rows = page_query.fetch_all(pool).await?;
 
         Ok(ListIssuesResponse {
             issues: rows.into_iter().map(|row| Issue::from(row.0)).collect(),
@@ -667,7 +855,7 @@ mod tests {
     };
     use uuid::Uuid;
 
-    use super::{Issues, MAX_DESCRIPTION_LEN, MAX_TITLE_LEN};
+    use super::{Issues, MAX_DESCRIPTION_LEN, MAX_METADATA_BYTES, MAX_TITLE_LEN};
     use crate::{
         models::{
             local_project::{DEFAULT_ORGANIZATION_ID, LocalProjects},
@@ -1022,8 +1210,9 @@ mod tests {
         let list = Issues::find_by_project(test_db.pool(), a.project_id)
             .await
             .unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].title, "A1");
+        assert_eq!(list.issues.len(), 1);
+        assert_eq!(list.issues[0].title, "A1");
+        assert!(!list.truncated);
     }
 
     #[tokio::test]
@@ -1090,5 +1279,706 @@ mod tests {
                 .await
                 .unwrap();
         assert!(linked.0.is_none(), "删除需求后工作区必须解绑而不是被删除");
+    }
+
+    // ---- 跨项目越权 ----
+
+    #[tokio::test]
+    async fn 建需求时跨项目的父需求被拒绝() {
+        let test_db = TestDb::new().await;
+        let a = 准备(&test_db, "Alpha").await;
+        let b = 准备(&test_db, "Beta").await;
+
+        let parent = Issues::create(test_db.pool(), &建需求请求(&b, "别的项目的父需求"))
+            .await
+            .unwrap();
+
+        let mut request = 建需求请求(&a, "子需求");
+        request.parent_issue_id = Some(parent.id);
+
+        let err = Issues::create(test_db.pool(), &request)
+            .await
+            .expect_err("跨项目父需求必须拒绝");
+        assert!(
+            matches!(err, super::IssueError::Validation(_)),
+            "应是校验错误：{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn 建需求时不存在的父需求被拒绝() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+        let mut request = 建需求请求(&场景, "子需求");
+        request.parent_issue_id = Some(Uuid::from_u128(424242));
+
+        let err = Issues::create(test_db.pool(), &request)
+            .await
+            .expect_err("父需求不存在必须拒绝");
+        assert!(matches!(err, super::IssueError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn 建需求时把自己当父需求被拒绝() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+        let id = Uuid::new_v4();
+        let mut request = 建需求请求(&场景, "自己当爹");
+        request.id = Some(id);
+        request.parent_issue_id = Some(id);
+
+        let err = Issues::create(test_db.pool(), &request)
+            .await
+            .expect_err("自引用必须拒绝");
+        assert!(matches!(err, super::IssueError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn 更新时跨项目的状态列被拒绝() {
+        let test_db = TestDb::new().await;
+        let a = 准备(&test_db, "Alpha").await;
+        let b = 准备(&test_db, "Beta").await;
+
+        let issue = Issues::create(test_db.pool(), &建需求请求(&a, "A1"))
+            .await
+            .unwrap();
+
+        let err = Issues::update(
+            test_db.pool(),
+            issue.id,
+            &UpdateIssueRequest {
+                status_id: Some(b.todo_status_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("跨项目状态列必须拒绝");
+        assert!(
+            matches!(err, super::IssueError::Validation(_)),
+            "应是校验错误：{err:?}"
+        );
+
+        let after = Issues::find_by_id(test_db.pool(), issue.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.status_id, a.todo_status_id, "越权更新不得落库");
+    }
+
+    #[tokio::test]
+    async fn 更新时跨项目的父需求被拒绝() {
+        let test_db = TestDb::new().await;
+        let a = 准备(&test_db, "Alpha").await;
+        let b = 准备(&test_db, "Beta").await;
+
+        let issue = Issues::create(test_db.pool(), &建需求请求(&a, "A1"))
+            .await
+            .unwrap();
+        let parent = Issues::create(test_db.pool(), &建需求请求(&b, "B1"))
+            .await
+            .unwrap();
+
+        let err = Issues::update(
+            test_db.pool(),
+            issue.id,
+            &UpdateIssueRequest {
+                parent_issue_id: Some(Some(parent.id)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("跨项目父需求必须拒绝");
+        assert!(matches!(err, super::IssueError::Validation(_)));
+
+        let after = Issues::find_by_id(test_db.pool(), issue.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.parent_issue_id, None);
+    }
+
+    #[tokio::test]
+    async fn 更新时把自己当父需求被拒绝() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "A1"))
+            .await
+            .unwrap();
+
+        let err = Issues::update(
+            test_db.pool(),
+            issue.id,
+            &UpdateIssueRequest {
+                parent_issue_id: Some(Some(issue.id)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("自引用必须拒绝");
+        assert!(matches!(err, super::IssueError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn 更新同项目的状态列与父需求可以通过() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+        let parent = Issues::create(test_db.pool(), &建需求请求(&场景, "父"))
+            .await
+            .unwrap();
+        let child = Issues::create(test_db.pool(), &建需求请求(&场景, "子"))
+            .await
+            .unwrap();
+        let dev = ProjectStatuses::find_stage(test_db.pool(), 场景.project_id, StageType::Dev)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let updated = Issues::update(
+            test_db.pool(),
+            child.id,
+            &UpdateIssueRequest {
+                status_id: Some(dev.id),
+                parent_issue_id: Some(Some(parent.id)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.status_id, dev.id);
+        assert_eq!(updated.parent_issue_id, Some(parent.id));
+    }
+
+    #[tokio::test]
+    async fn 更新不存在的需求返回_row_not_found() {
+        let test_db = TestDb::new().await;
+        let err = Issues::update(
+            test_db.pool(),
+            Uuid::from_u128(987123),
+            &UpdateIssueRequest {
+                title: Some("新".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("不存在的需求必须报错");
+        assert!(
+            matches!(err, super::IssueError::Database(sqlx::Error::RowNotFound)),
+            "应是 RowNotFound：{err:?}"
+        );
+    }
+
+    // ---- extension_metadata 上限 ----
+
+    #[tokio::test]
+    async fn 超大的_metadata_被拒绝() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+
+        let huge = "x".repeat(MAX_METADATA_BYTES + 10);
+        let mut request = 建需求请求(&场景, "超大");
+        request.extension_metadata = serde_json::json!({ "blob": huge });
+
+        assert!(matches!(
+            Issues::create(test_db.pool(), &request).await,
+            Err(super::IssueError::Validation(_))
+        ));
+
+        let ok = Issues::create(test_db.pool(), &建需求请求(&场景, "正常"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            Issues::update(
+                test_db.pool(),
+                ok.id,
+                &UpdateIssueRequest {
+                    extension_metadata: Some(
+                        serde_json::json!({ "blob": "x".repeat(MAX_METADATA_BYTES + 10) })
+                    ),
+                    ..Default::default()
+                },
+            )
+            .await,
+            Err(super::IssueError::Validation(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn 非对象的_metadata_被拒绝() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+
+        for bad in [
+            serde_json::json!("字符串"),
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!(42),
+            serde_json::Value::Null,
+        ] {
+            let mut request = 建需求请求(&场景, "非对象");
+            request.extension_metadata = bad.clone();
+            assert!(
+                matches!(
+                    Issues::create(test_db.pool(), &request).await,
+                    Err(super::IssueError::Validation(_))
+                ),
+                "metadata {bad} 必须被拒绝"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn 恰好卡在上限的_metadata_可以通过() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+
+        // {"blob":"<padding>"} 的固定开销是 11 字节
+        let padding = "x".repeat(MAX_METADATA_BYTES - 11);
+        let mut request = 建需求请求(&场景, "刚好");
+        request.extension_metadata = serde_json::json!({ "blob": padding });
+        assert_eq!(
+            request.extension_metadata.to_string().len(),
+            MAX_METADATA_BYTES
+        );
+
+        let issue = Issues::create(test_db.pool(), &request).await.unwrap();
+        assert_eq!(
+            issue.extension_metadata["blob"].as_str().unwrap().len(),
+            MAX_METADATA_BYTES - 11
+        );
+    }
+
+    // ---- 优先级排序 ----
+
+    async fn 按优先级排序(
+        test_db: &TestDb,
+        场景: &场景,
+        direction: SortDirection,
+    ) -> Vec<String> {
+        Issues::search(
+            test_db.pool(),
+            &SearchIssuesRequest {
+                project_id: 场景.project_id,
+                sort_field: Some(IssueSortField::Priority),
+                sort_direction: Some(direction),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .issues
+        .into_iter()
+        .map(|issue| issue.title)
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn 优先级排序按业务权重而不是字典序() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+
+        for (title, priority) in [
+            ("低", Some(IssuePriority::Low)),
+            ("紧急", Some(IssuePriority::Urgent)),
+            ("中", Some(IssuePriority::Medium)),
+            ("无", None),
+            ("高", Some(IssuePriority::High)),
+        ] {
+            let mut request = 建需求请求(&场景, title);
+            request.priority = priority;
+            Issues::create(test_db.pool(), &request).await.unwrap();
+        }
+
+        assert_eq!(
+            按优先级排序(&test_db, &场景, SortDirection::Asc).await,
+            vec!["紧急", "高", "中", "低", "无"],
+            "升序必须是 urgent > high > medium > low > 无"
+        );
+        assert_eq!(
+            按优先级排序(&test_db, &场景, SortDirection::Desc).await,
+            vec!["无", "低", "中", "高", "紧急"],
+            "降序必须完全反过来"
+        );
+    }
+
+    // ---- 编号发放 ----
+
+    #[tokio::test]
+    async fn 删除末条需求后编号不复用() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Vibe Kanban").await;
+
+        let first = Issues::create(test_db.pool(), &建需求请求(&场景, "第一条"))
+            .await
+            .unwrap();
+        let second = Issues::create(test_db.pool(), &建需求请求(&场景, "第二条"))
+            .await
+            .unwrap();
+        assert_eq!(second.issue_number, 2);
+
+        Issues::delete(test_db.pool(), second.id).await.unwrap();
+
+        let third = Issues::create(test_db.pool(), &建需求请求(&场景, "第三条"))
+            .await
+            .unwrap();
+        assert_eq!(third.issue_number, 3, "编号不得复用已删除的 2");
+        assert_eq!(third.simple_id, "VK-3");
+        assert_eq!(first.issue_number, 1);
+    }
+
+    #[tokio::test]
+    async fn 项目改名后前缀保持不变() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Vibe Kanban").await;
+        let before = Issues::create(test_db.pool(), &建需求请求(&场景, "改名前"))
+            .await
+            .unwrap();
+        assert_eq!(before.simple_id, "VK-1");
+
+        LocalProjects::update(
+            test_db.pool(),
+            场景.project_id,
+            &api_types::project::UpdateProjectRequest {
+                name: Some("Zebra Quartz".to_string()),
+                color: None,
+                sort_order: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let after = Issues::create(test_db.pool(), &建需求请求(&场景, "改名后"))
+            .await
+            .unwrap();
+        assert_eq!(after.simple_id, "VK-2", "改名不得让新需求的前缀漂移");
+
+        let stored = Issues::find_by_id(test_db.pool(), before.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.simple_id, "VK-1",
+            "已有需求的 simple_id 不受改名影响"
+        );
+    }
+
+    #[tokio::test]
+    async fn 三轮三十二并发建需求编号唯一且连续() {
+        for round in 0..3 {
+            let test_db = TestDb::new().await;
+            let 场景 = 准备(&test_db, "Vibe Kanban").await;
+            let pool = test_db.pool().clone();
+
+            let mut handles = Vec::new();
+            for index in 0..32 {
+                let pool = pool.clone();
+                let request = 建需求请求(&场景, &format!("并发 {round}-{index}"));
+                handles.push(tokio::spawn(async move {
+                    Issues::create(&pool, &request).await
+                }));
+            }
+
+            let mut numbers = Vec::new();
+            for handle in handles {
+                numbers.push(
+                    handle
+                        .await
+                        .unwrap()
+                        .expect("并发建需求不应失败")
+                        .issue_number,
+                );
+            }
+            numbers.sort_unstable();
+
+            assert_eq!(
+                numbers,
+                (1..=32).collect::<Vec<i32>>(),
+                "第 {round} 轮：32 并发的编号必须连续且唯一"
+            );
+        }
+    }
+
+    // ---- 快照截断 ----
+
+    #[tokio::test]
+    async fn 快照触到上限时返回截断标记() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Vibe Kanban").await;
+
+        let total = super::MAX_SNAPSHOT_ROWS + 5;
+        let mut tx = test_db.pool().begin().await.unwrap();
+        for index in 0..total {
+            sqlx::query(
+                "INSERT INTO issues (id, project_id, issue_number, simple_id, status_id, title, \
+                 sort_order, extension_metadata) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '{}')",
+            )
+            .bind(Uuid::new_v4())
+            .bind(场景.project_id)
+            .bind(index + 1)
+            .bind(format!("VK-{}", index + 1))
+            .bind(场景.todo_status_id)
+            .bind(format!("批量 {index}"))
+            .bind(index as f64)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        let snapshot = Issues::find_by_project(test_db.pool(), 场景.project_id)
+            .await
+            .unwrap();
+        assert_eq!(snapshot.issues.len(), super::MAX_SNAPSHOT_ROWS as usize);
+        assert!(snapshot.truncated, "触到上限必须让调用方感知");
+
+        // 刚好等于上限时不算截断
+        sqlx::query("DELETE FROM issues WHERE issue_number > ?1")
+            .bind(super::MAX_SNAPSHOT_ROWS)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+        let exact = Issues::find_by_project(test_db.pool(), 场景.project_id)
+            .await
+            .unwrap();
+        assert_eq!(exact.issues.len(), super::MAX_SNAPSHOT_ROWS as usize);
+        assert!(!exact.truncated, "恰好等于上限不算截断");
+    }
+
+    // ---- 搜索筛选 ----
+
+    #[tokio::test]
+    async fn 搜索按_status_ids_过滤() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+        let dev = ProjectStatuses::find_stage(test_db.pool(), 场景.project_id, StageType::Dev)
+            .await
+            .unwrap()
+            .unwrap();
+        let done = ProjectStatuses::find_stage(test_db.pool(), 场景.project_id, StageType::Done)
+            .await
+            .unwrap()
+            .unwrap();
+
+        Issues::create(test_db.pool(), &建需求请求(&场景, "待开发"))
+            .await
+            .unwrap();
+        let mut in_dev = 建需求请求(&场景, "开发中");
+        in_dev.status_id = dev.id;
+        Issues::create(test_db.pool(), &in_dev).await.unwrap();
+        let mut finished = 建需求请求(&场景, "已完成");
+        finished.status_id = done.id;
+        Issues::create(test_db.pool(), &finished).await.unwrap();
+
+        let hit = Issues::search(
+            test_db.pool(),
+            &SearchIssuesRequest {
+                project_id: 场景.project_id,
+                status_ids: Some(vec![dev.id, done.id]),
+                sort_field: Some(IssueSortField::CreatedAt),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let mut titles: Vec<String> = hit.issues.into_iter().map(|i| i.title).collect();
+        titles.sort();
+        assert_eq!(titles, vec!["已完成".to_string(), "开发中".to_string()]);
+        assert_eq!(hit.total_count, 2, "总数必须也按筛选条件算");
+
+        // 空数组视为不筛选
+        let all = Issues::search(
+            test_db.pool(),
+            &SearchIssuesRequest {
+                project_id: 场景.project_id,
+                status_ids: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(all.total_count, 3);
+    }
+
+    #[tokio::test]
+    async fn 搜索按_tag_ids_过滤() {
+        use api_types::{issue_tag::CreateIssueTagRequest, tag::CreateTagRequest};
+
+        use crate::models::issue_side::{IssueTags, ProjectTags};
+
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+
+        let 前端 = ProjectTags::create(
+            test_db.pool(),
+            &CreateTagRequest {
+                id: None,
+                project_id: 场景.project_id,
+                name: "前端".to_string(),
+                color: "#22c55e".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let 后端 = ProjectTags::create(
+            test_db.pool(),
+            &CreateTagRequest {
+                id: None,
+                project_id: 场景.project_id,
+                name: "后端".to_string(),
+                color: "#3b82f6".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let a = Issues::create(test_db.pool(), &建需求请求(&场景, "带前端标签"))
+            .await
+            .unwrap();
+        let b = Issues::create(test_db.pool(), &建需求请求(&场景, "带后端标签"))
+            .await
+            .unwrap();
+        Issues::create(test_db.pool(), &建需求请求(&场景, "没有标签"))
+            .await
+            .unwrap();
+
+        for (issue_id, tag_id) in [(a.id, 前端.id), (b.id, 后端.id)] {
+            IssueTags::create(
+                test_db.pool(),
+                &CreateIssueTagRequest {
+                    id: None,
+                    issue_id,
+                    tag_id,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let hit = Issues::search(
+            test_db.pool(),
+            &SearchIssuesRequest {
+                project_id: 场景.project_id,
+                tag_ids: Some(vec![前端.id]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(hit.total_count, 1);
+        assert_eq!(hit.issues[0].title, "带前端标签");
+
+        // 多个标签是「任一命中」
+        let both = Issues::search(
+            test_db.pool(),
+            &SearchIssuesRequest {
+                project_id: 场景.project_id,
+                tag_ids: Some(vec![前端.id, 后端.id]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(both.total_count, 2);
+    }
+
+    #[tokio::test]
+    async fn 搜索条件可以叠加() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+
+        let mut urgent = 建需求请求(&场景, "登录页面崩溃");
+        urgent.priority = Some(IssuePriority::Urgent);
+        Issues::create(test_db.pool(), &urgent).await.unwrap();
+
+        let mut low = 建需求请求(&场景, "登录页面配色");
+        low.priority = Some(IssuePriority::Low);
+        Issues::create(test_db.pool(), &low).await.unwrap();
+
+        let hit = Issues::search(
+            test_db.pool(),
+            &SearchIssuesRequest {
+                project_id: 场景.project_id,
+                search: Some("登录".to_string()),
+                priority: Some(IssuePriority::Urgent),
+                status_ids: Some(vec![场景.todo_status_id]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(hit.total_count, 1);
+        assert_eq!(hit.issues[0].title, "登录页面崩溃");
+    }
+
+    // ---- 时间格式 ----
+
+    #[tokio::test]
+    async fn 同一行的时间字段可以按字符串比较() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+
+        let mut request = 建需求请求(&场景, "带日期");
+        // start_date 取一个明显早于「现在」的时刻：字符串比较必须也得出同样结论。
+        request.start_date = Some(
+            chrono::DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        );
+        let issue = Issues::create(test_db.pool(), &request).await.unwrap();
+
+        let row: (String, String, String) =
+            sqlx::query_as("SELECT created_at, updated_at, start_date FROM issues WHERE id = ?1")
+                .bind(issue.id)
+                .fetch_one(test_db.pool())
+                .await
+                .unwrap();
+        let (created_at, updated_at, start_date) = row;
+
+        assert!(
+            start_date < created_at,
+            "2020 年的 start_date 必须小于 created_at，实际 start_date={start_date} created_at={created_at}"
+        );
+        assert_eq!(created_at, updated_at, "新建行的两个时间戳应完全一致");
+        assert!(
+            created_at.contains('T'),
+            "created_at 必须是 RFC3339：{created_at}"
+        );
+
+        // SQL 侧的比较也必须一致
+        let cmp: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM issues WHERE id = ?1 AND start_date < created_at")
+                .bind(issue.id)
+                .fetch_one(test_db.pool())
+                .await
+                .unwrap();
+        assert_eq!(cmp.0, 1, "SQL 里按字符串比较也必须成立");
+    }
+
+    #[tokio::test]
+    async fn 更新会推进_updated_at_且格式一致() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "原标题"))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        Issues::update(
+            test_db.pool(),
+            issue.id,
+            &UpdateIssueRequest {
+                title: Some("新标题".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let row: (String, String) =
+            sqlx::query_as("SELECT created_at, updated_at FROM issues WHERE id = ?1")
+                .bind(issue.id)
+                .fetch_one(test_db.pool())
+                .await
+                .unwrap();
+        assert!(row.1.contains('T'), "updated_at 必须是 RFC3339：{}", row.1);
+        assert!(row.1 > row.0, "updated_at 必须推进：{} > {}", row.1, row.0);
     }
 }
