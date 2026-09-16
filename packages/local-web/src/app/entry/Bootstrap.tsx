@@ -85,7 +85,8 @@ const dataSourceEnv = import.meta.env.VITE_VK_DATA_SOURCE as
   | 'remote'
   | undefined;
 configureDataSource(
-  dataSourceEnv ?? (import.meta.env.VITE_VK_SHARED_API_BASE ? 'remote' : 'local')
+  dataSourceEnv ??
+    (import.meta.env.VITE_VK_SHARED_API_BASE ? 'remote' : 'local')
 );
 
 configureAuthRuntime({
