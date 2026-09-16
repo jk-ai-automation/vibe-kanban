@@ -11,6 +11,8 @@ import {
   getRowKey,
   parseResponseError,
 } from '@/shared/lib/electric/rows';
+import { isLocalMode } from '@/shared/lib/local/dataSource';
+import { createLocalShapeCollection } from '@/shared/lib/local/localCollections';
 
 type SourceMode = 'electric' | 'fallback';
 
@@ -734,6 +736,18 @@ export function createShapeCollection<TRow extends ElectricRow>(
   const cached = collectionCache.get(collectionId);
   if (cached) {
     return cached as typeof cached & { __rowType?: TRow };
+  }
+
+  if (isLocalMode()) {
+    const localCollection = createLocalShapeCollection(
+      collectionId,
+      shape,
+      params,
+      config,
+      mutation
+    );
+    collectionCache.set(collectionId, localCollection);
+    return localCollection as typeof localCollection & { __rowType?: TRow };
   }
 
   const reportError = createErrorReporter(config);
