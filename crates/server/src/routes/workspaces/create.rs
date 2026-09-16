@@ -250,7 +250,37 @@ pub async fn create_and_start_workspace(
         managed_workspace.associate_attachments(ids).await?;
     }
 
-    if let Some(linked_issue) = &linked_issue
+    // 个人版：linked_issue.issue_id 指向本地 issues 表时，绑定工作区并把需求推进到「开发中」，
+    // 不再调用云端。团队版（本地查不到）保持原有的云端附件导入逻辑。
+    let local_issue = match &linked_issue {
+        Some(info) => db::models::issue::Issues::find_by_id(&deployment.db().pool, info.issue_id)
+            .await
+            .map_err(ApiError::Database)?,
+        None => None,
+    };
+
+    if let Some(issue) = &local_issue {
+        db::models::workspace::Workspace::set_issue_id(
+            &deployment.db().pool,
+            managed_workspace.workspace.id,
+            Some(issue.id),
+        )
+        .await
+        .map_err(ApiError::Database)?;
+
+        if let Err(e) = db::models::issue::Issues::move_to_stage(
+            &deployment.db().pool,
+            issue.id,
+            db::models::local_project_status::StageType::Dev,
+        )
+        .await
+        {
+            tracing::warn!("需求 {} 流转到开发中失败: {}", issue.id, e);
+        }
+    }
+
+    if local_issue.is_none()
+        && let Some(linked_issue) = &linked_issue
         && let Ok(client) = deployment.remote_client()
     {
         match import_issue_attachments_from_remote(
@@ -467,6 +497,95 @@ mod tests {
         assert_eq!(
             rewritten,
             "See [doc.pdf](.vibe-attachments/doc_file.pdf) and ![shot.png](.vibe-attachments/shot_file.png). https://example.com"
+        );
+    }
+
+    #[tokio::test]
+    async fn 本地需求存在时绑定工作区并流转到开发中() {
+        use api_types::{issue::CreateIssueRequest, project::CreateProjectRequest};
+        use db::{
+            models::{
+                issue::Issues,
+                local_project::{DEFAULT_ORGANIZATION_ID, LocalProjects},
+                local_project_status::{ProjectStatuses, StageType},
+                workspace::{CreateWorkspace, Workspace},
+            },
+            test_support::TestDb,
+        };
+        use uuid::Uuid;
+
+        let test_db = TestDb::new().await;
+        let project = LocalProjects::create(
+            test_db.pool(),
+            &CreateProjectRequest {
+                id: None,
+                organization_id: DEFAULT_ORGANIZATION_ID,
+                name: "Vibe Kanban".to_string(),
+                color: "#6366f1".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let todo = ProjectStatuses::find_stage(test_db.pool(), project.id, StageType::Todo)
+            .await
+            .unwrap()
+            .unwrap();
+        let issue = Issues::create(
+            test_db.pool(),
+            &CreateIssueRequest {
+                id: None,
+                project_id: project.id,
+                status_id: todo.id,
+                title: "示例".to_string(),
+                description: None,
+                priority: None,
+                start_date: None,
+                target_date: None,
+                completed_at: None,
+                sort_order: 0.0,
+                parent_issue_id: None,
+                parent_issue_sort_order: None,
+                extension_metadata: serde_json::json!({}),
+            },
+        )
+        .await
+        .unwrap();
+
+        let workspace = Workspace::create(
+            test_db.pool(),
+            &CreateWorkspace {
+                branch: "vk/demo".to_string(),
+                name: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+
+        // 模拟路由中的本地分支
+        Workspace::set_issue_id(test_db.pool(), workspace.id, Some(issue.id))
+            .await
+            .unwrap();
+        Issues::move_to_stage(test_db.pool(), issue.id, StageType::Dev)
+            .await
+            .unwrap();
+
+        let dev = ProjectStatuses::find_stage(test_db.pool(), project.id, StageType::Dev)
+            .await
+            .unwrap()
+            .unwrap();
+        let after = Issues::find_by_id(test_db.pool(), issue.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.status_id, dev.id);
+        assert_eq!(
+            Workspace::find_by_id(test_db.pool(), workspace.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .issue_id,
+            Some(issue.id)
         );
     }
 }
