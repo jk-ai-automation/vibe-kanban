@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO local_users\n                           (id, username, display_name, email, password_hash, role, status,\n                            avatar_color, created_at, updated_at)\n                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)\n                       RETURNING id            AS \"id!: Uuid\",\n                                 username      AS \"username!\",\n                                 display_name  AS \"display_name!\",\n                                 email         AS \"email?\",\n                                 role          AS \"role!: LocalUserRole\",\n                                 status        AS \"status!: LocalUserStatus\",\n                                 avatar_color  AS \"avatar_color!\",\n                                 created_at    AS \"created_at!: DateTime<Utc>\",\n                                 updated_at    AS \"updated_at!: DateTime<Utc>\",\n                                 last_login_at AS \"last_login_at?: DateTime<Utc>\"",
+  "query": "INSERT INTO local_users\n                   (id, username, display_name, email, password_hash, role, status,\n                    avatar_color, created_at, updated_at)\n               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)\n               RETURNING id            AS \"id!: Uuid\",\n                         username      AS \"username!\",\n                         display_name  AS \"display_name!\",\n                         email         AS \"email?\",\n                         role          AS \"role!: LocalUserRole\",\n                         status        AS \"status!: LocalUserStatus\",\n                         avatar_color  AS \"avatar_color!\",\n                         created_at    AS \"created_at!: DateTime<Utc>\",\n                         updated_at    AS \"updated_at!: DateTime<Utc>\",\n                         last_login_at AS \"last_login_at?: DateTime<Utc>\"",
   "describe": {
     "columns": [
       {
@@ -70,5 +70,5 @@
       true
     ]
   },
-  "hash": "d7356e9072e980c12b0a5a93a3df211b91181508494fea5682eb06a5447162ac"
+  "hash": "5ef62c7ff99ffe545365f2cbcd3ca1629df44be2e5bef321052980975c50f9ec"
 }

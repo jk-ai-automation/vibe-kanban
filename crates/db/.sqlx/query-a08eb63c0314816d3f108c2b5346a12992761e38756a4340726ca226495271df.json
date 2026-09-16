@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO local_invites\n                           (id, code_hash, role, created_by, expires_at, created_at)\n                       VALUES ($1, $2, $3, $4, $5, $6)\n                       RETURNING id         AS \"id!: Uuid\",\n                                 role       AS \"role!: LocalUserRole\",\n                                 created_by AS \"created_by?: Uuid\",\n                                 expires_at AS \"expires_at!: DateTime<Utc>\",\n                                 used_by    AS \"used_by?: Uuid\",\n                                 used_at    AS \"used_at?: DateTime<Utc>\",\n                                 created_at AS \"created_at!: DateTime<Utc>\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "role!: LocalUserRole",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_by?: Uuid",
+        "ordinal": 2,
+        "type_info": "Blob"
+      },
+      {
+        "name": "expires_at!: DateTime<Utc>",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "used_by?: Uuid",
+        "ordinal": 4,
+        "type_info": "Blob"
+      },
+      {
+        "name": "used_at?: DateTime<Utc>",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "a08eb63c0314816d3f108c2b5346a12992761e38756a4340726ca226495271df"
+}

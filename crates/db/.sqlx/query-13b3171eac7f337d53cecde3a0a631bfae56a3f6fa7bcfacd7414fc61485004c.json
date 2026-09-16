@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE local_invites\n               SET used_by = $2, used_at = $3\n               WHERE id = $1 AND used_at IS NULL AND expires_at > $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "13b3171eac7f337d53cecde3a0a631bfae56a3f6fa7bcfacd7414fc61485004c"
+}

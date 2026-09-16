@@ -15,6 +15,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::db_retry::retry_on_busy;
+use crate::models::local_user::LocalUserRole;
 
 /// `last_seen_at` 的写库节流窗口：距上次不足这个时长就不写。
 /// 每请求写一次会让只读页面也产生写锁争抢。
@@ -241,6 +242,227 @@ impl LocalSessions {
     /// 与其为了一句 `Utc::now()` 给它加一个依赖，不如把时间源留在本层。
     pub async fn delete_expired_now(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
         Self::delete_expired(pool, Utc::now()).await
+    }
+}
+
+// ------------------------------------------------------------------ 邀请码
+
+/// 邀请码默认有效期（天）。管理员建码时不填就用它。
+pub const DEFAULT_INVITE_TTL_DAYS: i64 = 7;
+
+/// 邀请码行。**不含 `code_hash`**，理由同 [`LocalSession`]：
+/// 管理员页面会直接 `Json(invites)`，带上哈希等于把离线撞库的原料送出去。
+/// 明文邀请码只在创建那一次返回给调用方，之后库里、响应里都再也见不到。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalInvite {
+    pub id: Uuid,
+    pub role: LocalUserRole,
+    pub created_by: Option<Uuid>,
+    pub expires_at: DateTime<Utc>,
+    pub used_by: Option<Uuid>,
+    pub used_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// 建邀请入参。`code_hash` 由调用方（`services::local_auth::token::hash_session_token`）
+/// 算好后传进来，本层不接触明文邀请码。
+#[derive(Debug, Clone)]
+pub struct NewLocalInvite {
+    pub code_hash: String,
+    pub role: LocalUserRole,
+    pub created_by: Option<Uuid>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// 邀请注册的用户资料。
+///
+/// **刻意没有 `role` 字段**：新用户的角色只能来自邀请码本身。
+/// 请求体里的 `role=admin` 在类型层面就无处落脚，不依赖任何 handler 记得忽略它。
+#[derive(Debug, Clone)]
+pub struct InviteRegistration {
+    pub username: String,
+    pub display_name: String,
+    pub email: Option<String>,
+    pub password_hash: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum InviteRedeemError {
+    /// 邀请码不存在 / 已过期 / 已被用过。
+    ///
+    /// **三种情况共用一个变体是安全要求**：分开就等于给攻击者一个
+    /// 「这个码存不存在」的预言机，可以拿来枚举。
+    #[error("邀请码无效或已过期")]
+    InvalidCode,
+    #[error(transparent)]
+    User(#[from] crate::models::local_user::LocalUserError),
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+pub struct LocalInvites;
+
+impl LocalInvites {
+    pub async fn create(
+        pool: &SqlitePool,
+        data: NewLocalInvite,
+    ) -> Result<LocalInvite, sqlx::Error> {
+        let id = Uuid::new_v4();
+        let now = Utc::now();
+        let NewLocalInvite {
+            code_hash,
+            role,
+            created_by,
+            expires_at,
+        } = data;
+
+        retry_on_busy(|| {
+            let code_hash = code_hash.clone();
+            async move {
+                sqlx::query_as!(
+                    LocalInvite,
+                    r#"INSERT INTO local_invites
+                           (id, code_hash, role, created_by, expires_at, created_at)
+                       VALUES ($1, $2, $3, $4, $5, $6)
+                       RETURNING id         AS "id!: Uuid",
+                                 role       AS "role!: LocalUserRole",
+                                 created_by AS "created_by?: Uuid",
+                                 expires_at AS "expires_at!: DateTime<Utc>",
+                                 used_by    AS "used_by?: Uuid",
+                                 used_at    AS "used_at?: DateTime<Utc>",
+                                 created_at AS "created_at!: DateTime<Utc>""#,
+                    id,
+                    code_hash,
+                    role,
+                    created_by,
+                    expires_at,
+                    now
+                )
+                .fetch_one(pool)
+                .await
+            }
+        })
+        .await
+    }
+
+    /// 按哈希取一条**当前可用**的邀请：未使用、未过期。
+    /// 时间比较用 RFC3339 字符串，理由同 [`LocalSessions::find_valid_by_token_hash`]。
+    pub async fn find_usable_by_code_hash(
+        pool: &SqlitePool,
+        code_hash: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<LocalInvite>, sqlx::Error> {
+        sqlx::query_as!(
+            LocalInvite,
+            r#"SELECT id         AS "id!: Uuid",
+                      role       AS "role!: LocalUserRole",
+                      created_by AS "created_by?: Uuid",
+                      expires_at AS "expires_at!: DateTime<Utc>",
+                      used_by    AS "used_by?: Uuid",
+                      used_at    AS "used_at?: DateTime<Utc>",
+                      created_at AS "created_at!: DateTime<Utc>"
+               FROM local_invites
+               WHERE code_hash = $1
+                 AND used_at IS NULL
+                 AND expires_at > $2"#,
+            code_hash,
+            now
+        )
+        .fetch_optional(pool)
+        .await
+    }
+
+    /// 全部邀请（含已使用、已过期），按创建时间倒序。管理员页面用。
+    pub async fn find_all(pool: &SqlitePool) -> Result<Vec<LocalInvite>, sqlx::Error> {
+        sqlx::query_as!(
+            LocalInvite,
+            r#"SELECT id         AS "id!: Uuid",
+                      role       AS "role!: LocalUserRole",
+                      created_by AS "created_by?: Uuid",
+                      expires_at AS "expires_at!: DateTime<Utc>",
+                      used_by    AS "used_by?: Uuid",
+                      used_at    AS "used_at?: DateTime<Utc>",
+                      created_at AS "created_at!: DateTime<Utc>"
+               FROM local_invites
+               ORDER BY created_at DESC"#
+        )
+        .fetch_all(pool)
+        .await
+    }
+
+    /// 删除一条邀请（作废）。返回受影响行数，0 表示本来就不存在。
+    pub async fn delete(pool: &SqlitePool, id: Uuid) -> Result<u64, sqlx::Error> {
+        let done = retry_on_busy(|| async move {
+            sqlx::query!(r#"DELETE FROM local_invites WHERE id = $1"#, id)
+                .execute(pool)
+                .await
+        })
+        .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// 兑换邀请码：建号 + 消费邀请，**全程一个事务**。
+    ///
+    /// 顺序是「先建号、后消费邀请」：
+    /// - 建号先做，用户名唯一索引就成了这一路的占位；重名时整体回滚，
+    ///   邀请码**不会**被一次失败的注册烧掉。
+    /// - 消费邀请用条件更新 `WHERE id = ? AND used_at IS NULL`，
+    ///   靠 `rows_affected` 判胜负，而不是「先查后写」——后者在两个请求
+    ///   同时兑换同一个码时会双双通过检查。
+    ///
+    /// 新用户的角色只能来自 `invite.role`，见 [`InviteRegistration`]。
+    pub async fn redeem(
+        pool: &SqlitePool,
+        code_hash: &str,
+        registration: InviteRegistration,
+        now: DateTime<Utc>,
+    ) -> Result<crate::models::local_user::LocalUser, InviteRedeemError> {
+        use crate::models::local_user::{NewLocalUser, PreparedUser, map_insert_error};
+
+        // 先读一次拿角色。这一次读**不是**并发判据（判据是下面的条件更新），
+        // 只是为了知道该建 admin 还是 member；顺带让「码根本不存在」走快速失败。
+        let invite = Self::find_usable_by_code_hash(pool, code_hash, now)
+            .await?
+            .ok_or(InviteRedeemError::InvalidCode)?;
+
+        // 参数校验放在开事务之前：事务里不该再因为「用户名有空格」而回滚。
+        let prepared = PreparedUser::new(NewLocalUser {
+            username: registration.username,
+            display_name: registration.display_name,
+            email: registration.email,
+            password_hash: registration.password_hash,
+            role: invite.role,
+        })?;
+
+        let mut tx = pool.begin().await?;
+
+        let user = match prepared.insert(&mut *tx).await {
+            Ok(user) => user,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(InviteRedeemError::User(map_insert_error(err)));
+            }
+        };
+
+        let consumed = sqlx::query!(
+            r#"UPDATE local_invites
+               SET used_by = $2, used_at = $3
+               WHERE id = $1 AND used_at IS NULL AND expires_at > $3"#,
+            invite.id,
+            user.id,
+            now
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        if consumed.rows_affected() != 1 {
+            // 别人抢先一步用掉了这个码：把刚建的用户一起回滚。
+            tx.rollback().await?;
+            return Err(InviteRedeemError::InvalidCode);
+        }
+
+        tx.commit().await?;
+        Ok(user)
     }
 }
 
@@ -1078,5 +1300,409 @@ mod schema_tests {
                 .await
                 .expect("sqlx 应能把默认时间戳解码成 DateTime<Utc>");
         assert!(parsed <= Utc::now());
+    }
+}
+
+#[cfg(test)]
+mod invite_tests {
+    use chrono::{Duration, Utc};
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::{
+        models::{
+            local_project::DEFAULT_USER_ID,
+            local_user::{LocalUserError, LocalUserRole, LocalUsers, NewLocalUser},
+        },
+        test_support::TestDb,
+    };
+
+    async fn 建邀请(
+        test_db: &TestDb,
+        code_hash: &str,
+        role: LocalUserRole,
+        ttl: Duration,
+    ) -> LocalInvite {
+        LocalInvites::create(
+            test_db.pool(),
+            NewLocalInvite {
+                code_hash: code_hash.to_string(),
+                role,
+                created_by: Some(DEFAULT_USER_ID),
+                expires_at: Utc::now() + ttl,
+            },
+        )
+        .await
+        .expect("建邀请失败")
+    }
+
+    fn 注册(username: &str) -> InviteRegistration {
+        InviteRegistration {
+            username: username.to_string(),
+            display_name: username.to_string(),
+            email: None,
+            password_hash: Some("$argon2id$x".to_string()),
+        }
+    }
+
+    /// 邀请码明文与哈希都不能出现在邀请对象上：列表接口直接 `Json(invite)`
+    /// 就会把它漏给任何管理员页面的旁观者（以及日志）。
+    #[tokio::test]
+    async fn 邀请对象序列化后不含邀请码哈希() {
+        let test_db = TestDb::new().await;
+        let invite = 建邀请(
+            &test_db,
+            "hash-secret-code",
+            LocalUserRole::Member,
+            Duration::days(7),
+        )
+        .await;
+        let json = serde_json::to_string(&invite).unwrap();
+        assert!(!json.contains("hash-secret-code"), "不得含哈希值：{json}");
+        assert!(!json.contains("code"), "不得含 code 字段：{json}");
+    }
+
+    #[tokio::test]
+    async fn 未过期未使用的邀请可以按哈希查到() {
+        let test_db = TestDb::new().await;
+        let invite = 建邀请(
+            &test_db,
+            "hash-ok",
+            LocalUserRole::Member,
+            Duration::days(7),
+        )
+        .await;
+        let found = LocalInvites::find_usable_by_code_hash(test_db.pool(), "hash-ok", Utc::now())
+            .await
+            .unwrap()
+            .expect("应查到");
+        assert_eq!(found.id, invite.id);
+        assert_eq!(found.role, LocalUserRole::Member);
+        assert!(found.used_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn 过期邀请查不到() {
+        let test_db = TestDb::new().await;
+        建邀请(
+            &test_db,
+            "hash-expired",
+            LocalUserRole::Member,
+            -Duration::seconds(1),
+        )
+        .await;
+        assert!(
+            LocalInvites::find_usable_by_code_hash(test_db.pool(), "hash-expired", Utc::now())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn 已使用邀请查不到() {
+        let test_db = TestDb::new().await;
+        建邀请(
+            &test_db,
+            "hash-used",
+            LocalUserRole::Member,
+            Duration::days(7),
+        )
+        .await;
+        LocalInvites::redeem(test_db.pool(), "hash-used", 注册("amy"), Utc::now())
+            .await
+            .expect("首次兑换应成功");
+        assert!(
+            LocalInvites::find_usable_by_code_hash(test_db.pool(), "hash-used", Utc::now())
+                .await
+                .unwrap()
+                .is_none(),
+            "一次性消费：用过就不能再用"
+        );
+    }
+
+    #[tokio::test]
+    async fn 不存在的哈希查不到() {
+        let test_db = TestDb::new().await;
+        assert!(
+            LocalInvites::find_usable_by_code_hash(test_db.pool(), "hash-ghost", Utc::now())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// 兑换成功后邀请行上要留下「谁用的、什么时候用的」。
+    #[tokio::test]
+    async fn 兑换成功后记录使用者与使用时间() {
+        let test_db = TestDb::new().await;
+        建邀请(&test_db, "hash-r", LocalUserRole::Member, Duration::days(7)).await;
+        let user = LocalInvites::redeem(test_db.pool(), "hash-r", 注册("amy"), Utc::now())
+            .await
+            .unwrap();
+        let invite = LocalInvites::find_all(test_db.pool())
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(invite.used_by, Some(user.id));
+        assert!(invite.used_at.is_some());
+    }
+
+    /// **角色来自邀请，不来自注册请求。** [`InviteRegistration`] 上刻意没有
+    /// `role` 字段——请求体里传 `role=admin` 在类型层面就无处落脚。
+    #[tokio::test]
+    async fn 兑换产生的角色来自邀请() {
+        let test_db = TestDb::new().await;
+        建邀请(
+            &test_db,
+            "hash-admin",
+            LocalUserRole::Admin,
+            Duration::days(7),
+        )
+        .await;
+        建邀请(
+            &test_db,
+            "hash-member",
+            LocalUserRole::Member,
+            Duration::days(7),
+        )
+        .await;
+        let a = LocalInvites::redeem(test_db.pool(), "hash-admin", 注册("boss"), Utc::now())
+            .await
+            .unwrap();
+        let m = LocalInvites::redeem(test_db.pool(), "hash-member", 注册("amy"), Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(a.role, LocalUserRole::Admin);
+        assert_eq!(m.role, LocalUserRole::Member);
+    }
+
+    /// 枚举防护的基础：三种失败在模型层就是**同一个**错误变体，
+    /// 调用方想区分也区分不了。
+    #[tokio::test]
+    async fn 不存在_过期_已用_三种失败返回同一个错误变体() {
+        let test_db = TestDb::new().await;
+        建邀请(
+            &test_db,
+            "hash-e1",
+            LocalUserRole::Member,
+            -Duration::seconds(1),
+        )
+        .await;
+        建邀请(
+            &test_db,
+            "hash-e2",
+            LocalUserRole::Member,
+            Duration::days(7),
+        )
+        .await;
+        LocalInvites::redeem(test_db.pool(), "hash-e2", 注册("amy"), Utc::now())
+            .await
+            .unwrap();
+
+        for (hash, 场景) in [
+            ("hash-ghost", "不存在"),
+            ("hash-e1", "已过期"),
+            ("hash-e2", "已使用"),
+        ] {
+            let err = LocalInvites::redeem(test_db.pool(), hash, 注册("bob"), Utc::now())
+                .await
+                .expect_err("{场景} 应失败");
+            assert!(
+                matches!(err, InviteRedeemError::InvalidCode),
+                "{场景} 应是 InvalidCode，实际 {err:?}"
+            );
+        }
+    }
+
+    /// 并发兑换：两个请求拿同一个码同时注册，只能有一个建号成功。
+    /// 靠的是条件更新 `WHERE used_at IS NULL` 的 `rows_affected`，不是「先查后写」。
+    #[tokio::test]
+    async fn 并发兑换同一邀请只有一个成功() {
+        let test_db = TestDb::new().await;
+        建邀请(
+            &test_db,
+            "hash-race",
+            LocalUserRole::Member,
+            Duration::days(7),
+        )
+        .await;
+
+        let pool_a = test_db.pool().clone();
+        let pool_b = test_db.pool().clone();
+        let a = tokio::spawn(async move {
+            LocalInvites::redeem(&pool_a, "hash-race", 注册("racer-a"), Utc::now()).await
+        });
+        let b = tokio::spawn(async move {
+            LocalInvites::redeem(&pool_b, "hash-race", 注册("racer-b"), Utc::now()).await
+        });
+        let (ra, rb) = (a.await.unwrap(), b.await.unwrap());
+        let 成功数 = [&ra, &rb].iter().filter(|r| r.is_ok()).count();
+        assert_eq!(成功数, 1, "同一邀请码只能兑换一次：{ra:?} / {rb:?}");
+
+        let 用户数: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM local_users WHERE username LIKE 'racer-%'")
+                .fetch_one(test_db.pool())
+                .await
+                .unwrap();
+        assert_eq!(用户数, 1, "失败的那一路不得留下用户行");
+    }
+
+    /// 用户名冲突必须整体回滚：邀请码不能被一次失败的注册烧掉。
+    #[tokio::test]
+    async fn 用户名冲突时邀请码未被消费() {
+        let test_db = TestDb::new().await;
+        LocalUsers::create(
+            test_db.pool(),
+            NewLocalUser {
+                username: "amy".to_string(),
+                display_name: "amy".to_string(),
+                email: None,
+                password_hash: None,
+                role: LocalUserRole::Member,
+            },
+        )
+        .await
+        .unwrap();
+        建邀请(
+            &test_db,
+            "hash-conflict",
+            LocalUserRole::Member,
+            Duration::days(7),
+        )
+        .await;
+
+        let err = LocalInvites::redeem(test_db.pool(), "hash-conflict", 注册("amy"), Utc::now())
+            .await
+            .expect_err("重名应失败");
+        assert!(
+            matches!(err, InviteRedeemError::User(LocalUserError::Conflict(_))),
+            "应是冲突错误，实际 {err:?}"
+        );
+        assert!(
+            LocalInvites::find_usable_by_code_hash(test_db.pool(), "hash-conflict", Utc::now())
+                .await
+                .unwrap()
+                .is_some(),
+            "注册失败不得消费邀请码"
+        );
+    }
+
+    /// 非法用户名同样不能烧掉邀请码。
+    #[tokio::test]
+    async fn 非法用户名时邀请码未被消费() {
+        let test_db = TestDb::new().await;
+        建邀请(
+            &test_db,
+            "hash-bad",
+            LocalUserRole::Member,
+            Duration::days(7),
+        )
+        .await;
+        let err = LocalInvites::redeem(test_db.pool(), "hash-bad", 注册("ad min"), Utc::now())
+            .await
+            .expect_err("非法用户名应失败");
+        assert!(matches!(
+            err,
+            InviteRedeemError::User(LocalUserError::InvalidUsername)
+        ));
+        assert!(
+            LocalInvites::find_usable_by_code_hash(test_db.pool(), "hash-bad", Utc::now())
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn 列表含已用邀请并按创建时间倒序() {
+        let test_db = TestDb::new().await;
+        for (i, hash) in ["hash-1", "hash-2", "hash-3"].iter().enumerate() {
+            LocalInvites::create(
+                test_db.pool(),
+                NewLocalInvite {
+                    code_hash: (*hash).to_string(),
+                    role: LocalUserRole::Member,
+                    created_by: Some(DEFAULT_USER_ID),
+                    expires_at: Utc::now() + Duration::days(7),
+                },
+            )
+            .await
+            .unwrap();
+            // 让 created_at 严格递增，避免同毫秒导致排序不稳定。
+            let _ = i;
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        LocalInvites::redeem(test_db.pool(), "hash-1", 注册("amy"), Utc::now())
+            .await
+            .unwrap();
+        let all = LocalInvites::find_all(test_db.pool()).await.unwrap();
+        assert_eq!(all.len(), 3, "已使用的邀请仍要出现在列表里");
+        assert!(
+            all[0].created_at >= all[1].created_at && all[1].created_at >= all[2].created_at,
+            "应按创建时间倒序"
+        );
+    }
+
+    #[tokio::test]
+    async fn 删除邀请返回受影响行数() {
+        let test_db = TestDb::new().await;
+        let invite = 建邀请(
+            &test_db,
+            "hash-del",
+            LocalUserRole::Member,
+            Duration::days(7),
+        )
+        .await;
+        assert_eq!(
+            LocalInvites::delete(test_db.pool(), invite.id)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            LocalInvites::delete(test_db.pool(), invite.id)
+                .await
+                .unwrap(),
+            0,
+            "重复删除返回 0，调用方据此报 404"
+        );
+        assert_eq!(
+            LocalInvites::delete(test_db.pool(), Uuid::new_v4())
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn 同一个哈希不能建两条邀请() {
+        let test_db = TestDb::new().await;
+        建邀请(
+            &test_db,
+            "hash-dup",
+            LocalUserRole::Member,
+            Duration::days(7),
+        )
+        .await;
+        let err = LocalInvites::create(
+            test_db.pool(),
+            NewLocalInvite {
+                code_hash: "hash-dup".to_string(),
+                role: LocalUserRole::Member,
+                created_by: Some(DEFAULT_USER_ID),
+                expires_at: Utc::now() + Duration::days(7),
+            },
+        )
+        .await
+        .expect_err("哈希撞车必须报错");
+        assert!(crate::models::db_retry::is_unique_violation(&err));
+    }
+
+    #[test]
+    fn 邀请码默认有效期是七天() {
+        assert_eq!(DEFAULT_INVITE_TTL_DAYS, 7);
     }
 }
