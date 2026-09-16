@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id         AS \"id!: Uuid\",\n                      project_id AS \"project_id!: Uuid\",\n                      name       AS \"name!\",\n                      color      AS \"color!\",\n                      sort_order AS \"sort_order!: i32\",\n                      hidden     AS \"hidden!: bool\",\n                      stage_type AS \"stage_type!\",\n                      created_at AS \"created_at!: DateTime<Utc>\"\n               FROM project_statuses\n               WHERE rowid = $1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "project_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "name!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "color!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "sort_order!: i32",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "hidden!: bool",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "stage_type!",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 7,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "71786bac93ab019f8127c90a72cde1eeccedab5c64279bb3cd29f60258150679"
+}

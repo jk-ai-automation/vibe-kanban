@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE project_statuses SET\n                   name       = CASE WHEN $2 THEN $3 ELSE name END,\n                   color      = CASE WHEN $4 THEN $5 ELSE color END,\n                   sort_order = CASE WHEN $6 THEN $7 ELSE sort_order END,\n                   hidden     = CASE WHEN $8 THEN $9 ELSE hidden END\n               WHERE id = $1\n               RETURNING id AS \"id!: Uuid\",\n                         project_id AS \"project_id!: Uuid\",\n                         name AS \"name!\",\n                         color AS \"color!\",\n                         sort_order AS \"sort_order!: i32\",\n                         hidden AS \"hidden!: bool\",\n                         stage_type AS \"stage_type!\",\n                         created_at AS \"created_at!: DateTime<Utc>\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "project_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "name!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "color!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "sort_order!: i32",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "hidden!: bool",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "stage_type!",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 7,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "aae8277f1120ebf317daa6fede0d9be32d37d115b254ab5352338cbd8d020da5"
+}
