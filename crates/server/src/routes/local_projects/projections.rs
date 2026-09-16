@@ -4,7 +4,6 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, Utc};
-use db::models::local_project::DEFAULT_USER_ID;
 use deployment::Deployment;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -79,6 +78,7 @@ fn project_pr_status(raw: &str) -> &str {
 pub(crate) async fn handle_workspaces(
     pool: &SqlitePool,
     project_id: Uuid,
+    owner_user_id: Uuid,
 ) -> Result<Json<Value>, ApiError> {
     struct Row {
         id: Uuid,
@@ -112,7 +112,11 @@ pub(crate) async fn handle_workspaces(
         .map(|row| ProjectedWorkspace {
             id: row.id,
             project_id,
-            owner_user_id: DEFAULT_USER_ID,
+            // 本地 workspaces 表没有真正的 owner 列：这里投影的是「当前请求者」，
+            // 用来满足云端 Workspace 结构的形状，不是任何持久化的归属关系。
+            // 团队版下不同成员看到的这个字段会不一样——这是刻意的，见
+            // docs/superpowers/plans/2026-09-17-team-mode-and-ui.md §12.17。
+            owner_user_id,
             issue_id: row.issue_id,
             local_workspace_id: Some(row.id),
             name: row.name,
@@ -191,29 +195,34 @@ pub(crate) async fn handle_pull_requests(
 }
 
 pub fn router() -> Router<DeploymentImpl> {
-    let mut router = LocalRoutes::new("/workspaces")
-        .route(
-            "/",
-            &["GET"],
-            get(
-                |State(d): State<DeploymentImpl>, Query(q): Query<ProjectScopedQuery>| async move {
-                    handle_workspaces(&d.db().pool, q.project_id).await
-                },
-            ),
-        )
-        .into_router()
-        .merge(
-            LocalRoutes::new("/pull_requests")
-                .route(
-                    "/",
-                    &["GET"],
-                    get(|State(d): State<DeploymentImpl>,
-                         Query(q): Query<ProjectScopedQuery>| async move {
-                        handle_pull_requests(&d.db().pool, q.project_id).await
-                    }),
-                )
-                .into_router(),
-        );
+    let mut router =
+        LocalRoutes::new("/workspaces")
+            .route(
+                "/",
+                &["GET"],
+                get(
+                    |State(d): State<DeploymentImpl>,
+                     current_user: crate::middleware::local_session::CurrentUser,
+                     Query(q): Query<ProjectScopedQuery>| async move {
+                        handle_workspaces(&d.db().pool, q.project_id, current_user.id).await
+                    },
+                ),
+            )
+            .into_router()
+            .merge(
+                LocalRoutes::new("/pull_requests")
+                    .route(
+                        "/",
+                        &["GET"],
+                        get(
+                            |State(d): State<DeploymentImpl>,
+                             Query(q): Query<ProjectScopedQuery>| async move {
+                                handle_pull_requests(&d.db().pool, q.project_id).await
+                            },
+                        ),
+                    )
+                    .into_router(),
+            );
 
     for table in EMPTY_TABLES {
         let table = *table;
@@ -314,7 +323,7 @@ mod tests {
             .unwrap();
         }
 
-        let body = handle_workspaces(test_db.pool(), project.id)
+        let body = handle_workspaces(test_db.pool(), project.id, DEFAULT_USER_ID)
             .await
             .unwrap()
             .0;
@@ -327,6 +336,68 @@ mod tests {
         assert_eq!(rows[0]["owner_user_id"], DEFAULT_USER_ID.to_string());
         assert_eq!(rows[0]["local_workspace_id"], linked.to_string());
         assert_ne!(linked, orphan);
+    }
+
+    /// `owner_user_id` 投影的是**当前请求者**，不是固定的本机用户——
+    /// 本地 workspaces 表没有真正的 owner 列，这个字段只是为了满足云端
+    /// Workspace 结构的形状，语义上等价于「谁在看，就说是谁的」。
+    #[tokio::test]
+    async fn 工作区投影的_owner_user_id_取自当前用户() {
+        let test_db = TestDb::new().await;
+        let project = LocalProjects::create(
+            test_db.pool(),
+            &CreateProjectRequest {
+                id: None,
+                organization_id: DEFAULT_ORGANIZATION_ID,
+                name: "Vibe Kanban".to_string(),
+                color: "#6366f1".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let todo = ProjectStatuses::find_stage(test_db.pool(), project.id, StageType::Todo)
+            .await
+            .unwrap()
+            .unwrap();
+        let issue = Issues::create(
+            test_db.pool(),
+            &CreateIssueRequest {
+                id: None,
+                project_id: project.id,
+                status_id: todo.id,
+                title: "示例".to_string(),
+                description: None,
+                priority: None,
+                start_date: None,
+                target_date: None,
+                completed_at: None,
+                sort_order: 0.0,
+                parent_issue_id: None,
+                parent_issue_sort_order: None,
+                extension_metadata: serde_json::json!({}),
+            },
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO workspaces (id, branch, name, issue_id) VALUES (?1, 'vk/x', 'W', ?2)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(issue.id)
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        let requester = Uuid::from_u128(5);
+        let body = handle_workspaces(test_db.pool(), project.id, requester)
+            .await
+            .unwrap()
+            .0;
+        let rows = body["workspaces"].as_array().unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["owner_user_id"], requester.to_string());
     }
 
     #[tokio::test]
@@ -379,7 +450,7 @@ mod tests {
         .await
         .unwrap();
 
-        let body = handle_workspaces(test_db.pool(), project.id)
+        let body = handle_workspaces(test_db.pool(), project.id, DEFAULT_USER_ID)
             .await
             .unwrap()
             .0;
