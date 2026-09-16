@@ -2,7 +2,9 @@
 //! 快照统一返回 { "<前端表名>": [ ...行 ] }，写操作统一返回 { "txid": 0 }
 //! （个人版不使用 ElectricSQL 事务对账，txid 只是占位）。
 
+pub mod issues;
 pub mod projects;
+pub mod statuses;
 
 use axum::{Json, Router};
 use db::models::issue::IssueError;
@@ -35,5 +37,40 @@ pub fn map_issue_error(error: IssueError) -> ApiError {
 }
 
 pub fn router() -> Router<DeploymentImpl> {
-    Router::new().nest("/local", projects::router())
+    Router::new().nest(
+        "/local",
+        Router::new()
+            .merge(projects::router())
+            .merge(statuses::router())
+            .merge(issues::router()),
+    )
 }
+
+use serde::Deserialize;
+use uuid::Uuid;
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectScopedQuery {
+    pub project_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IssueScopedQuery {
+    pub issue_id: Uuid,
+}
+
+/// 批量更新请求体：{"updates": [{"id": "...", ...变更字段}]}
+#[derive(Debug, Deserialize)]
+pub struct BulkUpdateItem<T> {
+    pub id: Uuid,
+    #[serde(flatten)]
+    pub changes: T,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BulkUpdateRequest<T> {
+    pub updates: Vec<BulkUpdateItem<T>>,
+}
+
+/// 一次批量更新的条数上限，防止前端误发超大请求打满事务。
+pub const MAX_BULK_UPDATES: usize = 1000;
