@@ -298,6 +298,42 @@ export type AgentPresetOptionsQuery = { executor: BaseCodingAgent, variant: stri
 
 export type CurrentUserResponse = { user_id: string, };
 
+export type LocalAuthBootstrap = { 
+/**
+ * `"personal"` 或 `"team"`。
+ */
+mode: string, 
+/**
+ * 是否强制登录。
+ */
+require_login: boolean, 
+/**
+ * 当前请求是否已带上有效会话。
+ */
+authenticated: boolean, 
+/**
+ * 团队模式且库里还没有「能登录的管理员」时为 true，前端要引导走初始化向导。
+ */
+needs_setup: boolean, 
+/**
+ * 已配齐凭据的 OAuth 提供方 id。
+ */
+providers: Array<string>, 
+/**
+ * 是否允许第三方登录自助注册。
+ */
+allow_oauth_signup: boolean, };
+
+export type LocalLoginRequest = { username: string, password: string, };
+
+export type LocalAuthUser = { id: string, username: string, display_name: string, email: string | null, 
+/**
+ * `"admin"` 或 `"member"`。
+ */
+role: string, avatar_color: string, };
+
+export type ChangePasswordRequest = { current_password: string, new_password: string, };
+
 export type StartSpake2EnrollmentRequest = { enrollment_code: string, client_message_b64: string, };
 
 export type FinishSpake2EnrollmentRequest = { enrollment_id: string, client_id: string, client_name: string, client_browser: string, client_os: string, client_device: string, public_key_b64: string, client_proof_b64: string, };

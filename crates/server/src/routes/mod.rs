@@ -18,6 +18,7 @@ pub mod frontend;
 pub mod health;
 pub mod host_relay;
 pub mod issues;
+pub mod local_auth;
 pub mod local_projects;
 pub mod oauth;
 pub mod organizations;
@@ -36,8 +37,8 @@ pub mod webrtc;
 pub mod workspaces;
 
 pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
+    // /health 从这一组移到免鉴权组（local_auth::public_router）。
     let relay_signed_routes = Router::new()
-        .route("/health", get(health::health_check))
         .merge(config::router())
         .merge(containers::router(&deployment))
         .merge(workspaces::router(&deployment))
@@ -71,10 +72,23 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         ))
         .with_state(deployment.clone());
 
-    let api_routes = Router::new()
+    // 受保护组：被 require_local_session 包住的一切。
+    // 「哪些路由免鉴权」因此是结构性的 fail-closed——新增路由默认落在这一组里，
+    // 而不是靠中间件内部比对路径白名单（nest("/api") 内 uri().path() 已去掉前缀，
+    // 按字符串放行极易写宽）。
+    let protected_routes = Router::new()
         .merge(relay_auth::router())
         .merge(host_relay::router(&deployment))
         .merge(relay_signed_routes)
+        .merge(local_auth::protected_router())
+        .layer(axum::middleware::from_fn_with_state(
+            deployment.clone(),
+            middleware::require_local_session,
+        ));
+
+    let api_routes = Router::new()
+        .merge(local_auth::public_router())
+        .merge(protected_routes)
         .layer(ValidateRequestHeaderLayer::custom(
             middleware::validate_origin,
         ))
