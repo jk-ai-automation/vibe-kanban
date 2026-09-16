@@ -17,6 +17,8 @@ interface InputFieldProps {
   onAction?: () => void;
   disabled?: boolean;
   onFocusChange?: (focused: boolean) => void;
+  /** 外部 ref：让 `/` 之类的快捷键能直接聚焦到这个输入框。不传时用内部 ref。 */
+  inputRef?: React.RefObject<HTMLInputElement>;
 }
 
 export function InputField({
@@ -29,12 +31,14 @@ export function InputField({
   onAction,
   disabled,
   onFocusChange,
+  inputRef: externalInputRef,
 }: InputFieldProps) {
   const [isEditing, setIsEditing] = React.useState(false);
   const [editValue, setEditValue] = React.useState(value);
   const [justSaved, setJustSaved] = React.useState(false);
   const [isFocused, setIsFocused] = React.useState(false);
-  const inputRef = React.useRef<HTMLInputElement>(null);
+  const internalInputRef = React.useRef<HTMLInputElement>(null);
+  const inputRef = externalInputRef ?? internalInputRef;
 
   // Sync editValue when value prop changes (and not editing)
   React.useEffect(() => {
@@ -49,7 +53,7 @@ export function InputField({
       inputRef.current.focus();
       inputRef.current.select();
     }
-  }, [variant, isEditing]);
+  }, [variant, isEditing, inputRef]);
 
   // Clear justSaved after 2 seconds
   React.useEffect(() => {

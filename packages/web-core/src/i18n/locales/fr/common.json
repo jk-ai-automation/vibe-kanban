@@ -49,7 +49,7 @@
     "subagent": {
       "defaultType": "Sous-agent"
     },
-    "loadingEarlierMessages": "Chargement des messages pr\u00e9c\u00e9dents"
+    "loadingEarlierMessages": "Chargement des messages précédents"
   },
   "folderPicker": {
     "legend": "Cliquez sur les noms de dossiers pour naviguer • Utilisez les boutons d'action pour sélectionner",
@@ -359,7 +359,9 @@
       "toggle-wrap-lines": "Basculer le retour à la ligne",
       "run-setup-script": "Exécuter le script de configuration",
       "run-cleanup-script": "Exécuter le script de nettoyage",
-      "run-archive-script": "Exécuter le script d'archivage"
+      "run-archive-script": "Exécuter le script d'archivage",
+      "editSelected": "Modifier la sélection",
+      "openSelected": "Ouvrir la sélection"
     }
   },
   "typeahead": {
@@ -513,6 +515,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "Plus de {{limit}} tickets dans cette colonne",
+    "boardEmptyHint": "Aucun ticket pour l’instant. Créez le premier pour démarrer.",
+    "loadError": {
+      "title": "Impossible de charger ce tableau",
+      "hint": "La connexion de synchronisation a échoué. Vérifiez votre réseau, puis réessayez."
+    },
+    "columnEmpty": {
+      "emptyTitle": "Rien ici pour l’instant",
+      "filteredTitle": "Aucun ticket ne correspond aux filtres actuels",
+      "createIssue": "Nouveau ticket",
+      "createWorkspace": "Créer un espace de travail depuis le ticket"
+    },
+    "badge": {
+      "workspaceRunning": "En cours",
+      "workspaceStopped": "Arrêté",
+      "workspaceFailed": "En échec",
+      "prOpen": "PR en revue",
+      "prMerged": "PR fusionnée",
+      "prClosed": "PR fermée",
+      "testNotConnected": "Tests indisponibles"
+    },
+    "density": {
+      "label": "Changer la densité",
+      "comfortable": "Confortable",
+      "compact": "Compacte"
+    },
+    "tabs": {
+      "overview": "Aperçu",
+      "development": "Développement",
+      "testing": "Tests"
+    },
+    "testing": {
+      "notConnectedTitle": "Les tests ne sont pas encore connectés",
+      "notConnectedHint": "Les résultats s’afficheront ici une fois l’exécuteur de tests branché.",
+      "passRate": "Taux de réussite",
+      "passRateHint": "Part des cas réussis lors de la dernière exécution",
+      "failures": "Échecs",
+      "failuresHint": "Cas en échec lors de la dernière exécution",
+      "report": "Rapport",
+      "reportHint": "Lien vers le rapport de tests complet"
+    },
+    "breadcrumb": {
+      "issue": "Ouvrir le ticket lié",
+      "workspace": "Ouvrir l’espace de travail",
+      "pr": "Ouvrir la pull request"
     }
   },
   "createMode": {

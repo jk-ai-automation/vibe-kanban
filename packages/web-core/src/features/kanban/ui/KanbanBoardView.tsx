@@ -14,7 +14,9 @@ export type KanbanBoardViewProps = ColumnRenderProps & {
 
 /**
  * 看板渲染区：拖拽容器 + 逐列渲染。纯展示，内部不用任何 hook。
- * JSX 从 KanbanContainer 原样搬出，行为不变。
+ *
+ * 把列数传给 `KanbanProvider`，让网格按宽度自适应——1280px 窄屏下六列也不会
+ * 撑出横向滚动条（设计文档 §11.7）。
  */
 export function KanbanBoardView({
   columns,
@@ -23,7 +25,7 @@ export function KanbanBoardView({
 }: KanbanBoardViewProps) {
   return (
     <div className="flex-1 overflow-x-auto px-double">
-      <KanbanProvider onDragEnd={onDragEnd}>
+      <KanbanProvider onDragEnd={onDragEnd} columnCount={columns.length}>
         {columns.map((column) => (
           <KanbanColumn
             key={column.status.id}

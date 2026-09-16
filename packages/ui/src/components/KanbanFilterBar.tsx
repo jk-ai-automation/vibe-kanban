@@ -1,10 +1,11 @@
-import { useState, type ReactNode } from 'react';
+import { useState, type ReactNode, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ArrowLeftIcon,
   FunnelIcon,
   MagnifyingGlassIcon,
   PlusIcon,
+  RowsIcon,
   XIcon,
 } from '@phosphor-icons/react';
 import { cn } from '../lib/cn';
@@ -104,6 +105,16 @@ interface KanbanFilterBarProps<
   renderFiltersDialog?: (
     props: RenderKanbanFiltersDialogProps<TTag, TUser, TSortField>
   ) => ReactNode;
+
+  // ---- 以下都可选，不传时工具栏与改造前一致 ----
+  /** 搜索框的 ref，供 `/` 快捷键聚焦。 */
+  searchInputRef?: RefObject<HTMLInputElement>;
+  /** 当前密度。传了才渲染密度切换按钮。 */
+  density?: 'comfortable' | 'compact';
+  /** 密度切换回调。 */
+  onDensityToggle?: () => void;
+  /** 密度按钮的无障碍标签与 tooltip（已翻译）。 */
+  densityLabel?: string;
 }
 
 export function KanbanFilterBar<
@@ -138,6 +149,10 @@ export function KanbanFilterBar<
   shouldAnimateCreateButton,
   isMobile,
   renderFiltersDialog,
+  searchInputRef,
+  density,
+  onDensityToggle,
+  densityLabel,
 }: KanbanFilterBarProps<TTag, TUser, TSortField>) {
   const { t } = useTranslation('common');
   const [mobileSearchExpanded, setMobileSearchExpanded] = useState(false);
@@ -213,6 +228,7 @@ export function KanbanFilterBar<
               variant="search"
               actionIcon={filters.searchQuery ? XIcon : undefined}
               onAction={handleClearSearch}
+              inputRef={searchInputRef}
               className="min-w-[160px] w-[220px] max-w-full"
             />
           )}
@@ -231,6 +247,24 @@ export function KanbanFilterBar<
           >
             <FunnelIcon className="size-icon-sm" weight="bold" />
           </button>
+
+          {/* 密度切换（设计文档 §7.5）。只提示不阻止拖拽等既有行为。 */}
+          {density && onDensityToggle && (
+            <button
+              type="button"
+              onClick={onDensityToggle}
+              className={cn(
+                'flex items-center justify-center p-half rounded-sm transition-colors',
+                density === 'compact'
+                  ? 'text-brand hover:text-brand'
+                  : 'text-low hover:text-normal hover:bg-secondary'
+              )}
+              aria-label={densityLabel ?? t('kanban.density.label')}
+              title={densityLabel ?? t('kanban.density.label')}
+            >
+              <RowsIcon className="size-icon-sm" weight="bold" />
+            </button>
+          )}
 
           {hasActiveFilters && (
             <PrimaryButton

@@ -145,3 +145,21 @@ export const useKeySubmitComment = createSemanticHook(Action.SUBMIT_COMMENT);
 export const useKeyCycleViewBackward = createSemanticHook(
   Action.CYCLE_VIEW_BACKWARD
 );
+
+/**
+ * 编辑选中的需求 —— `e`（设计文档 §7.5）
+ *
+ * @example
+ * useKeyEdit(() => focusTitle(), { scope: Scope.KANBAN });
+ */
+export const useKeyEdit = createSemanticHook(Action.EDIT);
+
+/**
+ * 打开选中的需求 —— 裸 `Enter`（设计文档 §7.5）
+ *
+ * 与 `useKeyOpenDetails`（`meta+enter`，兼任视图循环）是两条独立绑定。
+ *
+ * @example
+ * useKeyOpenIssue(() => openIssue(id), { scope: Scope.KANBAN });
+ */
+export const useKeyOpenIssue = createSemanticHook(Action.OPEN_ISSUE);

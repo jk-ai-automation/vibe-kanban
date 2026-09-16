@@ -18,6 +18,8 @@ export interface IssueListViewProps {
   items: Record<string, string[]>;
   issueMap: Record<string, IssueListRowIssue>;
   issueAssigneesMap: Record<string, KanbanAssigneeUser[]>;
+  /** 负责人头像只在团队版出现；个人版传 false。 */
+  showAssignees?: boolean;
   getTagObjectsForIssue: (issueId: string) => IssueListRowTag[];
   getResolvedRelationshipsForIssue?: (
     issueId: string
@@ -35,6 +37,7 @@ export function IssueListView({
   items,
   issueMap,
   issueAssigneesMap,
+  showAssignees,
   getTagObjectsForIssue,
   getResolvedRelationshipsForIssue,
   onIssueClick,
@@ -53,6 +56,7 @@ export function IssueListView({
           issueIds={items[status.id] ?? []}
           issueMap={issueMap}
           issueAssigneesMap={issueAssigneesMap}
+          showAssignees={showAssignees}
           getTagObjectsForIssue={getTagObjectsForIssue}
           getResolvedRelationshipsForIssue={getResolvedRelationshipsForIssue}
           onIssueClick={onIssueClick}

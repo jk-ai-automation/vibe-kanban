@@ -359,7 +359,9 @@
       "toggle-wrap-lines": "줄 바꿈 전환",
       "run-setup-script": "설정 스크립트 실행",
       "run-cleanup-script": "정리 스크립트 실행",
-      "run-archive-script": "보관 스크립트 실행"
+      "run-archive-script": "보관 스크립트 실행",
+      "editSelected": "선택 항목 편집",
+      "openSelected": "선택 항목 열기"
     }
   },
   "typeahead": {
@@ -513,6 +515,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "이 열의 이슈가 {{limit}}개를 초과했습니다",
+    "boardEmptyHint": "아직 이슈가 없습니다. 첫 이슈를 만들어 보세요.",
+    "loadError": {
+      "title": "보드를 불러오지 못했습니다",
+      "hint": "동기화 연결이 끊겼습니다. 네트워크를 확인한 뒤 다시 시도하세요."
+    },
+    "columnEmpty": {
+      "emptyTitle": "아직 비어 있습니다",
+      "filteredTitle": "현재 필터와 일치하는 이슈가 없습니다",
+      "createIssue": "새 이슈",
+      "createWorkspace": "이슈에서 워크스페이스 만들기"
+    },
+    "badge": {
+      "workspaceRunning": "실행 중",
+      "workspaceStopped": "중지됨",
+      "workspaceFailed": "실패",
+      "prOpen": "PR 검토 대기",
+      "prMerged": "PR 병합됨",
+      "prClosed": "PR 닫힘",
+      "testNotConnected": "테스트 미연결"
+    },
+    "density": {
+      "label": "밀도 전환",
+      "comfortable": "넉넉하게",
+      "compact": "조밀하게"
+    },
+    "tabs": {
+      "overview": "개요",
+      "development": "개발",
+      "testing": "테스트"
+    },
+    "testing": {
+      "notConnectedTitle": "테스트가 아직 연결되지 않았습니다",
+      "notConnectedHint": "테스트 러너를 연결하면 여기에 결과가 표시됩니다.",
+      "passRate": "통과율",
+      "passRateHint": "최근 실행에서 통과한 케이스 비율",
+      "failures": "실패 목록",
+      "failuresHint": "최근 실행에서 실패한 케이스",
+      "report": "리포트",
+      "reportHint": "전체 테스트 리포트 링크"
+    },
+    "breadcrumb": {
+      "issue": "연결된 이슈 열기",
+      "workspace": "워크스페이스 열기",
+      "pr": "풀 리퀘스트 열기"
     }
   },
   "createMode": {

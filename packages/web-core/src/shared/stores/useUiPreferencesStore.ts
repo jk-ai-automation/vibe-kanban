@@ -2,6 +2,12 @@ import { useCallback, useMemo, useRef } from 'react';
 import { create } from 'zustand';
 import type { RepoAction } from '@vibe/ui/components/RepoCard';
 import type { IssuePriority } from 'shared/remote-types';
+import {
+  DEFAULT_KANBAN_DENSITY,
+  KANBAN_DENSITY_STORAGE_KEY,
+  normalizeDensity,
+  type KanbanDensity,
+} from '@/features/kanban/model/density';
 
 export const RIGHT_MAIN_PANEL_MODES = {
   CHANGES: 'changes',
@@ -38,6 +44,23 @@ const loadMobileFontScale = (): MobileFontScale => {
 };
 
 export type KanbanViewMode = 'kanban' | 'list';
+
+/**
+ * 看板密度（设计文档 §7.5「列表密度切换（舒适/紧凑）记在本地存储」）。
+ *
+ * **纠正计划里「跟随既有机制放进 scratch」的写法**：scratch 要改 Rust 侧的
+ * `UiPreferencesData` 与重生成类型，本批只允许动 `packages/`；而设计文档写的就是
+ * 「本地存储」。所以这里跟既有的移动端字号 `mobileFontScale`（:32,829-834）走同一套
+ * localStorage 路子，不碰后端。
+ */
+const loadKanbanDensity = (): KanbanDensity => {
+  try {
+    return normalizeDensity(localStorage.getItem(KANBAN_DENSITY_STORAGE_KEY));
+  } catch {
+    // localStorage 可能不可用（隐私模式、SSR 预渲染）
+    return DEFAULT_KANBAN_DENSITY;
+  }
+};
 
 export type ContextBarPosition =
   | 'top-left'
@@ -344,6 +367,9 @@ type State = {
   kanbanViewMode: KanbanViewMode;
   listViewStatusFilter: string | null;
 
+  // 看板密度（localStorage 持久化）
+  kanbanDensity: KanbanDensity;
+
   // Mobile tab state
   mobileActiveTab: MobileTab;
 
@@ -431,6 +457,7 @@ type State = {
   // Kanban view mode actions
   setKanbanViewMode: (mode: KanbanViewMode) => void;
   setListViewStatusFilter: (statusId: string | null) => void;
+  setKanbanDensity: (density: KanbanDensity) => void;
 
   // Mobile tab actions
   setMobileActiveTab: (tab: MobileTab) => void;
@@ -475,6 +502,9 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Kanban view mode state
   kanbanViewMode: 'kanban' as KanbanViewMode,
   listViewStatusFilter: null,
+
+  // 看板密度
+  kanbanDensity: loadKanbanDensity(),
 
   // Mobile tab state
   mobileActiveTab: 'chat' as MobileTab,
@@ -818,6 +848,21 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
 
   setListViewStatusFilter: (statusId) =>
     set({ listViewStatusFilter: statusId }),
+
+  // 看板密度：写 localStorage + 更新内存状态。localStorage 不可用时只更新内存，不抛错。
+  setKanbanDensity: (density) => {
+    const normalized = normalizeDensity(density);
+    try {
+      if (normalized === DEFAULT_KANBAN_DENSITY) {
+        localStorage.removeItem(KANBAN_DENSITY_STORAGE_KEY);
+      } else {
+        localStorage.setItem(KANBAN_DENSITY_STORAGE_KEY, normalized);
+      }
+    } catch {
+      // localStorage may be unavailable
+    }
+    set({ kanbanDensity: normalized });
+  },
 
   // Mobile tab actions
   setMobileActiveTab: (tab) => set({ mobileActiveTab: tab }),

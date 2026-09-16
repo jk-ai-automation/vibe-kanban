@@ -359,7 +359,9 @@
       "toggle-wrap-lines": "行折り返しの切り替え",
       "run-setup-script": "セットアップスクリプトを実行",
       "run-cleanup-script": "クリーンアップスクリプトを実行",
-      "run-archive-script": "アーカイブスクリプトを実行"
+      "run-archive-script": "アーカイブスクリプトを実行",
+      "editSelected": "選択中の項目を編集",
+      "openSelected": "選択中の項目を開く"
     }
   },
   "typeahead": {
@@ -513,6 +515,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "この列のイシューが {{limit}} 件を超えています",
+    "boardEmptyHint": "まだイシューがありません。最初のイシューを作成しましょう。",
+    "loadError": {
+      "title": "ボードを読み込めませんでした",
+      "hint": "同期接続に失敗しました。ネットワークを確認して再試行してください。"
+    },
+    "columnEmpty": {
+      "emptyTitle": "まだ何もありません",
+      "filteredTitle": "現在のフィルターに一致するイシューはありません",
+      "createIssue": "新規イシュー",
+      "createWorkspace": "イシューからワークスペースを作成"
+    },
+    "badge": {
+      "workspaceRunning": "実行中",
+      "workspaceStopped": "停止中",
+      "workspaceFailed": "失敗",
+      "prOpen": "PR レビュー待ち",
+      "prMerged": "PR マージ済み",
+      "prClosed": "PR クローズ済み",
+      "testNotConnected": "テスト未接続"
+    },
+    "density": {
+      "label": "表示密度を切り替え",
+      "comfortable": "ゆったり",
+      "compact": "コンパクト"
+    },
+    "tabs": {
+      "overview": "概要",
+      "development": "開発",
+      "testing": "テスト"
+    },
+    "testing": {
+      "notConnectedTitle": "テストはまだ接続されていません",
+      "notConnectedHint": "テストランナーを接続すると、ここに結果が表示されます。",
+      "passRate": "合格率",
+      "passRateHint": "直近の実行で合格したケースの割合",
+      "failures": "失敗一覧",
+      "failuresHint": "直近の実行で失敗したケース",
+      "report": "レポート",
+      "reportHint": "完全なテストレポートへのリンク"
+    },
+    "breadcrumb": {
+      "issue": "関連イシューを開く",
+      "workspace": "ワークスペースを開く",
+      "pr": "プルリクエストを開く"
     }
   },
   "createMode": {

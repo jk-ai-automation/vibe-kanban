@@ -34,6 +34,17 @@ import {
   buildWorkspaceCreateInitialState,
   buildWorkspaceCreatePrompt,
 } from '@/shared/lib/workspaceCreateState';
+import { shouldShowAssignees } from '@/features/kanban/model/cardBadges';
+import { isLocalPersonalMode } from '@/shared/lib/local/runtimeMode';
+import { IssuePanelSkeleton } from '@vibe/ui/components/IssuePanelSkeleton';
+import { IssueTestingPanel } from '@vibe/ui/components/IssueTestingPanel';
+import {
+  buildIssuePanelTabs,
+  defaultIssuePanelTab,
+  issuePanelTabLabelKey,
+  normalizeIssuePanelTab,
+  type IssuePanelTab,
+} from './issuePanelTabs';
 import {
   createBlankCreateFormData,
   createInitialKanbanIssuePanelFormState,
@@ -245,6 +256,39 @@ export function KanbanIssuePanelContainer({
 
   // Determine mode from composer state (create) or issue route (edit).
   const mode = kanbanCreateMode ? 'create' : 'edit';
+
+  // ---- 三段式标签页（设计文档 §7.3）----
+  // 判定逻辑全在 `issuePanelTabs.ts` 的纯函数里，这里只管状态与接线。
+  const hasLinkedWorkspaces = useMemo(() => {
+    if (!selectedKanbanIssueId) return false;
+    return workspaces.some(
+      (workspace) =>
+        workspace.issue_id === selectedKanbanIssueId && !workspace.archived
+    );
+  }, [workspaces, selectedKanbanIssueId]);
+
+  const availableTabs = useMemo(() => buildIssuePanelTabs({ mode }), [mode]);
+  const [selectedTab, setSelectedTab] = useState<IssuePanelTab | null>(null);
+
+  // 换需求 / 换模式时重置回默认页（有工作区就直接进「开发」）。
+  useEffect(() => {
+    setSelectedTab(null);
+  }, [selectedKanbanIssueId, mode]);
+
+  const activeTab = normalizeIssuePanelTab(
+    selectedTab ??
+      defaultIssuePanelTab({ mode, hasWorkspaces: hasLinkedWorkspaces }),
+    availableTabs
+  );
+
+  const issuePanelTabs = useMemo(
+    () =>
+      availableTabs.map((tab) => ({
+        id: tab,
+        label: t(issuePanelTabLabelKey(tab)),
+      })),
+    [availableTabs, t]
+  );
 
   // Sort statuses by sort_order
   const sortedStatuses = useMemo(
@@ -1031,11 +1075,8 @@ export function KanbanIssuePanelContainer({
     mode === 'edit' && selectedKanbanIssueId !== null && selectedIssue === null;
 
   if (isLoading || isResolvingExpectedIssue || hasMissingIssueDataInEditMode) {
-    return (
-      <div className="flex items-center justify-center h-full bg-secondary">
-        <p className="text-low">{t('states.loading')}</p>
-      </div>
-    );
+    // 设计文档 §7.5：加载态一律骨架屏，不用整页 spinner / 纯文字。
+    return <IssuePanelSkeleton />;
   }
 
   return (
@@ -1108,6 +1149,11 @@ export function KanbanIssuePanelContainer({
       renderCommentsSection={(issueId) => (
         <IssueCommentsSectionContainer issueId={issueId} />
       )}
+      showAssignees={shouldShowAssignees(isLocalPersonalMode())}
+      tabs={issuePanelTabs}
+      activeTab={activeTab}
+      onTabChange={setSelectedTab}
+      renderTestingSection={() => <IssueTestingPanel />}
     />
   );
 }

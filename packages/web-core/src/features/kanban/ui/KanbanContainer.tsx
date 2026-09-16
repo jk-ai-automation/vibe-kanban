@@ -32,6 +32,35 @@ import {
   selectVisibleStatuses,
   sortStatusesByOrder,
 } from '../model/boardModel';
+import { DEFAULT_WIP_LIMIT } from '../model/columnState';
+import {
+  shouldShowAssignees,
+  shouldShowStageBadges,
+} from '../model/cardBadges';
+import { nextIssueId, siblingColumnIssueId } from '../model/cardNavigation';
+import {
+  densityClasses,
+  densityLabelKey,
+  toggleDensity,
+} from '../model/density';
+import { isLocalPersonalMode } from '@/shared/lib/local/runtimeMode';
+import { useSyncErrorContext } from '@/shared/hooks/useSyncErrorContext';
+import { isShortcutSuppressed } from '@/shared/keyboard/shortcutGuards';
+import { KanbanBoardSkeleton } from '@vibe/ui/components/KanbanBoardSkeleton';
+import { ErrorAlert } from '@vibe/ui/components/ErrorAlert';
+import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
+import {
+  Scope,
+  useSequenceTracker,
+  useKeyCreate,
+  useKeyEdit,
+  useKeyFocusSearch,
+  useKeyNavDown,
+  useKeyNavLeft,
+  useKeyNavRight,
+  useKeyNavUp,
+  useKeyOpenIssue,
+} from '@/shared/keyboard';
 import {
   filtersToSearch,
   hasKanbanUrlFilters,
@@ -130,11 +159,21 @@ type SearchOnlyNavigate = (options: {
   replace?: boolean;
 }) => void;
 
-function LoadingState() {
+function BoardErrorState({ onRetry }: { onRetry: () => void }) {
   const { t } = useTranslation('common');
   return (
-    <div className="flex items-center justify-center h-full">
-      <p className="text-low">{t('states.loading')}</p>
+    <div className="flex flex-1 items-center justify-center px-double">
+      <div className="flex w-full max-w-md flex-col items-center gap-base">
+        <ErrorAlert message={t('kanban.loadError.title')} />
+        <p className="m-0 text-center text-sm text-low">
+          {t('kanban.loadError.hint')}
+        </p>
+        <PrimaryButton
+          variant="secondary"
+          value={t('buttons.retry')}
+          onClick={onRetry}
+        />
+      </div>
     </div>
   );
 }
@@ -169,7 +208,9 @@ export function KanbanContainer() {
     insertTag,
     pullRequests,
     isLoading: projectLoading,
+    error: projectError,
   } = useProjectContext();
+  const syncErrorContext = useSyncErrorContext();
 
   const {
     projects,
@@ -582,6 +623,34 @@ export function KanbanContainer() {
     [visibleStatuses, items]
   );
 
+  // 泳道阶段徽标：团队版（remote 数据源）拿不到 stage_type，所有列都会回落成
+  // 'todo'，这时候显示出来就是一排一模一样的徽标。统一由纯函数判断「阶段全相同
+  // 就不显示」。
+  const showStageBadge = useMemo(
+    () => shouldShowStageBadges(boardColumns.map((column) => column.stage)),
+    [boardColumns]
+  );
+
+  // 键盘左右换列用：按渲染顺序排好的每列 issue id。
+  const columnIssueIds = useMemo(
+    () => boardColumns.map((column) => column.issueIds),
+    [boardColumns]
+  );
+
+  // 个人版隐藏负责人头像（设计文档 §7.5：团队版才有的元素不留空占位）。
+  const showAssignees = shouldShowAssignees(isLocalPersonalMode());
+
+  // 密度（localStorage 持久化，见 `model/density.ts`）。
+  const kanbanDensity = useUiPreferencesStore((s) => s.kanbanDensity);
+  const setKanbanDensity = useUiPreferencesStore((s) => s.setKanbanDensity);
+  const density = useMemo(() => densityClasses(kanbanDensity), [kanbanDensity]);
+  const handleDensityToggle = useCallback(() => {
+    setKanbanDensity(toggleDensity(kanbanDensity));
+  }, [kanbanDensity, setKanbanDensity]);
+
+  // `/` 聚焦搜索框。
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
   // Create a lookup map for issue data
   const issueMap = useMemo(() => {
     const map: Record<string, (typeof issues)[0]> = {};
@@ -939,10 +1008,134 @@ export function KanbanContainer() {
     [insertTag, projectId]
   );
 
+  // ---- 快捷键（设计文档 §7.5）----
+  // 全部走 registry 的语义 hook，**不直接 useHotkeys('j', ...)**：绕开 registry
+  // 会让帮助弹窗漏项，也会和既有绑定打架。
+  const isBoardMode = kanbanViewMode === 'kanban';
+
+  // 连击序列进行中时不响应单键。
+  // `c` / `n` / `h` / `l` 同时是既有连击的第二个键（`v>c`、`i>c`、`g>n`、`v>h`、
+  // `y>l`），不挡的话按 `g` 再按 `n` 会同时触发「新建工作区」和「新建需求」。
+  // 沿用 `useIssueShortcuts` 里给 `x` 做的那套思路，只是改成读 SequenceTracker。
+  const sequence = useSequenceTracker();
+  const isShortcutBlocked = () => isShortcutSuppressed() || sequence.isActive;
+
+  useKeyFocusSearch(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    },
+    { scope: Scope.KANBAN, enabled: !isIssueComposerOpen }
+  );
+
+  useKeyCreate(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      handleAddTask();
+    },
+    { scope: Scope.KANBAN, enabled: !isIssueComposerOpen }
+  );
+
+  // j/k 上下、h/l 左右。移动即打开右侧详情面板（`selectedIssueId === issue.id`
+  // 会把卡片标成 isOpen，所以移动是有视觉反馈的）。
+  const moveSelection = useCallback(
+    (nextId: string | null) => {
+      if (!nextId || nextId === selectedKanbanIssueId) return;
+      setAnchor(nextId);
+      openIssue(nextId);
+    },
+    [openIssue, selectedKanbanIssueId, setAnchor]
+  );
+
+  const navEnabled = isBoardMode && !isIssueComposerOpen;
+
+  useKeyNavDown(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      moveSelection(
+        nextIssueId(orderedIssueIds, selectedKanbanIssueId, 'down')
+      );
+    },
+    { scope: Scope.KANBAN, enabled: navEnabled }
+  );
+
+  useKeyNavUp(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      moveSelection(nextIssueId(orderedIssueIds, selectedKanbanIssueId, 'up'));
+    },
+    { scope: Scope.KANBAN, enabled: navEnabled }
+  );
+
+  useKeyNavLeft(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      moveSelection(
+        siblingColumnIssueId(columnIssueIds, selectedKanbanIssueId, 'left')
+      );
+    },
+    { scope: Scope.KANBAN, enabled: navEnabled }
+  );
+
+  useKeyNavRight(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      moveSelection(
+        siblingColumnIssueId(columnIssueIds, selectedKanbanIssueId, 'right')
+      );
+    },
+    { scope: Scope.KANBAN, enabled: navEnabled }
+  );
+
+  // 裸 Enter：打开当前定位到的需求。没有定位时打开第一张卡片。
+  useKeyOpenIssue(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      const target =
+        selectedKanbanIssueId ?? nextIssueId(orderedIssueIds, null, 'down');
+      if (!target) return;
+      event?.preventDefault();
+      setAnchor(target);
+      openIssue(target);
+    },
+    { scope: Scope.KANBAN, enabled: !isIssueComposerOpen }
+  );
+
+  // `e` 编辑：打开「需求操作」命令面板（改状态 / 优先级 / 负责人等）。
+  // 仓库里没有独立的行内编辑态，这是现有机制里最接近「编辑」的入口。
+  useKeyEdit(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      if (!selectedKanbanIssueId) return;
+      event?.preventDefault();
+      handleCardMoreActionsClick(selectedKanbanIssueId);
+    },
+    { scope: Scope.KANBAN, enabled: !isIssueComposerOpen }
+  );
+
+  // 错误态：同步流挂了且一条需求都没拿到，给具体文案与「重试」（设计文档 §7.5）。
+  // 有数据时不挡界面——顶栏的同步错误提示已经会报，这里不重复打断。
+  const hasBoardError = projectError !== null && issues.length === 0;
+  const handleRetrySync = useCallback(() => {
+    if (syncErrorContext) {
+      syncErrorContext.retryAll();
+      return;
+    }
+    window.location.reload();
+  }, [syncErrorContext]);
+
   const isLoading = projectLoading || orgLoading;
 
   if (isLoading) {
-    return <LoadingState />;
+    // 设计文档 §7.5：加载态一律骨架屏，不用整页 spinner。
+    return <KanbanBoardSkeleton className="py-double" />;
   }
 
   return (
@@ -1022,11 +1215,22 @@ export function KanbanContainer() {
             shouldAnimateCreateButton={shouldAnimateCreateButton}
             renderFiltersDialog={(props) => <KanbanFiltersDialog {...props} />}
             isMobile={isMobile}
+            searchInputRef={searchInputRef}
+            density={kanbanDensity}
+            onDensityToggle={handleDensityToggle}
+            densityLabel={t(densityLabelKey(kanbanDensity))}
           />
         </div>
+
+        {/* 整板为空时的引导（设计文档 §7.2） */}
+        {shouldAnimateCreateButton && !hasBoardError && (
+          <p className="m-0 text-sm text-low">{t('kanban.boardEmptyHint')}</p>
+        )}
       </div>
 
-      {kanbanViewMode === 'kanban' ? (
+      {hasBoardError ? (
+        <BoardErrorState onRetry={handleRetrySync} />
+      ) : kanbanViewMode === 'kanban' ? (
         visibleStatuses.length === 0 ? (
           <div className="flex-1 flex items-center justify-center">
             <p className="text-low">{t('kanban.noVisibleStatuses')}</p>
@@ -1043,11 +1247,17 @@ export function KanbanContainer() {
             selectedIssueIds={selectedIssueIds}
             isMultiSelectActive={isMultiSelectActive}
             isMobile={isMobile}
+            wipLimit={DEFAULT_WIP_LIMIT}
+            hasActiveFilters={hasActiveFilters}
+            showStageBadge={showStageBadge}
+            showAssignees={showAssignees}
+            density={density}
             getPullRequestsForIssue={getPullRequestsForIssue}
             getTagObjectsForIssue={getTagObjectsForIssue}
             getTagsForIssue={getTagsForIssue}
             getResolvedRelationshipsForIssue={getResolvedRelationshipsForIssue}
             onAddIssue={handleAddTask}
+            onClearFilters={clearKanbanFilters}
             onCardClick={handleCardClick}
             onCardPriorityClick={handleCardPriorityClick}
             onCardAssigneeClick={handleCardAssigneeClick}
@@ -1065,6 +1275,7 @@ export function KanbanContainer() {
               items={items}
               issueMap={issueMap}
               issueAssigneesMap={issueAssigneesMap}
+              showAssignees={showAssignees}
               getTagObjectsForIssue={getTagObjectsForIssue}
               getResolvedRelationshipsForIssue={
                 getResolvedRelationshipsForIssue

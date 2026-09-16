@@ -359,7 +359,9 @@
       "toggle-wrap-lines": "Alternar ajuste de línea",
       "run-setup-script": "Ejecutar script de configuración",
       "run-cleanup-script": "Ejecutar script de limpieza",
-      "run-archive-script": "Ejecutar script de archivado"
+      "run-archive-script": "Ejecutar script de archivado",
+      "editSelected": "Editar selección",
+      "openSelected": "Abrir selección"
     }
   },
   "typeahead": {
@@ -513,6 +515,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "Más de {{limit}} incidencias en esta columna",
+    "boardEmptyHint": "Aún no hay incidencias. Crea la primera para empezar.",
+    "loadError": {
+      "title": "No se pudo cargar este tablero",
+      "hint": "Falló la conexión de sincronización. Revisa tu red y reinténtalo."
+    },
+    "columnEmpty": {
+      "emptyTitle": "Todavía no hay nada aquí",
+      "filteredTitle": "Ninguna incidencia coincide con los filtros actuales",
+      "createIssue": "Nueva incidencia",
+      "createWorkspace": "Crear espacio de trabajo desde la incidencia"
+    },
+    "badge": {
+      "workspaceRunning": "En ejecución",
+      "workspaceStopped": "Detenido",
+      "workspaceFailed": "Con errores",
+      "prOpen": "PR en revisión",
+      "prMerged": "PR fusionada",
+      "prClosed": "PR cerrada",
+      "testNotConnected": "Pruebas no disponibles"
+    },
+    "density": {
+      "label": "Cambiar densidad",
+      "comfortable": "Cómoda",
+      "compact": "Compacta"
+    },
+    "tabs": {
+      "overview": "Resumen",
+      "development": "Desarrollo",
+      "testing": "Pruebas"
+    },
+    "testing": {
+      "notConnectedTitle": "Las pruebas aún no están conectadas",
+      "notConnectedHint": "Los resultados aparecerán aquí cuando se conecte el ejecutor de pruebas.",
+      "passRate": "Tasa de aciertos",
+      "passRateHint": "Proporción de casos superados en la última ejecución",
+      "failures": "Fallos",
+      "failuresHint": "Casos que fallaron en la última ejecución",
+      "report": "Informe",
+      "reportHint": "Enlace al informe completo de pruebas"
+    },
+    "breadcrumb": {
+      "issue": "Abrir incidencia vinculada",
+      "workspace": "Abrir espacio de trabajo",
+      "pr": "Abrir pull request"
     }
   },
   "createMode": {

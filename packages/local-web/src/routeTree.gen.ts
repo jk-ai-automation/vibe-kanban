@@ -14,6 +14,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as OnboardingSignInRouteImport } from './routes/onboarding_.sign-in'
 import { Route as AppWorkspacesRouteImport } from './routes/_app.workspaces'
+import { Route as AppTestingRouteImport } from './routes/_app.testing'
 import { Route as AppNotificationsRouteImport } from './routes/_app.notifications'
 import { Route as AppExportRouteImport } from './routes/_app.export'
 import { Route as WorkspacesWorkspaceIdVscodeRouteImport } from './routes/workspaces.$workspaceId.vscode'
@@ -55,6 +56,11 @@ const OnboardingSignInRoute = OnboardingSignInRouteImport.update({
 const AppWorkspacesRoute = AppWorkspacesRouteImport.update({
   id: '/workspaces',
   path: '/workspaces',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppTestingRoute = AppTestingRouteImport.update({
+  id: '/testing',
+  path: '/testing',
   getParentRoute: () => AppRoute,
 } as any)
 const AppNotificationsRoute = AppNotificationsRouteImport.update({
@@ -171,6 +177,7 @@ export interface FileRoutesByFullPath {
   '/onboarding': typeof OnboardingRoute
   '/export': typeof AppExportRoute
   '/notifications': typeof AppNotificationsRoute
+  '/testing': typeof AppTestingRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/onboarding/sign-in': typeof OnboardingSignInRoute
   '/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -195,6 +202,7 @@ export interface FileRoutesByTo {
   '/onboarding': typeof OnboardingRoute
   '/export': typeof AppExportRoute
   '/notifications': typeof AppNotificationsRoute
+  '/testing': typeof AppTestingRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/onboarding/sign-in': typeof OnboardingSignInRoute
   '/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -221,6 +229,7 @@ export interface FileRoutesById {
   '/onboarding': typeof OnboardingRoute
   '/_app/export': typeof AppExportRoute
   '/_app/notifications': typeof AppNotificationsRoute
+  '/_app/testing': typeof AppTestingRoute
   '/_app/workspaces': typeof AppWorkspacesRoute
   '/onboarding_/sign-in': typeof OnboardingSignInRoute
   '/_app/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -247,6 +256,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/export'
     | '/notifications'
+    | '/testing'
     | '/workspaces'
     | '/onboarding/sign-in'
     | '/projects/$projectId'
@@ -271,6 +281,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/export'
     | '/notifications'
+    | '/testing'
     | '/workspaces'
     | '/onboarding/sign-in'
     | '/projects/$projectId'
@@ -296,6 +307,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/_app/export'
     | '/_app/notifications'
+    | '/_app/testing'
     | '/_app/workspaces'
     | '/onboarding_/sign-in'
     | '/_app/projects/$projectId'
@@ -360,6 +372,13 @@ declare module '@tanstack/react-router' {
       path: '/workspaces'
       fullPath: '/workspaces'
       preLoaderRoute: typeof AppWorkspacesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/testing': {
+      id: '/_app/testing'
+      path: '/testing'
+      fullPath: '/testing'
+      preLoaderRoute: typeof AppTestingRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/notifications': {
@@ -494,6 +513,7 @@ declare module '@tanstack/react-router' {
 interface AppRouteChildren {
   AppExportRoute: typeof AppExportRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
+  AppTestingRoute: typeof AppTestingRoute
   AppWorkspacesRoute: typeof AppWorkspacesRoute
   AppProjectsProjectIdRoute: typeof AppProjectsProjectIdRoute
   AppWorkspacesWorkspaceIdRoute: typeof AppWorkspacesWorkspaceIdRoute
@@ -514,6 +534,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppExportRoute: AppExportRoute,
   AppNotificationsRoute: AppNotificationsRoute,
+  AppTestingRoute: AppTestingRoute,
   AppWorkspacesRoute: AppWorkspacesRoute,
   AppProjectsProjectIdRoute: AppProjectsProjectIdRoute,
   AppWorkspacesWorkspaceIdRoute: AppWorkspacesWorkspaceIdRoute,

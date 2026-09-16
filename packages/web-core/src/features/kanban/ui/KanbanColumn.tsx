@@ -1,5 +1,4 @@
 import type { MouseEvent } from 'react';
-import { PlusIcon } from '@phosphor-icons/react';
 import {
   KanbanBoard,
   KanbanCard,
@@ -7,6 +6,8 @@ import {
   KanbanHeader,
 } from '@vibe/ui/components/KanbanBoard';
 import { KanbanCardContent } from '@vibe/ui/components/KanbanCardContent';
+import { KanbanColumnHeader } from '@vibe/ui/components/KanbanColumnHeader';
+import { KanbanColumnEmptyState } from '@vibe/ui/components/KanbanColumnEmptyState';
 import {
   IssueWorkspaceCard,
   type WorkspaceWithStats,
@@ -16,6 +17,15 @@ import type { ResolvedRelationship } from '@/shared/lib/resolveRelationships';
 import type { OrganizationMemberWithProfile } from 'shared/types';
 import type { Issue, IssueTag, PullRequest, Tag } from 'shared/remote-types';
 import type { BoardColumn } from '../model/boardModel';
+import { columnEmptyStateKind, wipState } from '../model/columnState';
+import {
+  buildPrBadge,
+  buildTestBadge,
+  buildWorkspaceBadge,
+} from '../model/cardBadges';
+import type { DensityClasses } from '../model/density';
+import { stageLabelKey } from '../model/stageType';
+import { cn } from '@/shared/lib/utils';
 
 export type KanbanColumnProps = {
   column: BoardColumn;
@@ -27,11 +37,25 @@ export type KanbanColumnProps = {
   selectedIssueIds: Set<string>;
   isMultiSelectActive: boolean;
   isMobile: boolean;
+  /** WIP 上限。列头计数超过它就变色提示，**只提示不阻止**。 */
+  wipLimit: number;
+  /** 当前是否有生效的筛选，决定空列显示哪种引导。 */
+  hasActiveFilters: boolean;
+  /**
+   * 是否显示泳道阶段徽标。团队版（remote 数据源）所有列都会回落成同一个阶段，
+   * 由调用方用 `shouldShowStageBadges` 统一判断后传进来。
+   */
+  showStageBadge: boolean;
+  /** 负责人头像只在团队版出现。 */
+  showAssignees: boolean;
+  /** 密度对应的 class 与开关。 */
+  density: DensityClasses;
   getPullRequestsForIssue: (issueId: string) => PullRequest[];
   getTagObjectsForIssue: (issueId: string) => Tag[];
   getTagsForIssue: (issueId: string) => IssueTag[];
   getResolvedRelationshipsForIssue: (issueId: string) => ResolvedRelationship[];
   onAddIssue: (statusId: string) => void;
+  onClearFilters: () => void;
   onCardClick: (issueId: string, event?: MouseEvent) => void;
   onCardPriorityClick: (issueId: string) => void;
   onCardAssigneeClick: (issueId: string) => void;
@@ -42,8 +66,9 @@ export type KanbanColumnProps = {
 };
 
 /**
- * 看板的单个泳道。纯展示：所有数据与回调走 props，内部不用任何 hook。
- * JSX 从 KanbanContainer 原样搬出，行为不变。
+ * 看板的单个泳道。纯展示：所有数据与回调走 props，**内部不用任何 hook**。
+ * （需要翻译的文案都交给 `KanbanColumnHeader` / `KanbanColumnEmptyState` /
+ * `KanbanCardContent` 这些 UI 组件自己去 `useTranslation`。）
  */
 export function KanbanColumn({
   column,
@@ -55,11 +80,17 @@ export function KanbanColumn({
   selectedIssueIds,
   isMultiSelectActive,
   isMobile,
+  wipLimit,
+  hasActiveFilters,
+  showStageBadge,
+  showAssignees,
+  density,
   getPullRequestsForIssue,
   getTagObjectsForIssue,
   getTagsForIssue,
   getResolvedRelationshipsForIssue,
   onAddIssue,
+  onClearFilters,
   onCardClick,
   onCardPriorityClick,
   onCardAssigneeClick,
@@ -68,28 +99,22 @@ export function KanbanColumn({
   onCreateTag,
   onOpenIssueWorkspace,
 }: KanbanColumnProps) {
-  const { status, issueIds } = column;
+  const { status, stage, issueIds, count } = column;
+  const emptyStateKind = columnEmptyStateKind(count, hasActiveFilters);
+  const isCompact = !density.showDescription;
 
   return (
     <KanbanBoard>
       <KanbanHeader>
-        <div className="border-t sticky border-b top-0 z-20 flex shrink-0 items-center justify-between gap-2 p-base bg-secondary">
-          <div className="flex items-center gap-2">
-            <div
-              className="h-2 w-2 rounded-full shrink-0"
-              style={{ backgroundColor: `hsl(${status.color})` }}
-            />
-            <p className="m-0 text-sm">{status.name}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => onAddIssue(status.id)}
-            className="p-half rounded-sm text-low hover:text-normal hover:bg-secondary transition-colors"
-            aria-label="Add task"
-          >
-            <PlusIcon className="size-icon-xs" weight="bold" />
-          </button>
-        </div>
+        <KanbanColumnHeader
+          name={status.name}
+          color={status.color}
+          count={count}
+          wip={wipState(count, wipLimit)}
+          wipLimit={wipLimit}
+          stageLabelKey={showStageBadge ? stageLabelKey(stage) : null}
+          onAddIssue={() => onAddIssue(status.id)}
+        />
       </KanbanHeader>
       <KanbanCards id={status.id}>
         {issueIds.map((issueId, index) => {
@@ -99,9 +124,8 @@ export function KanbanColumn({
           const workspaceIdsShownOnCard = new Set(
             issueWorkspaces.map((workspace) => workspace.id)
           );
-          const issueCardPullRequests = getPullRequestsForIssue(
-            issue.id
-          ).filter((pr) => {
+          const allIssuePullRequests = getPullRequestsForIssue(issue.id);
+          const issueCardPullRequests = allIssuePullRequests.filter((pr) => {
             if (!pr.workspace_id) {
               return true;
             }
@@ -134,6 +158,12 @@ export function KanbanColumn({
                 relationships={getResolvedRelationshipsForIssue(issue.id)}
                 isSubIssue={!!issue.parent_issue_id}
                 isMobile={isMobile}
+                workspaceBadge={buildWorkspaceBadge(issueWorkspaces)}
+                // 紧凑模式下把逐个 PR 链接收成一个汇总徽标；舒适模式保留可点链接。
+                prBadge={isCompact ? buildPrBadge(issueCardPullRequests) : null}
+                testBadge={buildTestBadge()}
+                showAssignees={showAssignees}
+                showDescription={density.showDescription}
                 onPriorityClick={(e) => {
                   e.stopPropagation();
                   onCardPriorityClick(issue.id);
@@ -170,7 +200,7 @@ export function KanbanColumn({
                 }}
               />
               {issueWorkspaces.length > 0 && (
-                <div className="mt-base flex flex-col gap-half">
+                <div className={cn('mt-base flex flex-col', density.cards)}>
                   {issueWorkspaces.map((workspace) => (
                     <IssueWorkspaceCard
                       key={workspace.id}
@@ -194,6 +224,19 @@ export function KanbanColumn({
             </KanbanCard>
           );
         })}
+        {emptyStateKind !== 'none' && (
+          <KanbanColumnEmptyState
+            kind={emptyStateKind}
+            onCreateIssue={
+              emptyStateKind === 'empty'
+                ? () => onAddIssue(status.id)
+                : undefined
+            }
+            onClearFilters={
+              emptyStateKind === 'filtered' ? onClearFilters : undefined
+            }
+          />
+        )}
       </KanbanCards>
     </KanbanBoard>
   );

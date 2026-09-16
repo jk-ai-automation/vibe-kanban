@@ -37,12 +37,14 @@ function useShortcutGroups(): ShortcutGroup[] {
     const enterKey = isMac() ? '↩' : 'Enter';
 
     // Quick Actions - single key shortcuts
+    // `C` 与 `N` 都能新建：`N` 是设计文档 §7.5 要的键位，`C` 是老键位，两个都留着。
     const quickActions: ShortcutGroup = {
       name: t('shortcuts.groups.quickActions'),
       shortcuts: [
         { keys: '?', description: t('shortcuts.actions.showHelp') },
         { keys: 'Esc', description: t('shortcuts.actions.closeCancel') },
-        { keys: 'C', description: t('shortcuts.actions.createNewTask') },
+        { keys: ['C', 'N'], description: t('shortcuts.actions.createNewTask') },
+        { keys: 'E', description: t('shortcuts.actions.editSelected') },
         { keys: 'D', description: t('shortcuts.actions.deleteSelected') },
         { keys: '/', description: t('shortcuts.actions.focusSearch') },
       ],
@@ -56,6 +58,7 @@ function useShortcutGroups(): ShortcutGroup[] {
         { keys: 'K', description: t('shortcuts.actions.moveUp') },
         { keys: 'H', description: t('shortcuts.actions.moveLeft') },
         { keys: 'L', description: t('shortcuts.actions.moveRight') },
+        { keys: enterKey, description: t('shortcuts.actions.openSelected') },
       ],
     };
 
@@ -227,8 +230,13 @@ const KeyboardShortcutsDialogImpl = create<NoProps>(() => {
       />
       {/* Dialog wrapper - handles positioning */}
       <div className="fixed z-[9999] left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-        {/* Dialog content - handles animation */}
+        {/* Dialog content - handles animation.
+            role/aria-modal 让 `isShortcutSuppressed()` 认得出「有弹窗开着」，
+            否则帮助弹窗打开时看板的单键快捷键还会照常触发。 */}
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('shortcuts.title')}
           className={cn(
             'w-[700px] max-h-[80vh]',
             'bg-panel/95 backdrop-blur-sm rounded-sm border border-border/50 shadow-lg',

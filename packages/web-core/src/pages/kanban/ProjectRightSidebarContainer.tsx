@@ -21,6 +21,8 @@ import { useWorkspaceRecord } from '@/shared/hooks/useWorkspaceRecord';
 import { SessionChatBoxContainer } from '@/features/workspace-chat/ui/SessionChatBoxContainer';
 import { CreateChatBoxContainer } from '@/shared/components/CreateChatBoxContainer';
 import { KanbanIssuePanelContainer } from './KanbanIssuePanelContainer';
+import { WorkspaceBreadcrumb } from '@vibe/ui/components/WorkspaceBreadcrumb';
+import { buildWorkspaceBreadcrumb } from '@/features/kanban/model/workspaceBreadcrumb';
 import {
   ConversationList,
   type ConversationListHandle,
@@ -140,7 +142,8 @@ function WorkspaceSessionPanel({
   onClose,
 }: WorkspaceSessionPanelProps) {
   const appNavigation = useAppNavigation();
-  const { projectId, getIssue } = useProjectContext();
+  const { t } = useTranslation('common');
+  const { projectId, getIssue, getPullRequestsForIssue } = useProjectContext();
   const routeState = useCurrentKanbanRouteState();
   const { workspaces: remoteWorkspaces } = useUserContext();
   const { activeWorkspaces, archivedWorkspaces } = useWorkspaceContext();
@@ -187,6 +190,33 @@ function WorkspaceSessionPanel({
 
   const workspaceBranch = workspace?.branch ?? workspaceSummary?.branch ?? null;
 
+  // 这个工作区自己的 PR（设计文档 §7.4 的路径条第三段）。
+  const workspacePullRequests = useMemo(() => {
+    if (!breadcrumbIssueId) return [];
+    return getPullRequestsForIssue(breadcrumbIssueId)
+      .filter(
+        (pr) => !linkedWorkspace || pr.workspace_id === linkedWorkspace.id
+      )
+      .map((pr) => ({ number: pr.number, url: pr.url }));
+  }, [breadcrumbIssueId, getPullRequestsForIssue, linkedWorkspace]);
+
+  const breadcrumbSegments = useMemo(
+    () =>
+      buildWorkspaceBreadcrumb({
+        issueSimpleId,
+        canOpenIssue: Boolean(projectId && breadcrumbIssueId),
+        workspaceLabel: workspaceBranch,
+        pullRequests: workspacePullRequests,
+      }),
+    [
+      issueSimpleId,
+      projectId,
+      breadcrumbIssueId,
+      workspaceBranch,
+      workspacePullRequests,
+    ]
+  );
+
   const handleOpenIssuePanel = useCallback(() => {
     if (projectId && breadcrumbIssueId) {
       appNavigation.goToProjectIssue(projectId, breadcrumbIssueId);
@@ -199,8 +229,19 @@ function WorkspaceSessionPanel({
     appNavigation.goToWorkspace(workspaceId);
   }, [appNavigation, workspaceId]);
 
-  const breadcrumbButtonClass =
-    'min-w-0 text-sm text-normal truncate rounded-sm px-1 py-0.5 hover:bg-panel hover:text-high transition-colors';
+  const handleBreadcrumbClick = useCallback(
+    (kind: 'issue' | 'workspace' | 'pr') => {
+      if (kind === 'issue') {
+        handleOpenIssuePanel();
+        return;
+      }
+      if (kind === 'workspace') {
+        handleOpenWorkspaceView();
+      }
+      // 'pr' 段是外链，由 `WorkspaceBreadcrumb` 直接渲染成 <a>，不会走到这里。
+    },
+    [handleOpenIssuePanel, handleOpenWorkspaceView]
+  );
 
   const workspaceWithSession = useMemo(() => {
     if (!workspace) return undefined;
@@ -240,25 +281,16 @@ function WorkspaceSessionPanel({
           <MessageEditProvider>
             <div className="relative flex h-full flex-1 flex-col bg-primary">
               <div className="flex items-center justify-between px-base py-half border-b shrink-0">
-                <div className="flex items-center gap-half min-w-0 font-ibm-plex-mono">
-                  <button
-                    type="button"
-                    onClick={handleOpenIssuePanel}
-                    className={`${breadcrumbButtonClass} shrink-0`}
-                    aria-label="Open linked issue"
-                  >
-                    {issueSimpleId ?? 'Issue'}
-                  </button>
-                  <span className="text-low text-sm shrink-0">/</span>
-                  <button
-                    type="button"
-                    onClick={handleOpenWorkspaceView}
-                    className={breadcrumbButtonClass}
-                    aria-label="Open workspace"
-                  >
-                    {workspaceBranch ?? 'Workspace'}
-                  </button>
-                </div>
+                {/* 需求 → 工作区 → PR 路径条（设计文档 §7.4） */}
+                <WorkspaceBreadcrumb
+                  segments={breadcrumbSegments}
+                  onSegmentClick={handleBreadcrumbClick}
+                  segmentAriaLabels={{
+                    issue: t('kanban.breadcrumb.issue'),
+                    workspace: t('kanban.breadcrumb.workspace'),
+                    pr: t('kanban.breadcrumb.pr'),
+                  }}
+                />
 
                 <div className="flex items-center gap-half">
                   <button

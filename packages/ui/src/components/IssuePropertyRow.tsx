@@ -26,6 +26,8 @@ export interface IssuePropertyRowProps {
   priority: PriorityLevel | null;
   assigneeIds: string[];
   assigneeUsers?: KanbanAssigneeUser[];
+  /** 指派入口只在团队版出现；个人版传 false，整个按钮不渲染。 */
+  showAssignees?: boolean;
   statuses: IssuePropertyStatus[];
   creatorUser?: UserAvatarUser | null;
   parentIssue?: { id: string; simpleId: string } | null;
@@ -43,6 +45,7 @@ export function IssuePropertyRow({
   statusId,
   priority,
   assigneeUsers,
+  showAssignees = true,
   statuses,
   creatorUser,
   parentIssue,
@@ -79,20 +82,22 @@ export function IssuePropertyRow({
         {priority ? priorityLabels[priority] : 'No priority'}
       </PrimaryButton>
 
-      <PrimaryButton
-        variant="tertiary"
-        onClick={onAssigneeClick}
-        disabled={disabled}
-      >
-        {assigneeUsers && assigneeUsers.length > 0 ? (
-          <KanbanAssignee assignees={assigneeUsers} />
-        ) : (
-          <>
-            <UsersIcon className="size-icon-xs" weight="bold" />
-            {t('kanban.assignee', 'Assignee')}
-          </>
-        )}
-      </PrimaryButton>
+      {showAssignees && (
+        <PrimaryButton
+          variant="tertiary"
+          onClick={onAssigneeClick}
+          disabled={disabled}
+        >
+          {assigneeUsers && assigneeUsers.length > 0 ? (
+            <KanbanAssignee assignees={assigneeUsers} />
+          ) : (
+            <>
+              <UsersIcon className="size-icon-xs" weight="bold" />
+              {t('kanban.assignee', 'Assignee')}
+            </>
+          )}
+        </PrimaryButton>
+      )}
 
       {creatorUser &&
         (creatorUser.first_name?.trim() || creatorUser.username?.trim()) && (

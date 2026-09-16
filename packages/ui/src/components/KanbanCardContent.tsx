@@ -18,6 +18,20 @@ import {
   RelationshipBadge,
   type RelationshipDisplayType,
 } from './RelationshipBadge';
+import {
+  KanbanStatusBadge,
+  type KanbanStatusBadgeTone,
+} from './KanbanStatusBadge';
+
+/**
+ * 卡片底部的状态徽标（设计文档 §7.2）。
+ * 判定在 `@/features/kanban/model/cardBadges`，这里只拿 key 翻译后渲染。
+ */
+export interface KanbanCardStatusBadge {
+  tone: KanbanStatusBadgeTone;
+  labelKey: string;
+  count: number;
+}
 
 export interface KanbanTag {
   id: string;
@@ -138,6 +152,18 @@ export type KanbanCardContentProps<TTag extends KanbanTag = KanbanTag> = {
   onMoreActionsClick?: () => void;
   tagEditProps?: TagEditProps<TTag>;
   isMobile?: boolean;
+
+  // ---- 以下都是可选、都有默认值，保证现有调用点（列表视图等）不破 ----
+  /** 关联工作区的运行状态徽标。`null` / 不传就不渲染。 */
+  workspaceBadge?: KanbanCardStatusBadge | null;
+  /** PR 状态徽标。`null` / 不传就退回原来的 `pullRequests` 逐个渲染。 */
+  prBadge?: KanbanCardStatusBadge | null;
+  /** 测试结果徽标（本期占位）。 */
+  testBadge?: KanbanCardStatusBadge | null;
+  /** 负责人头像。个人版传 `false`，**不留空占位**。 */
+  showAssignees?: boolean;
+  /** 紧凑密度下收起描述预览。 */
+  showDescription?: boolean;
 };
 
 export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
@@ -157,6 +183,11 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
   onMoreActionsClick,
   tagEditProps,
   isMobile,
+  workspaceBadge = null,
+  prBadge = null,
+  testBadge = null,
+  showAssignees = true,
+  showDescription = true,
 }: KanbanCardContentProps<TTag>) {
   const { t } = useTranslation('common');
   const previewDescription = useMemo(() => {
@@ -240,8 +271,8 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
       {/* Row 2: Title */}
       <span className="text-base text-normal truncate">{title}</span>
 
-      {/* Row 3: Description (optional, truncated) */}
-      {previewDescription && (
+      {/* Row 3: Description (optional, truncated; 紧凑密度下收起) */}
+      {showDescription && previewDescription && (
         <p
           className={cn(
             'text-sm text-low m-0',
@@ -276,26 +307,52 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
             <PriorityIcon priority={priority} />
           )}
         </div>
-        {onAssigneeClick ? (
-          <button
-            type="button"
-            onClick={onAssigneeClick}
-            onMouseDown={(e) => e.stopPropagation()}
-            className="cursor-pointer hover:bg-secondary rounded-sm transition-colors"
-          >
+        {/* 负责人头像只在团队版出现；个人版 showAssignees=false，整块不渲染，不留空占位 */}
+        {showAssignees &&
+          (onAssigneeClick ? (
+            <button
+              type="button"
+              onClick={onAssigneeClick}
+              onMouseDown={(e) => e.stopPropagation()}
+              className="cursor-pointer hover:bg-secondary rounded-sm transition-colors"
+            >
+              <KanbanAssignee assignees={assignees} />
+            </button>
+          ) : (
             <KanbanAssignee assignees={assignees} />
-          </button>
-        ) : (
-          <KanbanAssignee assignees={assignees} />
-        )}
+          ))}
       </div>
 
-      {/* Row 5: Tags, PRs, Relationships (own row to prevent overflow) */}
+      {/* Row 5: 工作区 → PR → 测试 → 标签 → 关系（独立一行，避免溢出）
+          前三个是设计文档 §7.2 的状态徽标，都可选；不传时这一行退回改造前的内容。 */}
       {(tags.length > 0 ||
         tagEditProps ||
         pullRequests.length > 0 ||
-        relationships.length > 0) && (
+        relationships.length > 0 ||
+        workspaceBadge ||
+        prBadge ||
+        testBadge) && (
         <div className="flex items-center gap-half flex-wrap min-w-0">
+          {workspaceBadge && (
+            <KanbanStatusBadge
+              tone={workspaceBadge.tone}
+              label={t(workspaceBadge.labelKey)}
+              count={workspaceBadge.count}
+            />
+          )}
+          {prBadge && (
+            <KanbanStatusBadge
+              tone={prBadge.tone}
+              label={t(prBadge.labelKey)}
+              count={prBadge.count}
+            />
+          )}
+          {testBadge && (
+            <KanbanStatusBadge
+              tone={testBadge.tone}
+              label={t(testBadge.labelKey)}
+            />
+          )}
           {tagEditProps ? (
             (tagEditProps.renderTagEditor?.({
               allTags: tagEditProps.allTags,
@@ -314,16 +371,23 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
               )}
             </>
           )}
-          {pullRequests.slice(0, 2).map((pr) => (
-            <PrBadge
-              key={pr.id}
-              number={pr.number}
-              url={pr.url}
-              status={pr.status}
-            />
-          ))}
-          {pullRequests.length > 2 && (
-            <span className="text-sm text-low">+{pullRequests.length - 2}</span>
+          {/* 汇总徽标已经替代了逐个 PR 链接，两者只显示一种，避免重复 */}
+          {!prBadge && (
+            <>
+              {pullRequests.slice(0, 2).map((pr) => (
+                <PrBadge
+                  key={pr.id}
+                  number={pr.number}
+                  url={pr.url}
+                  status={pr.status}
+                />
+              ))}
+              {pullRequests.length > 2 && (
+                <span className="text-sm text-low">
+                  +{pullRequests.length - 2}
+                </span>
+              )}
+            </>
           )}
           {relationships.slice(0, 2).map((rel) => (
             <RelationshipBadge

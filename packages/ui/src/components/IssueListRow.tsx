@@ -66,6 +66,8 @@ export interface IssueListRowProps {
   tags: IssueListRowTag[];
   relationships?: IssueListRowRelationship[];
   assignees: KanbanAssigneeUser[];
+  /** 负责人头像只在团队版出现；个人版传 false，不留空占位。 */
+  showAssignees?: boolean;
   onClick: (e: MouseEvent) => void;
   isSelected: boolean;
   isMultiSelectActive?: boolean;
@@ -81,6 +83,7 @@ export function IssueListRow({
   tags,
   relationships = [],
   assignees,
+  showAssignees = true,
   onClick,
   isSelected,
   isMultiSelectActive = false,
@@ -182,7 +185,7 @@ export function IssueListRow({
                 )}
               </div>
             )}
-            <KanbanAssignee assignees={assignees} />
+            {showAssignees && <KanbanAssignee assignees={assignees} />}
             <span className="text-sm text-low w-5 text-right">
               {formatRelativeTime(issue.created_at)}
             </span>

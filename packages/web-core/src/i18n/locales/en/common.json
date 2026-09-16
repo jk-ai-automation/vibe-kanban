@@ -373,7 +373,9 @@
       "toggle-wrap-lines": "Toggle line wrapping",
       "run-setup-script": "Run setup script",
       "run-cleanup-script": "Run cleanup script",
-      "run-archive-script": "Run archive script"
+      "run-archive-script": "Run archive script",
+      "editSelected": "Edit selected",
+      "openSelected": "Open selected"
     }
   },
   "typeahead": {
@@ -527,6 +529,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "More than {{limit}} issues in this column",
+    "boardEmptyHint": "No issues yet. Create your first issue to get started.",
+    "loadError": {
+      "title": "Could not load this board",
+      "hint": "The sync connection failed. Check your network, then retry."
+    },
+    "columnEmpty": {
+      "emptyTitle": "Nothing here yet",
+      "filteredTitle": "No issues match the current filters",
+      "createIssue": "New issue",
+      "createWorkspace": "Create workspace from issue"
+    },
+    "badge": {
+      "workspaceRunning": "Running",
+      "workspaceStopped": "Stopped",
+      "workspaceFailed": "Failed",
+      "prOpen": "PR in review",
+      "prMerged": "PR merged",
+      "prClosed": "PR closed",
+      "testNotConnected": "Tests N/A"
+    },
+    "density": {
+      "label": "Toggle density",
+      "comfortable": "Comfortable",
+      "compact": "Compact"
+    },
+    "tabs": {
+      "overview": "Overview",
+      "development": "Development",
+      "testing": "Testing"
+    },
+    "testing": {
+      "notConnectedTitle": "Tests are not connected yet",
+      "notConnectedHint": "Test results will show up here once the test runner is wired in.",
+      "passRate": "Pass rate",
+      "passRateHint": "Share of passing cases in the latest run",
+      "failures": "Failures",
+      "failuresHint": "Cases that failed in the latest run",
+      "report": "Report",
+      "reportHint": "Link to the full test report"
+    },
+    "breadcrumb": {
+      "issue": "Open linked issue",
+      "workspace": "Open workspace",
+      "pr": "Open pull request"
     }
   },
   "createMode": {

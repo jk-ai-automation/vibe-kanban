@@ -359,7 +359,9 @@
       "toggle-wrap-lines": "切换自动换行",
       "run-setup-script": "运行设置脚本",
       "run-cleanup-script": "运行清理脚本",
-      "run-archive-script": "运行归档脚本"
+      "run-archive-script": "运行归档脚本",
+      "editSelected": "编辑选中项",
+      "openSelected": "打开选中项"
     }
   },
   "typeahead": {
@@ -513,6 +515,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "本列超过 {{limit}} 张需求",
+    "boardEmptyHint": "还没有需求。先建一条需求开始吧。",
+    "loadError": {
+      "title": "看板加载失败",
+      "hint": "同步连接中断。请检查网络后重试。"
+    },
+    "columnEmpty": {
+      "emptyTitle": "这一列还是空的",
+      "filteredTitle": "没有符合当前筛选的需求",
+      "createIssue": "新建需求",
+      "createWorkspace": "从需求创建工作区"
+    },
+    "badge": {
+      "workspaceRunning": "运行中",
+      "workspaceStopped": "已停止",
+      "workspaceFailed": "失败",
+      "prOpen": "PR 待评审",
+      "prMerged": "PR 已合并",
+      "prClosed": "PR 已关闭",
+      "testNotConnected": "测试未接入"
+    },
+    "density": {
+      "label": "切换密度",
+      "comfortable": "舒适",
+      "compact": "紧凑"
+    },
+    "tabs": {
+      "overview": "概况",
+      "development": "开发",
+      "testing": "测试"
+    },
+    "testing": {
+      "notConnectedTitle": "测试尚未接入",
+      "notConnectedHint": "接入测试框架后，这里会显示测试结果。",
+      "passRate": "通过率",
+      "passRateHint": "最近一次运行的用例通过比例",
+      "failures": "失败清单",
+      "failuresHint": "最近一次运行中失败的用例",
+      "report": "报告链接",
+      "reportHint": "完整测试报告的地址"
+    },
+    "breadcrumb": {
+      "issue": "打开关联需求",
+      "workspace": "打开工作区",
+      "pr": "打开 PR"
     }
   },
   "createMode": {
