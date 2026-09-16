@@ -5,8 +5,12 @@ import { getAuthRuntime } from '@/shared/lib/auth/runtime';
 import { getRemoteApiUrl, makeRequest } from '@/shared/lib/remoteApi';
 import type { MutationDefinition, ShapeDefinition } from 'shared/remote-types';
 import type { CollectionConfig, SyncError } from '@/shared/lib/electric/types';
-
-type ElectricRow = Record<string, unknown> & { [key: string]: unknown };
+import {
+  type ElectricRow,
+  extractFallbackRows,
+  getRowKey,
+  parseResponseError,
+} from '@/shared/lib/electric/rows';
 
 type SourceMode = 'electric' | 'fallback';
 
@@ -159,18 +163,6 @@ function buildSourceKey(table: string, params: Record<string, string>): string {
     .map(([key, value]) => `${key}=${value}`)
     .join('&');
   return `${table}?${values}`;
-}
-
-function getRowKey(item: Record<string, unknown>): string {
-  if ('id' in item && item.id) {
-    return String(item.id);
-  }
-
-  return Object.entries(item)
-    .filter(([key]) => key.endsWith('_id'))
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([, value]) => String(value))
-    .join('-');
 }
 
 function normalizeSyncResult(result: SyncResult): NormalizedSyncResult {
@@ -402,37 +394,6 @@ function applySnapshot(syncParams: SyncParams, rows: ElectricRow[]): void {
 
   syncParams.commit();
   syncParams.markReady();
-}
-
-function extractFallbackRows(
-  payload: unknown,
-  table: string
-): Array<ElectricRow> {
-  if (!payload || typeof payload !== 'object') {
-    throw new Error(`Fallback response for "${table}" is not an object`);
-  }
-
-  const rows = (payload as Record<string, unknown>)[table];
-  if (!Array.isArray(rows)) {
-    throw new Error(`Fallback response missing "${table}" array`);
-  }
-
-  return rows as Array<ElectricRow>;
-}
-
-async function parseResponseError(
-  response: Response,
-  fallbackMessage: string
-): Promise<string> {
-  try {
-    const body = (await response.json()) as {
-      message?: string;
-      error?: string;
-    };
-    return body.message || body.error || fallbackMessage;
-  } catch {
-    return fallbackMessage;
-  }
 }
 
 function createFallbackSync(args: {
