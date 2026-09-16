@@ -11,7 +11,8 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::{
-    BulkUpdateRequest, MAX_BULK_UPDATES, ProjectScopedQuery, TxidResponse, snapshot, txid,
+    BulkUpdateRequest, MAX_BULK_UPDATES, ProjectScopedQuery, TxidResponse, map_db_error, snapshot,
+    txid,
 };
 use crate::{DeploymentImpl, error::ApiError};
 
@@ -45,7 +46,9 @@ pub(crate) async fn handle_update(
     if ProjectStatuses::find_by_id(pool, id).await?.is_none() {
         return Err(ApiError::NotFound);
     }
-    ProjectStatuses::update(pool, id, &payload).await?;
+    ProjectStatuses::update(pool, id, &payload)
+        .await
+        .map_err(map_db_error)?;
     Ok(txid())
 }
 
@@ -63,7 +66,9 @@ pub(crate) async fn handle_bulk_update(
         .into_iter()
         .map(|item| (item.id, item.changes))
         .collect();
-    ProjectStatuses::bulk_update(pool, &updates).await?;
+    ProjectStatuses::bulk_update(pool, &updates)
+        .await
+        .map_err(map_db_error)?;
     Ok(txid())
 }
 

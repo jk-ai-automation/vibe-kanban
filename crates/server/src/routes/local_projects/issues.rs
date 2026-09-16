@@ -13,8 +13,8 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::{
-    BulkUpdateRequest, MAX_BULK_UPDATES, ProjectScopedQuery, TxidResponse, map_issue_error,
-    snapshot, txid,
+    BulkUpdateRequest, MAX_BULK_UPDATES, ProjectScopedQuery, TxidResponse, map_db_error,
+    map_issue_error, snapshot_truncatable, txid,
 };
 use crate::{DeploymentImpl, error::ApiError};
 
@@ -22,8 +22,19 @@ pub(crate) async fn handle_list(
     pool: &SqlitePool,
     project_id: Uuid,
 ) -> Result<Json<Value>, ApiError> {
-    let issues = Issues::find_by_project(pool, project_id).await?;
-    Ok(snapshot("issues", issues))
+    let snapshot = Issues::find_by_project(pool, project_id).await?;
+    if snapshot.truncated {
+        tracing::warn!(
+            %project_id,
+            limit = db::models::issue::MAX_SNAPSHOT_ROWS,
+            "需求快照已截断，前端应改用 /issues/search 分页"
+        );
+    }
+    Ok(snapshot_truncatable(
+        "issues",
+        snapshot.issues,
+        snapshot.truncated,
+    ))
 }
 
 pub(crate) async fn handle_get(pool: &SqlitePool, id: Uuid) -> Result<Json<Value>, ApiError> {
@@ -81,7 +92,28 @@ pub(crate) async fn handle_search(
     pool: &SqlitePool,
     payload: SearchIssuesRequest,
 ) -> Result<Json<ListIssuesResponse>, ApiError> {
-    Ok(Json(Issues::search(pool, &payload).await?))
+    // 个人版还没实现的筛选条件：宁可 400 也不能静默忽略，否则前端拿到的是
+    // 「看起来筛过、其实没筛」的结果。
+    let unsupported: Vec<&str> = [
+        ("assignee_user_id", payload.assignee_user_id.is_some()),
+        ("parent_issue_id", payload.parent_issue_id.is_some()),
+        ("tag_id", payload.tag_id.is_some()),
+    ]
+    .into_iter()
+    .filter(|(_, present)| *present)
+    .map(|(name, _)| name)
+    .collect();
+    if !unsupported.is_empty() {
+        return Err(ApiError::BadRequest(format!(
+            "未支持的筛选条件：{}",
+            unsupported.join("、")
+        )));
+    }
+
+    Issues::search(pool, &payload)
+        .await
+        .map(Json)
+        .map_err(map_db_error)
 }
 
 pub(crate) async fn handle_delete(
@@ -171,8 +203,27 @@ mod tests {
     };
     use uuid::Uuid;
 
-    use super::{handle_bulk_update, handle_create, handle_delete, handle_list, handle_search};
-    use crate::routes::local_projects::{BulkUpdateItem, BulkUpdateRequest};
+    use super::{
+        handle_bulk_update, handle_create, handle_delete, handle_list, handle_search, handle_update,
+    };
+    use crate::{
+        error::ApiError,
+        routes::local_projects::{BulkUpdateItem, BulkUpdateRequest},
+    };
+
+    fn 断言是_400(error: ApiError) {
+        assert!(
+            matches!(error, ApiError::BadRequest(_)),
+            "应映射为 400，实际：{error:?}"
+        );
+    }
+
+    fn 断言是_404(error: ApiError) {
+        assert!(
+            matches!(error, ApiError::NotFound),
+            "应映射为 404，实际：{error:?}"
+        );
+    }
 
     async fn 准备(test_db: &TestDb) -> (Uuid, Uuid) {
         let project = LocalProjects::create(
@@ -398,6 +449,214 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_secs(2),
             "1000 条快照耗时 {elapsed:?}，超过 2 秒上限"
+        );
+    }
+
+    #[tokio::test]
+    async fn 跨项目状态列返回_400_而不是_500() {
+        let test_db = TestDb::new().await;
+        let (project_a, _) = 准备(&test_db).await;
+        let (_, status_b) = 准备(&test_db).await;
+
+        let err = handle_create(test_db.pool(), 建需求请求(project_a, status_b, "越权"))
+            .await
+            .expect_err("状态列不属于该项目时必须拒绝");
+        断言是_400(err);
+    }
+
+    #[tokio::test]
+    async fn 跨项目父需求返回_400() {
+        let test_db = TestDb::new().await;
+        let (project_a, status_a) = 准备(&test_db).await;
+        let (project_b, status_b) = 准备(&test_db).await;
+
+        handle_create(test_db.pool(), 建需求请求(project_b, status_b, "别家的"))
+            .await
+            .unwrap();
+        let parent_id: Uuid = handle_list(test_db.pool(), project_b).await.unwrap().0["issues"][0]
+            ["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let mut request = 建需求请求(project_a, status_a, "子需求");
+        request.parent_issue_id = Some(parent_id);
+        断言是_400(handle_create(test_db.pool(), request).await.unwrap_err());
+    }
+
+    #[tokio::test]
+    async fn 超大_metadata_返回_400() {
+        let test_db = TestDb::new().await;
+        let (project_id, status_id) = 准备(&test_db).await;
+
+        let mut request = 建需求请求(project_id, status_id, "超大");
+        request.extension_metadata = serde_json::json!({ "blob": "x".repeat(40_000) });
+        断言是_400(handle_create(test_db.pool(), request).await.unwrap_err());
+
+        let mut not_object = 建需求请求(project_id, status_id, "非对象");
+        not_object.extension_metadata = serde_json::json!([1, 2, 3]);
+        断言是_400(handle_create(test_db.pool(), not_object).await.unwrap_err());
+    }
+
+    #[tokio::test]
+    async fn 更新不存在的需求返回_404() {
+        let test_db = TestDb::new().await;
+        let err = handle_update(
+            test_db.pool(),
+            Uuid::from_u128(778899),
+            UpdateIssueRequest {
+                title: Some("新".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("不存在的需求必须 404");
+        断言是_404(err);
+    }
+
+    #[tokio::test]
+    async fn 批量更新里有不存在的需求返回_404() {
+        let test_db = TestDb::new().await;
+        let (project_id, status_id) = 准备(&test_db).await;
+        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "A"))
+            .await
+            .unwrap();
+
+        let err = handle_bulk_update(
+            test_db.pool(),
+            BulkUpdateRequest {
+                updates: vec![BulkUpdateItem {
+                    id: Uuid::from_u128(5150),
+                    changes: UpdateIssueRequest {
+                        sort_order: Some(1.0),
+                        ..Default::default()
+                    },
+                }],
+            },
+        )
+        .await
+        .expect_err("目标不存在必须 404");
+        断言是_404(err);
+    }
+
+    #[tokio::test]
+    async fn 搜索遇到未支持的筛选条件返回_400() {
+        let test_db = TestDb::new().await;
+        let (project_id, _) = 准备(&test_db).await;
+
+        for (名称, request) in [
+            (
+                "assignee_user_id",
+                SearchIssuesRequest {
+                    project_id,
+                    assignee_user_id: Some(Uuid::from_u128(3)),
+                    ..Default::default()
+                },
+            ),
+            (
+                "parent_issue_id",
+                SearchIssuesRequest {
+                    project_id,
+                    parent_issue_id: Some(Uuid::from_u128(4)),
+                    ..Default::default()
+                },
+            ),
+            (
+                "tag_id",
+                SearchIssuesRequest {
+                    project_id,
+                    tag_id: Some(Uuid::from_u128(5)),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let err = handle_search(test_db.pool(), request)
+                .await
+                .expect_err("未支持的筛选条件必须报错");
+            match err {
+                ApiError::BadRequest(message) => {
+                    assert!(message.contains(名称), "错误信息应点名 {名称}：{message}");
+                }
+                other => panic!("应是 400，实际：{other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn 搜索支持_status_ids_不再静默忽略() {
+        let test_db = TestDb::new().await;
+        let (project_id, status_id) = 准备(&test_db).await;
+        let dev = ProjectStatuses::find_stage(test_db.pool(), project_id, StageType::Dev)
+            .await
+            .unwrap()
+            .unwrap();
+
+        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "待开发"))
+            .await
+            .unwrap();
+        let mut in_dev = 建需求请求(project_id, status_id, "开发中");
+        in_dev.status_id = dev.id;
+        handle_create(test_db.pool(), in_dev).await.unwrap();
+
+        let body = handle_search(
+            test_db.pool(),
+            SearchIssuesRequest {
+                project_id,
+                status_ids: Some(vec![dev.id]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(body.total_count, 1, "status_ids 必须真的生效");
+        assert_eq!(body.issues[0].title, "开发中");
+    }
+
+    #[tokio::test]
+    async fn 快照在未截断时也带出_truncated_字段() {
+        let test_db = TestDb::new().await;
+        let (project_id, status_id) = 准备(&test_db).await;
+        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "A"))
+            .await
+            .unwrap();
+
+        let body = handle_list(test_db.pool(), project_id).await.unwrap().0;
+        assert_eq!(body["truncated"], serde_json::json!(false));
+        assert_eq!(body["issues"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn 快照超过上限时_truncated_为真() {
+        let test_db = TestDb::new().await;
+        let (project_id, status_id) = 准备(&test_db).await;
+
+        let total = db::models::issue::MAX_SNAPSHOT_ROWS + 3;
+        let mut tx = test_db.pool().begin().await.unwrap();
+        for index in 0..total {
+            sqlx::query(
+                "INSERT INTO issues (id, project_id, issue_number, simple_id, status_id, title, \
+                 sort_order, extension_metadata) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '{}')",
+            )
+            .bind(Uuid::new_v4())
+            .bind(project_id)
+            .bind(index + 1)
+            .bind(format!("VK-{}", index + 1))
+            .bind(status_id)
+            .bind(format!("批量 {index}"))
+            .bind(index as f64)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        let body = handle_list(test_db.pool(), project_id).await.unwrap().0;
+        assert_eq!(body["truncated"], serde_json::json!(true), "截断必须被透出");
+        assert_eq!(
+            body["issues"].as_array().unwrap().len(),
+            db::models::issue::MAX_SNAPSHOT_ROWS as usize
         );
     }
 }

@@ -18,7 +18,10 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use super::{IssueScopedQuery, ProjectScopedQuery, TxidResponse, map_issue_error, snapshot, txid};
+use super::{
+    IssueScopedQuery, ProjectScopedQuery, TxidResponse, map_db_error, map_issue_error, snapshot,
+    txid,
+};
 use crate::{DeploymentImpl, error::ApiError};
 
 pub(crate) async fn handle_tag_list(
@@ -41,7 +44,9 @@ pub(crate) async fn handle_tag_create(
     {
         return Err(ApiError::BadRequest("项目不存在".to_string()));
     }
-    ProjectTags::create(pool, &payload).await?;
+    ProjectTags::create(pool, &payload)
+        .await
+        .map_err(map_issue_error)?;
     Ok(txid())
 }
 
@@ -50,7 +55,9 @@ pub(crate) async fn handle_tag_update(
     id: Uuid,
     payload: UpdateTagRequest,
 ) -> Result<Json<TxidResponse>, ApiError> {
-    ProjectTags::update(pool, id, &payload).await?;
+    ProjectTags::update(pool, id, &payload)
+        .await
+        .map_err(map_issue_error)?;
     Ok(txid())
 }
 
@@ -58,7 +65,7 @@ pub(crate) async fn handle_tag_delete(
     pool: &SqlitePool,
     id: Uuid,
 ) -> Result<Json<TxidResponse>, ApiError> {
-    if ProjectTags::delete(pool, id).await? == 0 {
+    if ProjectTags::delete(pool, id).await.map_err(map_db_error)? == 0 {
         return Err(ApiError::NotFound);
     }
     Ok(txid())
@@ -81,7 +88,9 @@ pub(crate) async fn handle_issue_tag_create(
     if Issues::find_by_id(pool, payload.issue_id).await?.is_none() {
         return Err(ApiError::BadRequest("需求不存在".to_string()));
     }
-    IssueTags::create(pool, &payload).await?;
+    IssueTags::create(pool, &payload)
+        .await
+        .map_err(map_issue_error)?;
     Ok(txid())
 }
 
@@ -89,7 +98,7 @@ pub(crate) async fn handle_issue_tag_delete(
     pool: &SqlitePool,
     id: Uuid,
 ) -> Result<Json<TxidResponse>, ApiError> {
-    if IssueTags::delete(pool, id).await? == 0 {
+    if IssueTags::delete(pool, id).await.map_err(map_db_error)? == 0 {
         return Err(ApiError::NotFound);
     }
     Ok(txid())
@@ -133,7 +142,11 @@ pub(crate) async fn handle_comment_delete(
     pool: &SqlitePool,
     id: Uuid,
 ) -> Result<Json<TxidResponse>, ApiError> {
-    if IssueComments::delete(pool, id).await? == 0 {
+    if IssueComments::delete(pool, id)
+        .await
+        .map_err(map_db_error)?
+        == 0
+    {
         return Err(ApiError::NotFound);
     }
     Ok(txid())
@@ -247,17 +260,36 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        handle_comment_create, handle_comment_list, handle_issue_tag_create, handle_issue_tag_list,
-        handle_tag_create, handle_tag_list,
+        handle_comment_create, handle_comment_list, handle_comment_update, handle_issue_tag_create,
+        handle_issue_tag_list, handle_tag_create, handle_tag_list, handle_tag_update,
     };
+    use crate::error::ApiError;
+
+    fn 断言是_400(error: ApiError) {
+        assert!(
+            matches!(error, ApiError::BadRequest(_)),
+            "应映射为 400，实际：{error:?}"
+        );
+    }
+
+    fn 断言是_404(error: ApiError) {
+        assert!(
+            matches!(error, ApiError::NotFound),
+            "应映射为 404，实际：{error:?}"
+        );
+    }
 
     async fn 准备(test_db: &TestDb) -> (Uuid, Uuid) {
+        准备具名(test_db, "Vibe Kanban").await
+    }
+
+    async fn 准备具名(test_db: &TestDb, name: &str) -> (Uuid, Uuid) {
         let project = LocalProjects::create(
             test_db.pool(),
             &CreateProjectRequest {
                 id: None,
                 organization_id: DEFAULT_ORGANIZATION_ID,
-                name: "Vibe Kanban".to_string(),
+                name: name.to_string(),
                 color: "#6366f1".to_string(),
             },
         )
@@ -424,5 +456,170 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn 跨项目标签返回_400() {
+        let test_db = TestDb::new().await;
+        let (_, issue_a) = 准备具名(&test_db, "Alpha").await;
+        let (project_b, _) = 准备具名(&test_db, "Beta").await;
+
+        handle_tag_create(
+            test_db.pool(),
+            CreateTagRequest {
+                id: None,
+                project_id: project_b,
+                name: "别家".to_string(),
+                color: "#22c55e".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let tag_id: Uuid =
+            handle_tag_list(test_db.pool(), project_b).await.unwrap().0["tags"][0]["id"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+
+        let err = handle_issue_tag_create(
+            test_db.pool(),
+            CreateIssueTagRequest {
+                id: None,
+                issue_id: issue_a,
+                tag_id,
+            },
+        )
+        .await
+        .expect_err("跨项目标签必须拒绝");
+        断言是_400(err);
+
+        assert!(
+            handle_issue_tag_list(test_db.pool(), project_b)
+                .await
+                .unwrap()
+                .0["issue_tags"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn 空名标签返回_400() {
+        let test_db = TestDb::new().await;
+        let (project_id, _) = 准备(&test_db).await;
+
+        let err = handle_tag_create(
+            test_db.pool(),
+            CreateTagRequest {
+                id: None,
+                project_id,
+                name: "   ".to_string(),
+                color: "#22c55e".to_string(),
+            },
+        )
+        .await
+        .expect_err("空名标签必须拒绝");
+        断言是_400(err);
+    }
+
+    #[tokio::test]
+    async fn 更新不存在的标签返回_404_而不是_500() {
+        use api_types::tag::UpdateTagRequest;
+
+        let test_db = TestDb::new().await;
+        let err = handle_tag_update(
+            test_db.pool(),
+            Uuid::from_u128(60001),
+            UpdateTagRequest {
+                name: Some("新名".to_string()),
+                color: None,
+            },
+        )
+        .await
+        .expect_err("不存在的标签必须报错");
+        断言是_404(err);
+    }
+
+    #[tokio::test]
+    async fn 更新不存在的评论返回_404_而不是_500() {
+        use api_types::issue_comment::UpdateIssueCommentRequest;
+
+        let test_db = TestDb::new().await;
+        let err = handle_comment_update(
+            test_db.pool(),
+            Uuid::from_u128(60002),
+            UpdateIssueCommentRequest {
+                message: Some("改后".to_string()),
+                parent_id: None,
+            },
+        )
+        .await
+        .expect_err("不存在的评论必须报错");
+        断言是_404(err);
+    }
+
+    #[tokio::test]
+    async fn 跨需求的父评论返回_400() {
+        let test_db = TestDb::new().await;
+        let (project_id, issue_a) = 准备(&test_db).await;
+        let todo = ProjectStatuses::find_stage(test_db.pool(), project_id, StageType::Todo)
+            .await
+            .unwrap()
+            .unwrap();
+        let issue_b = Issues::create(
+            test_db.pool(),
+            &CreateIssueRequest {
+                id: None,
+                project_id,
+                status_id: todo.id,
+                title: "另一条".to_string(),
+                description: None,
+                priority: None,
+                start_date: None,
+                target_date: None,
+                completed_at: None,
+                sort_order: 0.0,
+                parent_issue_id: None,
+                parent_issue_sort_order: None,
+                extension_metadata: serde_json::json!({}),
+            },
+        )
+        .await
+        .unwrap();
+
+        handle_comment_create(
+            test_db.pool(),
+            CreateIssueCommentRequest {
+                id: None,
+                issue_id: issue_a,
+                message: "甲".to_string(),
+                parent_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let parent_id: Uuid = handle_comment_list(test_db.pool(), issue_a)
+            .await
+            .unwrap()
+            .0["issue_comments"][0]["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let err = handle_comment_create(
+            test_db.pool(),
+            CreateIssueCommentRequest {
+                id: None,
+                issue_id: issue_b.id,
+                message: "串台".to_string(),
+                parent_id: Some(parent_id),
+            },
+        )
+        .await
+        .expect_err("跨需求的父评论必须拒绝");
+        断言是_400(err);
     }
 }

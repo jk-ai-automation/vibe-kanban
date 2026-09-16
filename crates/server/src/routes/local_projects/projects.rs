@@ -10,7 +10,7 @@ use serde_json::Value;
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use super::{TxidResponse, snapshot, txid};
+use super::{TxidResponse, map_db_error, snapshot, txid};
 use crate::{DeploymentImpl, error::ApiError};
 
 pub(crate) async fn handle_list(pool: &SqlitePool) -> Result<Json<Value>, ApiError> {
@@ -37,7 +37,9 @@ pub(crate) async fn handle_update(
     if LocalProjects::find_by_id(pool, id).await?.is_none() {
         return Err(ApiError::NotFound);
     }
-    LocalProjects::update(pool, id, &payload).await?;
+    LocalProjects::update(pool, id, &payload)
+        .await
+        .map_err(map_db_error)?;
     Ok(txid())
 }
 

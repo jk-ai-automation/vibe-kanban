@@ -30,11 +30,29 @@ pub fn snapshot<T: Serialize>(table: &str, rows: Vec<T>) -> Json<Value> {
     Json(json!({ table: rows }))
 }
 
-/// 把模型层的校验错误映射成 400，其余映射成数据库错误。
+/// 带截断标记的快照。前端只读 payload[table]，多出来的 `truncated` 不会影响它，
+/// 但让调用方（以及排查问题的人）能看到「这一页不是全量」。
+pub fn snapshot_truncatable<T: Serialize>(
+    table: &str,
+    rows: Vec<T>,
+    truncated: bool,
+) -> Json<Value> {
+    Json(json!({ table: rows, "truncated": truncated }))
+}
+
+/// 把模型层的校验错误映射成 400，行不存在映射成 404，其余映射成数据库错误。
 pub fn map_issue_error(error: IssueError) -> ApiError {
     match error {
         IssueError::Validation(message) => ApiError::BadRequest(message),
-        IssueError::Database(err) => ApiError::Database(err),
+        IssueError::Database(err) => map_db_error(err),
+    }
+}
+
+/// `UPDATE ... RETURNING` 打不中行时 sqlx 返回 RowNotFound，这是 404 而不是 500。
+pub fn map_db_error(error: sqlx::Error) -> ApiError {
+    match error {
+        sqlx::Error::RowNotFound => ApiError::NotFound,
+        other => ApiError::Database(other),
     }
 }
 
