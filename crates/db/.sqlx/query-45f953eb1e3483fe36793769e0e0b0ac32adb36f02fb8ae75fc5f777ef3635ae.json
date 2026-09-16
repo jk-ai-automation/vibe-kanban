@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO issue_tags (id, issue_id, tag_id)\n               VALUES ($1, $2, $3)\n               RETURNING id AS \"id!: Uuid\",\n                         issue_id AS \"issue_id!: Uuid\",\n                         tag_id AS \"tag_id!: Uuid\"",
+  "query": "SELECT id AS \"id!: Uuid\",\n                      issue_id AS \"issue_id!: Uuid\",\n                      tag_id AS \"tag_id!: Uuid\"\n               FROM issue_tags\n               WHERE issue_id = $1 AND tag_id = $2",
   "describe": {
     "columns": [
       {
@@ -20,7 +20,7 @@
       }
     ],
     "parameters": {
-      "Right": 3
+      "Right": 2
     },
     "nullable": [
       false,
@@ -28,5 +28,5 @@
       false
     ]
   },
-  "hash": "fe44a482d9ce013df15376e674e204c82ac00195f99178d64398f79afd2278de"
+  "hash": "45f953eb1e3483fe36793769e0e0b0ac32adb36f02fb8ae75fc5f777ef3635ae"
 }

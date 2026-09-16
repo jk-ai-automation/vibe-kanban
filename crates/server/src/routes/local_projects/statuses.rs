@@ -11,8 +11,8 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::{
-    BulkUpdateRequest, MAX_BULK_UPDATES, ProjectScopedQuery, TxidResponse, map_db_error, snapshot,
-    txid,
+    BulkUpdateRequest, LocalRoutes, MAX_BULK_UPDATES, ProjectScopedQuery, TxidResponse,
+    map_db_error, snapshot, txid,
 };
 use crate::{DeploymentImpl, error::ApiError};
 
@@ -34,7 +34,9 @@ pub(crate) async fn handle_create(
     {
         return Err(ApiError::BadRequest("项目不存在".to_string()));
     }
-    ProjectStatuses::create(pool, &payload).await?;
+    ProjectStatuses::create(pool, &payload)
+        .await
+        .map_err(map_db_error)?;
     Ok(txid())
 }
 
@@ -130,13 +132,11 @@ async fn delete(
 }
 
 pub fn router() -> Router<DeploymentImpl> {
-    Router::new().nest(
-        "/project_statuses",
-        Router::new()
-            .route("/", get(list).post(create))
-            .route("/bulk", post(bulk_update))
-            .route("/{id}", patch(update).delete(delete)),
-    )
+    LocalRoutes::new("/project_statuses")
+        .route("/", &["GET", "POST"], get(list).post(create))
+        .route("/bulk", &["POST"], post(bulk_update))
+        .route("/{id}", &["PATCH", "DELETE"], patch(update).delete(delete))
+        .into_router()
 }
 
 #[cfg(test)]
@@ -221,6 +221,31 @@ mod tests {
 
         let result = handle_bulk_update(test_db.pool(), BulkUpdateRequest { updates }).await;
         assert!(result.is_err(), "超过上限必须返回错误而不是进事务");
+    }
+
+    #[tokio::test]
+    async fn 状态列重复提交同一个客户端_id_返回_409() {
+        let test_db = TestDb::new().await;
+        let project_id = 建项目(&test_db).await;
+        let request = CreateProjectStatusRequest {
+            id: Some(Uuid::from_u128(4242)),
+            project_id,
+            name: "联调中".to_string(),
+            color: "#f59e0b".to_string(),
+            sort_order: 9,
+            hidden: false,
+        };
+
+        handle_create(test_db.pool(), request.clone())
+            .await
+            .unwrap();
+        let err = handle_create(test_db.pool(), request)
+            .await
+            .expect_err("主键重复必须报错");
+        assert!(
+            matches!(err, crate::error::ApiError::Conflict(_)),
+            "应映射为 409，实际：{err:?}"
+        );
     }
 
     #[tokio::test]

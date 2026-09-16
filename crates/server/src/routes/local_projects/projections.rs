@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use super::{ProjectScopedQuery, snapshot};
+use super::{LocalRoutes, ProjectScopedQuery, snapshot};
 use crate::{DeploymentImpl, error::ApiError};
 
 /// 个人版不实现的集合：返回空数组，保证前端订阅这些 shape 时不报错。
@@ -63,6 +63,17 @@ struct ProjectedPullRequest {
 
 pub(crate) fn handle_empty(table: &str) -> Json<Value> {
     Json(json!({ table: Vec::<Value>::new() }))
+}
+
+/// 本地 pull_requests 的 pr_status 多一个 `unknown`（尚未查到状态），
+/// 而前端类型只有 open/merged/closed。投影时按 `open` 处理：
+/// 未知状态的 PR 还没合并、也没关闭，当作「进行中」最接近事实，
+/// 原样输出会让前端按未知分支渲染。
+fn project_pr_status(raw: &str) -> &str {
+    match raw {
+        "merged" | "closed" => raw,
+        _ => "open",
+    }
 }
 
 pub(crate) async fn handle_workspaces(
@@ -164,7 +175,7 @@ pub(crate) async fn handle_pull_requests(
             id: row.id,
             url: row.pr_url,
             number: row.pr_number as i32,
-            status: row.pr_status,
+            status: project_pr_status(&row.pr_status).to_string(),
             merged_at: row.merged_at,
             merge_commit_sha: row.merge_commit_sha,
             target_branch_name: row.target_branch_name,
@@ -180,29 +191,40 @@ pub(crate) async fn handle_pull_requests(
 }
 
 pub fn router() -> Router<DeploymentImpl> {
-    let mut router = Router::new()
+    let mut router = LocalRoutes::new("/workspaces")
         .route(
-            "/workspaces",
+            "/",
+            &["GET"],
             get(
                 |State(d): State<DeploymentImpl>, Query(q): Query<ProjectScopedQuery>| async move {
                     handle_workspaces(&d.db().pool, q.project_id).await
                 },
             ),
         )
-        .route(
-            "/pull_requests",
-            get(
-                |State(d): State<DeploymentImpl>, Query(q): Query<ProjectScopedQuery>| async move {
-                    handle_pull_requests(&d.db().pool, q.project_id).await
-                },
-            ),
+        .into_router()
+        .merge(
+            LocalRoutes::new("/pull_requests")
+                .route(
+                    "/",
+                    &["GET"],
+                    get(|State(d): State<DeploymentImpl>,
+                         Query(q): Query<ProjectScopedQuery>| async move {
+                        handle_pull_requests(&d.db().pool, q.project_id).await
+                    }),
+                )
+                .into_router(),
         );
 
     for table in EMPTY_TABLES {
         let table = *table;
-        router = router.route(
-            &format!("/{table}"),
-            get(move || async move { handle_empty(table) }),
+        router = router.merge(
+            LocalRoutes::new(format!("/{table}"))
+                .route(
+                    "/",
+                    &["GET"],
+                    get(move || async move { handle_empty(table) }),
+                )
+                .into_router(),
         );
     }
 
@@ -375,5 +397,19 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(body["pull_requests"], serde_json::json!([]));
+    }
+
+    /// 本地的 pr_status 多一个 unknown，前端类型里没有，必须映射成 open。
+    #[test]
+    fn 未知的拉取请求状态映射成_open() {
+        assert_eq!(super::project_pr_status("unknown"), "open");
+        assert_eq!(super::project_pr_status("open"), "open");
+        assert_eq!(super::project_pr_status("merged"), "merged");
+        assert_eq!(super::project_pr_status("closed"), "closed");
+        assert_eq!(
+            super::project_pr_status("以后新增的状态"),
+            "open",
+            "没见过的状态一律按进行中处理"
+        );
     }
 }

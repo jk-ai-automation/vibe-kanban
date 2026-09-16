@@ -9,6 +9,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::{
+    db_retry::{RetryableDbError, is_retryable_db_error, retry_on_busy},
     local_project::LocalProjects,
     local_project_status::{ProjectStatuses, StageType},
 };
@@ -21,23 +22,12 @@ pub const MAX_DESCRIPTION_LEN: usize = 100_000;
 pub const MAX_PAGE_SIZE: usize = 500;
 /// extension_metadata 序列化后的字节上限，防止单行撑爆快照与 WS 推送。
 pub const MAX_METADATA_BYTES: usize = 32_768;
-/// 编号分配的重试次数：编号由 `UPDATE ... RETURNING` 在事务里发放，不会重号，
-/// 这里只为 SQLite 在 rollback-journal 模式下多连接争抢写锁返回 BUSY/LOCKED 时重试。
-const NUMBER_RETRY: u32 = 8;
+/// 搜索里 IN (...) 能接受的 id 个数上限。SQLite 默认最多 999 个绑定变量，
+/// 不设上限时超长筛选数组会直接把查询打成 500。
+pub const MAX_FILTER_IDS: usize = 200;
 
-/// 判断一个数据库错误是否值得重试：SQLite 在没有 WAL 的情况下多连接争抢锁时
-/// 返回的 BUSY/LOCKED 系列错误码。
-/// `sqlite3_busy_timeout` 只能缓解、不能完全消除这种情况，因此应用层仍需自行重试。
-fn is_retryable_db_error(err: &sqlx::Error) -> bool {
-    let sqlx::Error::Database(db_err) = err else {
-        return false;
-    };
-    // SQLITE_BUSY = 5, SQLITE_LOCKED = 6, SQLITE_BUSY_RECOVERY = 261, SQLITE_BUSY_SNAPSHOT = 517
-    matches!(
-        db_err.code().as_deref(),
-        Some("5") | Some("6") | Some("261") | Some("517")
-    )
-}
+/// 父需求链的最大层数，同时用作成环检测的兜底深度。
+pub const MAX_PARENT_DEPTH: i64 = 32;
 
 /// extension_metadata 必须是 JSON 对象或 null，且序列化后不超过 [`MAX_METADATA_BYTES`]。
 ///
@@ -68,6 +58,18 @@ pub enum IssueError {
     Database(#[from] sqlx::Error),
     #[error("Validation error: {0}")]
     Validation(String),
+    /// 唯一约束/主键冲突这类「请求本身没错、但和已有数据撞了」的情况。
+    #[error("Conflict: {0}")]
+    Conflict(String),
+}
+
+impl RetryableDbError for IssueError {
+    fn is_busy(&self) -> bool {
+        match self {
+            IssueError::Database(err) => is_retryable_db_error(err),
+            IssueError::Validation(_) | IssueError::Conflict(_) => false,
+        }
+    }
 }
 
 /// 用于 sqlx 解码的中间行：extension_metadata 在 SQLite 里是 TEXT。
@@ -137,8 +139,29 @@ fn priority_to_str(priority: IssuePriority) -> &'static str {
     }
 }
 
-fn truncate(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
+/// 标题：去空白后校验长度。超长直接拒绝，不再静默截断
+/// （截断会让「保存成功但内容被悄悄改掉」，客户端无从察觉）。
+fn validate_title(raw: &str) -> Result<String, IssueError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(IssueError::Validation("需求标题不能为空".to_string()));
+    }
+    if trimmed.chars().count() > MAX_TITLE_LEN {
+        return Err(IssueError::Validation(format!(
+            "需求标题超过 {MAX_TITLE_LEN} 字上限"
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// 描述：超长同样拒绝而不是截断。
+fn validate_description(raw: &str) -> Result<String, IssueError> {
+    if raw.chars().count() > MAX_DESCRIPTION_LEN {
+        return Err(IssueError::Validation(format!(
+            "需求描述超过 {MAX_DESCRIPTION_LEN} 字上限"
+        )));
+    }
+    Ok(raw.to_string())
 }
 
 /// 优先级的业务权重：数据库里存的是字符串，直接 ORDER BY 会按字典序
@@ -297,14 +320,12 @@ impl Issues {
     }
 
     pub async fn create(pool: &SqlitePool, data: &CreateIssueRequest) -> Result<Issue, IssueError> {
-        let title = truncate(data.title.trim(), MAX_TITLE_LEN);
-        if title.is_empty() {
-            return Err(IssueError::Validation("需求标题不能为空".to_string()));
-        }
+        let title = validate_title(&data.title)?;
         let description = data
             .description
             .as_ref()
-            .map(|d| truncate(d, MAX_DESCRIPTION_LEN));
+            .map(|d| validate_description(d))
+            .transpose()?;
 
         if LocalProjects::find_by_id(pool, data.project_id)
             .await?
@@ -343,38 +364,25 @@ impl Issues {
         let metadata = validate_metadata(&data.extension_metadata)?;
         let now = Utc::now();
 
-        for attempt in 0..NUMBER_RETRY {
-            let mut tx = match pool.begin().await {
-                Ok(tx) => tx,
-                Err(err) if is_retryable_db_error(&err) && attempt + 1 < NUMBER_RETRY => {
-                    tokio::time::sleep(std::time::Duration::from_millis(5 * (attempt as u64 + 1)))
-                        .await;
-                    continue;
-                }
-                Err(err) => return Err(IssueError::Database(err)),
-            };
+        retry_on_busy(|| async {
+            let mut tx = pool.begin().await?;
 
             // 编号从项目行上的游标取，取完即自增：删除末条需求后编号不会被复用。
             // 前缀也从项目行读，建项目时就定死，之后改名不影响任何需求。
-            let next_result: Result<(String, i64), sqlx::Error> = sqlx::query_as(
+            let (prefix, next): (String, i64) = sqlx::query_as(
                 "UPDATE local_projects SET next_issue_number = next_issue_number + 1 \
                  WHERE id = ?1 RETURNING simple_id_prefix, next_issue_number - 1",
             )
             .bind(data.project_id)
             .fetch_one(&mut *tx)
-            .await;
-            let (prefix, next) = match next_result {
-                Ok(row) => row,
-                Err(err) if is_retryable_db_error(&err) && attempt + 1 < NUMBER_RETRY => {
-                    let _ = tx.rollback().await;
-                    tokio::time::sleep(std::time::Duration::from_millis(5 * (attempt as u64 + 1)))
-                        .await;
-                    continue;
-                }
-                Err(err) => return Err(IssueError::Database(err)),
-            };
+            .await?;
             let issue_number = next as i32;
             let simple_id = format!("{prefix}-{issue_number}");
+
+            // 新需求还没有子需求，成不了环，但父链本身可能已经太深。
+            if let Some(parent_id) = data.parent_issue_id {
+                Self::ensure_no_parent_cycle(&mut tx, id, parent_id).await?;
+            }
 
             let inserted = sqlx::query_as!(
                 IssueRow,
@@ -422,27 +430,12 @@ impl Issues {
                 now
             )
             .fetch_one(&mut *tx)
-            .await;
+            .await?;
 
-            match inserted {
-                Ok(row) => {
-                    tx.commit().await?;
-                    return Ok(Issue::from(row));
-                }
-                Err(err) if is_retryable_db_error(&err) && attempt + 1 < NUMBER_RETRY => {
-                    // 写锁被别的连接占用，回滚后重试
-                    let _ = tx.rollback().await;
-                    tokio::time::sleep(std::time::Duration::from_millis(5 * (attempt as u64 + 1)))
-                        .await;
-                    continue;
-                }
-                Err(err) => return Err(IssueError::Database(err)),
-            }
-        }
-
-        Err(IssueError::Validation(
-            "分配需求编号失败，请重试".to_string(),
-        ))
+            tx.commit().await?;
+            Ok(Issue::from(inserted))
+        })
+        .await
     }
 
     pub async fn update(
@@ -450,10 +443,13 @@ impl Issues {
         id: Uuid,
         data: &UpdateIssueRequest,
     ) -> Result<Issue, IssueError> {
-        let mut tx = pool.begin().await?;
-        let updated = Self::update_in_tx(&mut tx, id, data).await?;
-        tx.commit().await?;
-        Ok(updated)
+        retry_on_busy(|| async {
+            let mut tx = pool.begin().await?;
+            let updated = Self::update_in_tx(&mut tx, id, data).await?;
+            tx.commit().await?;
+            Ok(updated)
+        })
+        .await
     }
 
     /// 拖拽排序等批量写入：单事务，任一条失败整体回滚。
@@ -461,13 +457,16 @@ impl Issues {
         pool: &SqlitePool,
         updates: &[(Uuid, UpdateIssueRequest)],
     ) -> Result<Vec<Issue>, IssueError> {
-        let mut tx = pool.begin().await?;
-        let mut rows = Vec::with_capacity(updates.len());
-        for (id, data) in updates {
-            rows.push(Self::update_in_tx(&mut tx, *id, data).await?);
-        }
-        tx.commit().await?;
-        Ok(rows)
+        retry_on_busy(|| async {
+            let mut tx = pool.begin().await?;
+            let mut rows = Vec::with_capacity(updates.len());
+            for (id, data) in updates {
+                rows.push(Self::update_in_tx(&mut tx, *id, data).await?);
+            }
+            tx.commit().await?;
+            Ok(rows)
+        })
+        .await
     }
 
     async fn update_in_tx(
@@ -480,21 +479,14 @@ impl Issues {
         let set_status = data.status_id.is_some();
         let set_title = data.title.is_some();
         let title: Option<String> = match data.title.as_ref() {
-            Some(raw) => {
-                let trimmed = truncate(raw.trim(), MAX_TITLE_LEN);
-                if trimmed.is_empty() {
-                    return Err(IssueError::Validation("需求标题不能为空".to_string()));
-                }
-                Some(trimmed)
-            }
+            Some(raw) => Some(validate_title(raw)?),
             None => None,
         };
         let set_description = data.description.is_some();
-        let description: Option<String> = data
-            .description
-            .clone()
-            .flatten()
-            .map(|d| truncate(&d, MAX_DESCRIPTION_LEN));
+        let description: Option<String> = match data.description.clone().flatten() {
+            Some(raw) => Some(validate_description(&raw)?),
+            None => None,
+        };
         let set_priority = data.priority.is_some();
         let priority = data.priority.flatten().map(priority_to_str);
         let set_start = data.start_date.is_some();
@@ -513,6 +505,13 @@ impl Issues {
             Some(value) => Some(validate_metadata(value)?),
             None => None,
         };
+
+        // 成环检查：把 P 设成 I 的父需求前，确认 I 不在 P 的祖先链上，
+        // 否则前端渲染子需求树时会无限递归。
+        if let Some(parent_id) = parent_issue_id {
+            Self::ensure_no_parent_cycle(tx, id, parent_id).await?;
+        }
+
         let now = Utc::now();
 
         let row = sqlx::query_as!(
@@ -590,6 +589,45 @@ impl Issues {
             // 打不中行：可能是需求不存在，也可能是越权。这条路径只在出错时走，
             // 多几次查询不影响正常写入的并发。
             None => Err(Self::diagnose_update_failure(tx, id, data).await),
+        }
+    }
+
+    /// 沿 `parent_id` 往上走祖先链，确认 `id` 不在链上，且链长不超过
+    /// [`MAX_PARENT_DEPTH`]。递归 CTE 自带深度上限，即使库里已经有环也会停下来。
+    async fn ensure_no_parent_cycle(
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        id: Uuid,
+        parent_id: Uuid,
+    ) -> Result<(), IssueError> {
+        if parent_id == id {
+            return Err(IssueError::Validation(
+                "需求不能把自己当作父需求".to_string(),
+            ));
+        }
+
+        let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+            "WITH RECURSIVE 祖先(id, depth) AS ( \
+                 SELECT ?1, 0 \
+                 UNION ALL \
+                 SELECT i.parent_issue_id, 祖先.depth + 1 \
+                 FROM issues i JOIN 祖先 ON i.id = 祖先.id \
+                 WHERE i.parent_issue_id IS NOT NULL AND 祖先.depth < ?3 \
+             ) SELECT id, depth FROM 祖先 WHERE id = ?2 OR depth >= ?3 LIMIT 1",
+        )
+        .bind(parent_id)
+        .bind(id)
+        .bind(MAX_PARENT_DEPTH)
+        .fetch_all(&mut **tx)
+        .await?;
+
+        match rows.first() {
+            Some((hit, _)) if *hit == id => Err(IssueError::Validation(
+                "父需求会形成环，请换一个父需求".to_string(),
+            )),
+            Some(_) => Err(IssueError::Validation(format!(
+                "父需求层级超过 {MAX_PARENT_DEPTH} 层上限"
+            ))),
+            None => Ok(()),
         }
     }
 
@@ -691,7 +729,23 @@ impl Issues {
     pub async fn search(
         pool: &SqlitePool,
         request: &SearchIssuesRequest,
-    ) -> Result<ListIssuesResponse, sqlx::Error> {
+    ) -> Result<ListIssuesResponse, IssueError> {
+        // 筛选数组直接展开成 IN (...) 的绑定变量，不设上限会撞上 SQLite 的
+        // 变量个数上限（默认 999），那时报的是 500 而不是「参数不合法」。
+        for (name, len) in [
+            (
+                "status_ids",
+                request.status_ids.as_ref().map_or(0, Vec::len),
+            ),
+            ("tag_ids", request.tag_ids.as_ref().map_or(0, Vec::len)),
+        ] {
+            if len > MAX_FILTER_IDS {
+                return Err(IssueError::Validation(format!(
+                    "{name} 最多 {MAX_FILTER_IDS} 项，实际 {len} 项"
+                )));
+            }
+        }
+
         let limit = request
             .limit
             .map(|l| (l.max(1) as usize).min(MAX_PAGE_SIZE))
@@ -745,9 +799,15 @@ impl Issues {
             conditions.push(format!("simple_id = ?{}", binds.len()));
         }
 
-        if let Some(tag_ids) = request.tag_ids.as_ref().filter(|ids| !ids.is_empty()) {
+        // tag_id（单数）等价于 tag_ids: [id]，两者同时出现时取并集。
+        let tag_ids: Vec<Uuid> = request
+            .tag_id
+            .into_iter()
+            .chain(request.tag_ids.iter().flatten().copied())
+            .collect();
+        if !tag_ids.is_empty() {
             let mut slots = Vec::with_capacity(tag_ids.len());
-            for tag_id in tag_ids {
+            for tag_id in &tag_ids {
                 binds.push(Bind::Uuid(*tag_id));
                 slots.push(format!("?{}", binds.len()));
             }
@@ -985,21 +1045,49 @@ mod tests {
         assert_eq!(numbers, (1..=8).collect::<Vec<i32>>(), "编号必须连续且唯一");
     }
 
+    /// 超长字段一律拒绝：截断会让「保存成功但内容被悄悄改掉」，
+    /// 客户端拿不到任何信号，下一次编辑还会把截断后的内容当成原文。
     #[tokio::test]
-    async fn 标题与描述超长时被截断而不是报错() {
+    async fn 标题与描述超长时被拒绝而不是静默截断() {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
 
-        let mut request = 建需求请求(&场景, &"标".repeat(MAX_TITLE_LEN + 100));
-        request.description = Some("描".repeat(MAX_DESCRIPTION_LEN + 100));
+        let mut 超长标题 = 建需求请求(&场景, &"标".repeat(MAX_TITLE_LEN + 1));
+        assert!(matches!(
+            Issues::create(test_db.pool(), &超长标题).await,
+            Err(super::IssueError::Validation(_))
+        ));
 
-        let issue = Issues::create(test_db.pool(), &request).await.unwrap();
+        超长标题.title = "正常标题".to_string();
+        超长标题.description = Some("描".repeat(MAX_DESCRIPTION_LEN + 1));
+        assert!(matches!(
+            Issues::create(test_db.pool(), &超长标题).await,
+            Err(super::IssueError::Validation(_))
+        ));
 
+        // 恰好卡在上限可以通过，且内容一字不改
+        let mut 刚好 = 建需求请求(&场景, &"标".repeat(MAX_TITLE_LEN));
+        刚好.description = Some("描".repeat(MAX_DESCRIPTION_LEN));
+        let issue = Issues::create(test_db.pool(), &刚好).await.unwrap();
         assert_eq!(issue.title.chars().count(), MAX_TITLE_LEN);
         assert_eq!(
             issue.description.as_ref().unwrap().chars().count(),
             MAX_DESCRIPTION_LEN
         );
+
+        // 更新路径同样拒绝
+        assert!(matches!(
+            Issues::update(
+                test_db.pool(),
+                issue.id,
+                &UpdateIssueRequest {
+                    title: Some("标".repeat(MAX_TITLE_LEN + 1)),
+                    ..Default::default()
+                },
+            )
+            .await,
+            Err(super::IssueError::Validation(_))
+        ));
     }
 
     #[tokio::test]
@@ -1937,6 +2025,173 @@ mod tests {
         .unwrap();
         assert_eq!(hit.total_count, 1);
         assert_eq!(hit.issues[0].title, "登录页面崩溃");
+    }
+
+    #[tokio::test]
+    async fn 搜索的_tag_id_单数等价于_tag_ids_单元素() {
+        use api_types::{issue_tag::CreateIssueTagRequest, tag::CreateTagRequest};
+
+        use crate::models::issue_side::{IssueTags, ProjectTags};
+
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+        let 标签 = ProjectTags::create(
+            test_db.pool(),
+            &CreateTagRequest {
+                id: None,
+                project_id: 场景.project_id,
+                name: "前端".to_string(),
+                color: "#22c55e".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let 命中 = Issues::create(test_db.pool(), &建需求请求(&场景, "带标签"))
+            .await
+            .unwrap();
+        Issues::create(test_db.pool(), &建需求请求(&场景, "没标签"))
+            .await
+            .unwrap();
+        IssueTags::create(
+            test_db.pool(),
+            &CreateIssueTagRequest {
+                id: None,
+                issue_id: 命中.id,
+                tag_id: 标签.id,
+            },
+        )
+        .await
+        .unwrap();
+
+        let hit = Issues::search(
+            test_db.pool(),
+            &SearchIssuesRequest {
+                project_id: 场景.project_id,
+                tag_id: Some(标签.id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("tag_id 单数必须被支持");
+        assert_eq!(hit.total_count, 1);
+        assert_eq!(hit.issues[0].title, "带标签");
+    }
+
+    #[tokio::test]
+    async fn 筛选数组超过上限被拒绝() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+
+        let 太多: Vec<Uuid> = (0..super::MAX_FILTER_IDS + 1)
+            .map(|i| Uuid::from_u128(i as u128 + 1))
+            .collect();
+
+        for request in [
+            SearchIssuesRequest {
+                project_id: 场景.project_id,
+                status_ids: Some(太多.clone()),
+                ..Default::default()
+            },
+            SearchIssuesRequest {
+                project_id: 场景.project_id,
+                tag_ids: Some(太多.clone()),
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                matches!(
+                    Issues::search(test_db.pool(), &request).await,
+                    Err(super::IssueError::Validation(_))
+                ),
+                "超过上限的筛选数组必须被拒绝，而不是撞 SQLite 变量上限"
+            );
+        }
+
+        // 恰好卡在上限仍然可用
+        let 刚好: Vec<Uuid> = 太多.into_iter().take(super::MAX_FILTER_IDS).collect();
+        Issues::search(
+            test_db.pool(),
+            &SearchIssuesRequest {
+                project_id: 场景.project_id,
+                status_ids: Some(刚好),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("恰好等于上限必须通过");
+    }
+
+    // ---- 父需求成环 ----
+
+    #[tokio::test]
+    async fn 父需求成环被拒绝() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+
+        let 父 = Issues::create(test_db.pool(), &建需求请求(&场景, "父"))
+            .await
+            .unwrap();
+        let 子 = Issues::create(test_db.pool(), &建需求请求(&场景, "子"))
+            .await
+            .unwrap();
+        Issues::update(
+            test_db.pool(),
+            子.id,
+            &UpdateIssueRequest {
+                parent_issue_id: Some(Some(父.id)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        // 把子设为父的父需求 → 成环
+        let err = Issues::update(
+            test_db.pool(),
+            父.id,
+            &UpdateIssueRequest {
+                parent_issue_id: Some(Some(子.id)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("成环必须拒绝");
+        assert!(
+            matches!(err, super::IssueError::Validation(_)),
+            "应是校验错误：{err:?}"
+        );
+
+        let after = Issues::find_by_id(test_db.pool(), 父.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.parent_issue_id, None, "成环的更新不得落库");
+    }
+
+    #[tokio::test]
+    async fn 父需求层级超过上限被拒绝() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Alpha").await;
+
+        let mut previous: Option<Uuid> = None;
+        for index in 0..super::MAX_PARENT_DEPTH + 5 {
+            let mut request = 建需求请求(&场景, &format!("层 {index}"));
+            request.parent_issue_id = previous;
+            let created = match Issues::create(test_db.pool(), &request).await {
+                Ok(issue) => issue,
+                Err(err) => {
+                    assert!(
+                        matches!(err, super::IssueError::Validation(_)),
+                        "超深父链应是校验错误：{err:?}"
+                    );
+                    return;
+                }
+            };
+            previous = Some(created.id);
+        }
+
+        panic!("父链深度必须有上限");
     }
 
     // ---- 时间格式 ----

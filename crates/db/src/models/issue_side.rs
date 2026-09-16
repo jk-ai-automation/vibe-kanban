@@ -15,10 +15,33 @@ pub const MAX_TAG_NAME_LEN: usize = 60;
 pub const MAX_COMMENT_LEN: usize = 20_000;
 /// 单次快照返回的关联行上限。
 pub const MAX_SIDE_ROWS: i64 = 5000;
+/// 评论父链的最大层数，同时用作成环检测的兜底深度。
+pub const MAX_COMMENT_DEPTH: i64 = 32;
 
 fn truncate(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
+
+/// 关联行快照。`truncated` 为真表示行数触到 [`MAX_SIDE_ROWS`]，
+/// 调用方（路由层）必须把这一事实透出去，不能静默截断。
+/// 与 [`crate::models::issue::IssueSnapshot`] 同一套约定。
+#[derive(Debug)]
+pub struct SideSnapshot<T> {
+    pub rows: Vec<T>,
+    pub truncated: bool,
+}
+
+impl<T> SideSnapshot<T> {
+    /// 多取一行用来判断是否被截断，返回前丢掉。
+    fn from_probe(mut rows: Vec<T>) -> Self {
+        let truncated = rows.len() as i64 > MAX_SIDE_ROWS;
+        rows.truncate(MAX_SIDE_ROWS as usize);
+        Self { rows, truncated }
+    }
+}
+
+/// 探测用 LIMIT：比上限多取一行。
+const PROBE_LIMIT: i64 = MAX_SIDE_ROWS + 1;
 
 pub struct ProjectTags;
 
@@ -26,8 +49,8 @@ impl ProjectTags {
     pub async fn find_by_project(
         pool: &SqlitePool,
         project_id: Uuid,
-    ) -> Result<Vec<Tag>, sqlx::Error> {
-        sqlx::query_as!(
+    ) -> Result<SideSnapshot<Tag>, sqlx::Error> {
+        let rows = sqlx::query_as!(
             Tag,
             r#"SELECT id         AS "id!: Uuid",
                       project_id AS "project_id!: Uuid",
@@ -35,11 +58,15 @@ impl ProjectTags {
                       color      AS "color!"
                FROM project_tags
                WHERE project_id = $1
-               ORDER BY name ASC"#,
-            project_id
+               ORDER BY name ASC
+               LIMIT $2"#,
+            project_id,
+            PROBE_LIMIT
         )
         .fetch_all(pool)
-        .await
+        .await?;
+
+        Ok(SideSnapshot::from_probe(rows))
     }
 
     pub async fn create(pool: &SqlitePool, data: &CreateTagRequest) -> Result<Tag, IssueError> {
@@ -123,8 +150,8 @@ impl IssueTags {
     pub async fn find_by_project(
         pool: &SqlitePool,
         project_id: Uuid,
-    ) -> Result<Vec<IssueTag>, sqlx::Error> {
-        sqlx::query_as!(
+    ) -> Result<SideSnapshot<IssueTag>, sqlx::Error> {
+        let rows = sqlx::query_as!(
             IssueTag,
             r#"SELECT it.id       AS "id!: Uuid",
                       it.issue_id AS "issue_id!: Uuid",
@@ -135,10 +162,12 @@ impl IssueTags {
                ORDER BY it.rowid ASC
                LIMIT $2"#,
             project_id,
-            MAX_SIDE_ROWS
+            PROBE_LIMIT
         )
         .fetch_all(pool)
-        .await
+        .await?;
+
+        Ok(SideSnapshot::from_probe(rows))
     }
 
     pub async fn create(
@@ -161,10 +190,15 @@ impl IssueTags {
         }
 
         let id = data.id.unwrap_or_else(Uuid::new_v4);
-        let issue_tag = sqlx::query_as!(
+
+        // 重复挂同一个标签按幂等处理：ON CONFLICT DO NOTHING 之后把已有行读回来。
+        // 前端的乐观更新会重放同一次操作（断线重连、重复点击），这在业务上不是错误，
+        // 返回 500 只会让界面卡在「保存失败」。
+        let inserted = sqlx::query_as!(
             IssueTag,
             r#"INSERT INTO issue_tags (id, issue_id, tag_id)
                VALUES ($1, $2, $3)
+               ON CONFLICT DO NOTHING
                RETURNING id AS "id!: Uuid",
                          issue_id AS "issue_id!: Uuid",
                          tag_id AS "tag_id!: Uuid""#,
@@ -172,10 +206,29 @@ impl IssueTags {
             data.issue_id,
             data.tag_id
         )
-        .fetch_one(pool)
+        .fetch_optional(pool)
         .await?;
 
-        Ok(issue_tag)
+        if let Some(issue_tag) = inserted {
+            return Ok(issue_tag);
+        }
+
+        let existing = sqlx::query_as!(
+            IssueTag,
+            r#"SELECT id AS "id!: Uuid",
+                      issue_id AS "issue_id!: Uuid",
+                      tag_id AS "tag_id!: Uuid"
+               FROM issue_tags
+               WHERE issue_id = $1 AND tag_id = $2"#,
+            data.issue_id,
+            data.tag_id
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        // 冲突不是「同一需求同一标签」，那就是客户端自带的 id 撞上了别的关联，
+        // 这属于真正的冲突，必须报出来而不是悄悄返回一行别的数据。
+        existing.ok_or_else(|| IssueError::Conflict("关联 id 已被占用，请换一个 id".to_string()))
     }
 
     pub async fn delete(pool: &SqlitePool, id: Uuid) -> Result<u64, sqlx::Error> {
@@ -192,8 +245,8 @@ impl IssueComments {
     pub async fn find_by_issue(
         pool: &SqlitePool,
         issue_id: Uuid,
-    ) -> Result<Vec<IssueComment>, sqlx::Error> {
-        sqlx::query_as!(
+    ) -> Result<SideSnapshot<IssueComment>, sqlx::Error> {
+        let rows = sqlx::query_as!(
             IssueComment,
             r#"SELECT id         AS "id!: Uuid",
                       issue_id   AS "issue_id!: Uuid",
@@ -207,10 +260,12 @@ impl IssueComments {
                ORDER BY created_at ASC
                LIMIT $2"#,
             issue_id,
-            MAX_SIDE_ROWS
+            PROBE_LIMIT
         )
         .fetch_all(pool)
-        .await
+        .await?;
+
+        Ok(SideSnapshot::from_probe(rows))
     }
 
     pub async fn find_by_rowid(
@@ -323,6 +378,36 @@ impl IssueComments {
                 return Err(IssueError::Validation(
                     "父评论不存在或不属于该需求".to_string(),
                 ));
+            }
+
+            // 成环检查：沿父链往上走，若走回自己就会让前端渲染评论树时无限递归。
+            let cycle: Option<(Uuid, i64)> = sqlx::query_as(
+                "WITH RECURSIVE 祖先(id, depth) AS ( \
+                     SELECT ?1, 0 \
+                     UNION ALL \
+                     SELECT c.parent_id, 祖先.depth + 1 \
+                     FROM issue_comments c JOIN 祖先 ON c.id = 祖先.id \
+                     WHERE c.parent_id IS NOT NULL AND 祖先.depth < ?3 \
+                 ) SELECT id, depth FROM 祖先 WHERE id = ?2 OR depth >= ?3 LIMIT 1",
+            )
+            .bind(parent_id)
+            .bind(id)
+            .bind(MAX_COMMENT_DEPTH)
+            .fetch_optional(pool)
+            .await?;
+
+            match cycle {
+                Some((hit, _)) if hit == id => {
+                    return Err(IssueError::Validation(
+                        "父评论会形成环，请换一个父评论".to_string(),
+                    ));
+                }
+                Some(_) => {
+                    return Err(IssueError::Validation(format!(
+                        "评论层级超过 {MAX_COMMENT_DEPTH} 层上限"
+                    )));
+                }
+                None => {}
             }
         }
 
@@ -449,13 +534,14 @@ mod tests {
         let same = ProjectTags::find_by_project(test_db.pool(), project_id)
             .await
             .unwrap();
-        assert_eq!(same.len(), 1);
-        assert_eq!(same[0].id, tag.id);
+        assert_eq!(same.rows.len(), 1);
+        assert_eq!(same.rows[0].id, tag.id);
+        assert!(!same.truncated);
 
         let other = ProjectTags::find_by_project(test_db.pool(), Uuid::from_u128(77))
             .await
             .unwrap();
-        assert!(other.is_empty(), "不得返回其他项目的标签");
+        assert!(other.rows.is_empty(), "不得返回其他项目的标签");
     }
 
     #[tokio::test]
@@ -519,17 +605,18 @@ mod tests {
             issue_id,
             tag_id: tag.id,
         };
-        IssueTags::create(test_db.pool(), &request).await.unwrap();
-        assert!(
-            IssueTags::create(test_db.pool(), &request).await.is_err(),
-            "同一需求同一标签不得重复关联"
-        );
+        let first = IssueTags::create(test_db.pool(), &request).await.unwrap();
+        // 重复挂同一标签按幂等处理：返回已有关联，不新增行、也不报 500。
+        let again = IssueTags::create(test_db.pool(), &request)
+            .await
+            .expect("重复关联必须幂等成功");
+        assert_eq!(again.id, first.id, "幂等返回的必须是已有关联");
 
         let list = IssueTags::find_by_project(test_db.pool(), project_id)
             .await
             .unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].issue_id, issue_id);
+        assert_eq!(list.rows.len(), 1);
+        assert_eq!(list.rows[0].issue_id, issue_id);
     }
 
     #[tokio::test]
@@ -575,12 +662,14 @@ mod tests {
             IssueTags::find_by_project(test_db.pool(), project_id)
                 .await
                 .unwrap()
+                .rows
                 .is_empty()
         );
         assert!(
             IssueComments::find_by_issue(test_db.pool(), issue_id)
                 .await
                 .unwrap()
+                .rows
                 .is_empty()
         );
     }
@@ -623,7 +712,7 @@ mod tests {
         let list = IssueComments::find_by_issue(test_db.pool(), issue_id)
             .await
             .unwrap();
-        assert_eq!(list.len(), 1);
+        assert_eq!(list.rows.len(), 1);
 
         assert_eq!(
             IssueComments::delete(test_db.pool(), comment.id)
@@ -688,6 +777,7 @@ mod tests {
             IssueTags::find_by_project(test_db.pool(), project_b)
                 .await
                 .unwrap()
+                .rows
                 .is_empty(),
             "被拒绝的关联不得落库"
         );
@@ -891,6 +981,144 @@ mod tests {
         )
         .await
         .expect_err("自引用必须拒绝");
+        assert!(matches!(
+            err,
+            crate::models::issue::IssueError::Validation(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn 自带_id_撞上别的关联时报冲突而不是_500() {
+        let test_db = TestDb::new().await;
+        let (project_id, issue_id) = 准备(&test_db).await;
+
+        let mut 标签 = Vec::new();
+        for name in ["前端", "后端"] {
+            标签.push(
+                ProjectTags::create(
+                    test_db.pool(),
+                    &CreateTagRequest {
+                        id: None,
+                        project_id,
+                        name: name.to_string(),
+                        color: "#22c55e".to_string(),
+                    },
+                )
+                .await
+                .unwrap(),
+            );
+        }
+
+        let 固定 = Uuid::new_v4();
+        IssueTags::create(
+            test_db.pool(),
+            &CreateIssueTagRequest {
+                id: Some(固定),
+                issue_id,
+                tag_id: 标签[0].id,
+            },
+        )
+        .await
+        .unwrap();
+
+        let err = IssueTags::create(
+            test_db.pool(),
+            &CreateIssueTagRequest {
+                id: Some(固定),
+                issue_id,
+                tag_id: 标签[1].id,
+            },
+        )
+        .await
+        .expect_err("id 撞上别的关联必须报错");
+        assert!(
+            matches!(err, crate::models::issue::IssueError::Conflict(_)),
+            "应是冲突错误：{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn 标签与评论的快照触到上限时带出截断标记() {
+        let test_db = TestDb::new().await;
+        let (project_id, issue_id) = 准备(&test_db).await;
+
+        let mut tx = test_db.pool().begin().await.unwrap();
+        for index in 0..super::MAX_SIDE_ROWS + 2 {
+            sqlx::query(
+                "INSERT INTO project_tags (id, project_id, name, color) VALUES (?1, ?2, ?3, '#fff')",
+            )
+            .bind(Uuid::new_v4())
+            .bind(project_id)
+            .bind(format!("标签 {index:06}"))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO issue_comments (id, issue_id, message, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?4)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(issue_id)
+            .bind(format!("评论 {index}"))
+            .bind(chrono::Utc::now())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        let tags = ProjectTags::find_by_project(test_db.pool(), project_id)
+            .await
+            .unwrap();
+        assert_eq!(tags.rows.len(), super::MAX_SIDE_ROWS as usize);
+        assert!(tags.truncated, "标签触到上限必须让调用方感知");
+
+        let comments = IssueComments::find_by_issue(test_db.pool(), issue_id)
+            .await
+            .unwrap();
+        assert_eq!(comments.rows.len(), super::MAX_SIDE_ROWS as usize);
+        assert!(comments.truncated, "评论触到上限必须让调用方感知");
+    }
+
+    #[tokio::test]
+    async fn 评论父链成环被拒绝() {
+        let test_db = TestDb::new().await;
+        let (_, issue_id) = 准备(&test_db).await;
+
+        let 甲 = IssueComments::create(
+            test_db.pool(),
+            &CreateIssueCommentRequest {
+                id: None,
+                issue_id,
+                message: "甲".to_string(),
+                parent_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let 乙 = IssueComments::create(
+            test_db.pool(),
+            &CreateIssueCommentRequest {
+                id: None,
+                issue_id,
+                message: "乙".to_string(),
+                parent_id: Some(甲.id),
+            },
+        )
+        .await
+        .unwrap();
+
+        // 甲 -> 乙 会形成环（乙的父已经是甲）
+        let err = IssueComments::update(
+            test_db.pool(),
+            甲.id,
+            &UpdateIssueCommentRequest {
+                message: None,
+                parent_id: Some(Some(乙.id)),
+            },
+        )
+        .await
+        .expect_err("成环必须拒绝");
         assert!(matches!(
             err,
             crate::models::issue::IssueError::Validation(_)

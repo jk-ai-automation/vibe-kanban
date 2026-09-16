@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO issue_tags (id, issue_id, tag_id)\n               VALUES ($1, $2, $3)\n               ON CONFLICT DO NOTHING\n               RETURNING id AS \"id!: Uuid\",\n                         issue_id AS \"issue_id!: Uuid\",\n                         tag_id AS \"tag_id!: Uuid\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "issue_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "tag_id!: Uuid",
+        "ordinal": 2,
+        "type_info": "Blob"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "87747046408cb7d51d47403452680f3c90cfb6d8d1a23638d6221abcd91b32d6"
+}

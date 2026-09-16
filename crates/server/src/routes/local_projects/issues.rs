@@ -4,7 +4,7 @@ use api_types::issue::{
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::{get, patch, post},
+    routing::{get, post},
 };
 use db::models::issue::Issues;
 use deployment::Deployment;
@@ -13,7 +13,7 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::{
-    BulkUpdateRequest, MAX_BULK_UPDATES, ProjectScopedQuery, TxidResponse, map_db_error,
+    BulkUpdateRequest, LocalRoutes, MAX_BULK_UPDATES, ProjectScopedQuery, TxidResponse,
     map_issue_error, snapshot_truncatable, txid,
 };
 use crate::{DeploymentImpl, error::ApiError};
@@ -97,7 +97,6 @@ pub(crate) async fn handle_search(
     let unsupported: Vec<&str> = [
         ("assignee_user_id", payload.assignee_user_id.is_some()),
         ("parent_issue_id", payload.parent_issue_id.is_some()),
-        ("tag_id", payload.tag_id.is_some()),
     ]
     .into_iter()
     .filter(|(_, present)| *present)
@@ -113,7 +112,7 @@ pub(crate) async fn handle_search(
     Issues::search(pool, &payload)
         .await
         .map(Json)
-        .map_err(map_db_error)
+        .map_err(map_issue_error)
 }
 
 pub(crate) async fn handle_delete(
@@ -178,14 +177,16 @@ async fn delete(
 }
 
 pub fn router() -> Router<DeploymentImpl> {
-    Router::new().nest(
-        "/issues",
-        Router::new()
-            .route("/", get(list).post(create))
-            .route("/bulk", post(bulk_update))
-            .route("/search", post(search))
-            .route("/{id}", get(get_one).patch(update).delete(delete)),
-    )
+    LocalRoutes::new("/issues")
+        .route("/", &["GET", "POST"], get(list).post(create))
+        .route("/bulk", &["POST"], post(bulk_update))
+        .route("/search", &["POST"], post(search))
+        .route(
+            "/{id}",
+            &["GET", "PATCH", "DELETE"],
+            get(get_one).patch(update).delete(delete),
+        )
+        .into_router()
 }
 
 #[cfg(test)]
@@ -630,14 +631,6 @@ mod tests {
                     ..Default::default()
                 },
             ),
-            (
-                "tag_id",
-                SearchIssuesRequest {
-                    project_id,
-                    tag_id: Some(Uuid::from_u128(5)),
-                    ..Default::default()
-                },
-            ),
         ] {
             let err = handle_search(test_db.pool(), request)
                 .await
@@ -649,6 +642,47 @@ mod tests {
                 other => panic!("应是 400，实际：{other:?}"),
             }
         }
+    }
+
+    /// tag_id（单数）以前直接 400，现在等价于 tag_ids: [id]。
+    #[tokio::test]
+    async fn 搜索支持_tag_id_单数() {
+        let test_db = TestDb::new().await;
+        let (project_id, _) = 准备(&test_db).await;
+
+        let body = handle_search(
+            test_db.pool(),
+            SearchIssuesRequest {
+                project_id,
+                tag_id: Some(Uuid::from_u128(5)),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("tag_id 不应再被拒绝")
+        .0;
+        assert_eq!(body.total_count, 0, "不存在的标签筛不到需求");
+    }
+
+    #[tokio::test]
+    async fn 搜索筛选数组超过上限返回_400() {
+        let test_db = TestDb::new().await;
+        let (project_id, _) = 准备(&test_db).await;
+
+        let 太多: Vec<Uuid> = (0..db::models::issue::MAX_FILTER_IDS + 1)
+            .map(|i| Uuid::from_u128(i as u128 + 1))
+            .collect();
+        let err = handle_search(
+            test_db.pool(),
+            SearchIssuesRequest {
+                project_id,
+                status_ids: Some(太多),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("超长筛选数组必须 400 而不是 500");
+        断言是_400(err);
     }
 
     #[tokio::test]

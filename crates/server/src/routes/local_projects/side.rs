@@ -6,11 +6,11 @@ use api_types::{
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::{get, patch},
+    routing::{get, patch, post},
 };
 use db::models::{
     issue::Issues,
-    issue_side::{IssueComments, IssueTags, ProjectTags},
+    issue_side::{IssueComments, IssueTags, MAX_SIDE_ROWS, ProjectTags},
     local_project::LocalProjects,
 };
 use deployment::Deployment;
@@ -19,8 +19,8 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::{
-    IssueScopedQuery, ProjectScopedQuery, TxidResponse, map_db_error, map_issue_error, snapshot,
-    txid,
+    IssueScopedQuery, LocalRoutes, ProjectScopedQuery, TxidResponse, map_db_error, map_issue_error,
+    snapshot_truncatable, txid,
 };
 use crate::{DeploymentImpl, error::ApiError};
 
@@ -28,9 +28,18 @@ pub(crate) async fn handle_tag_list(
     pool: &SqlitePool,
     project_id: Uuid,
 ) -> Result<Json<Value>, ApiError> {
-    Ok(snapshot(
+    let snapshot = ProjectTags::find_by_project(pool, project_id).await?;
+    if snapshot.truncated {
+        tracing::warn!(
+            %project_id,
+            limit = MAX_SIDE_ROWS,
+            "标签快照已截断，前端看到的不是全量"
+        );
+    }
+    Ok(snapshot_truncatable(
         "tags",
-        ProjectTags::find_by_project(pool, project_id).await?,
+        snapshot.rows,
+        snapshot.truncated,
     ))
 }
 
@@ -75,9 +84,18 @@ pub(crate) async fn handle_issue_tag_list(
     pool: &SqlitePool,
     project_id: Uuid,
 ) -> Result<Json<Value>, ApiError> {
-    Ok(snapshot(
+    let snapshot = IssueTags::find_by_project(pool, project_id).await?;
+    if snapshot.truncated {
+        tracing::warn!(
+            %project_id,
+            limit = MAX_SIDE_ROWS,
+            "需求标签关联快照已截断，前端看到的不是全量"
+        );
+    }
+    Ok(snapshot_truncatable(
         "issue_tags",
-        IssueTags::find_by_project(pool, project_id).await?,
+        snapshot.rows,
+        snapshot.truncated,
     ))
 }
 
@@ -108,9 +126,18 @@ pub(crate) async fn handle_comment_list(
     pool: &SqlitePool,
     issue_id: Uuid,
 ) -> Result<Json<Value>, ApiError> {
-    Ok(snapshot(
+    let snapshot = IssueComments::find_by_issue(pool, issue_id).await?;
+    if snapshot.truncated {
+        tracing::warn!(
+            %issue_id,
+            limit = MAX_SIDE_ROWS,
+            "评论快照已截断，前端看到的不是全量"
+        );
+    }
+    Ok(snapshot_truncatable(
         "issue_comments",
-        IssueComments::find_by_issue(pool, issue_id).await?,
+        snapshot.rows,
+        snapshot.truncated,
     ))
 }
 
@@ -152,10 +179,22 @@ pub(crate) async fn handle_comment_delete(
     Ok(txid())
 }
 
+/// 个人版不支持的多行写操作。
+///
+/// 前端的本地集合在一次事务里更新多行时会统一打 `<base>/bulk`
+/// （localCollections.ts 的 onUpdate），标签、需求标签关联、评论目前没有任何
+/// 需要多行更新的界面。这里仍然把路由挂上并返回一个说明清楚的 400，
+/// 而不是留给 axum 回一个空响应体的 405：405 在前端只会变成
+/// 「Failed to write tags」这种查不到原因的报错。
+async fn 不支持的批量更新(资源: &'static str) -> ApiError {
+    ApiError::BadRequest(format!("个人版不支持批量更新{资源}"))
+}
+
 pub fn router() -> Router<DeploymentImpl> {
-    let tags = Router::new()
+    let tags = LocalRoutes::new("/tags")
         .route(
             "/",
+            &["GET", "POST"],
             get(
                 |State(d): State<DeploymentImpl>, Query(q): Query<ProjectScopedQuery>| async move {
                     handle_tag_list(&d.db().pool, q.project_id).await
@@ -168,7 +207,13 @@ pub fn router() -> Router<DeploymentImpl> {
             ),
         )
         .route(
+            "/bulk",
+            &["POST"],
+            post(|| async { 不支持的批量更新("标签").await }),
+        )
+        .route(
             "/{id}",
+            &["PATCH", "DELETE"],
             patch(
                 |State(d): State<DeploymentImpl>,
                  Path(id): Path<Uuid>,
@@ -181,11 +226,13 @@ pub fn router() -> Router<DeploymentImpl> {
                     handle_tag_delete(&d.db().pool, id).await
                 },
             ),
-        );
+        )
+        .into_router();
 
-    let issue_tags = Router::new()
+    let issue_tags = LocalRoutes::new("/issue_tags")
         .route(
             "/",
+            &["GET", "POST"],
             get(
                 |State(d): State<DeploymentImpl>, Query(q): Query<ProjectScopedQuery>| async move {
                     handle_issue_tag_list(&d.db().pool, q.project_id).await
@@ -198,17 +245,30 @@ pub fn router() -> Router<DeploymentImpl> {
             ),
         )
         .route(
+            "/bulk",
+            &["POST"],
+            post(|| async { 不支持的批量更新("需求标签关联").await }),
+        )
+        .route(
             "/{id}",
-            axum::routing::delete(
+            &["PATCH", "DELETE"],
+            // 关联行只有 issue_id / tag_id 两列，改任何一列都等于换一条关联，
+            // 因此只支持删除后重建；PATCH 明确回 400 而不是 405。
+            patch(|| async {
+                ApiError::BadRequest("需求标签关联不支持修改，请删除后重建".to_string())
+            })
+            .delete(
                 |State(d): State<DeploymentImpl>, Path(id): Path<Uuid>| async move {
                     handle_issue_tag_delete(&d.db().pool, id).await
                 },
             ),
-        );
+        )
+        .into_router();
 
-    let comments = Router::new()
+    let comments = LocalRoutes::new("/issue_comments")
         .route(
             "/",
+            &["GET", "POST"],
             get(
                 |State(d): State<DeploymentImpl>, Query(q): Query<IssueScopedQuery>| async move {
                     handle_comment_list(&d.db().pool, q.issue_id).await
@@ -222,7 +282,13 @@ pub fn router() -> Router<DeploymentImpl> {
             ),
         )
         .route(
+            "/bulk",
+            &["POST"],
+            post(|| async { 不支持的批量更新("评论").await }),
+        )
+        .route(
             "/{id}",
+            &["PATCH", "DELETE"],
             patch(
                 |State(d): State<DeploymentImpl>,
                  Path(id): Path<Uuid>,
@@ -235,12 +301,10 @@ pub fn router() -> Router<DeploymentImpl> {
                     handle_comment_delete(&d.db().pool, id).await
                 },
             ),
-        );
+        )
+        .into_router();
 
-    Router::new()
-        .nest("/tags", tags)
-        .nest("/issue_tags", issue_tags)
-        .nest("/issue_comments", comments)
+    Router::new().merge(tags).merge(issue_tags).merge(comments)
 }
 
 #[cfg(test)]
@@ -558,6 +622,75 @@ mod tests {
         .await
         .expect_err("不存在的评论必须报错");
         断言是_404(err);
+    }
+
+    #[tokio::test]
+    async fn 三类关联快照都带出_truncated_字段() {
+        let test_db = TestDb::new().await;
+        let (project_id, issue_id) = 准备(&test_db).await;
+
+        for body in [
+            handle_tag_list(test_db.pool(), project_id).await.unwrap().0,
+            handle_issue_tag_list(test_db.pool(), project_id)
+                .await
+                .unwrap()
+                .0,
+            handle_comment_list(test_db.pool(), issue_id)
+                .await
+                .unwrap()
+                .0,
+        ] {
+            assert_eq!(
+                body["truncated"],
+                serde_json::json!(false),
+                "关联快照必须透出截断标记：{body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn 重复挂同一个标签是幂等的() {
+        let test_db = TestDb::new().await;
+        let (project_id, issue_id) = 准备(&test_db).await;
+        handle_tag_create(
+            test_db.pool(),
+            CreateTagRequest {
+                id: None,
+                project_id,
+                name: "前端".to_string(),
+                color: "#22c55e".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let tag_id: Uuid = handle_tag_list(test_db.pool(), project_id).await.unwrap().0["tags"][0]
+            ["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        let request = CreateIssueTagRequest {
+            id: None,
+            issue_id,
+            tag_id,
+        };
+        handle_issue_tag_create(test_db.pool(), request.clone())
+            .await
+            .unwrap();
+        handle_issue_tag_create(test_db.pool(), request)
+            .await
+            .expect("重复挂同一标签必须幂等成功，不得 500");
+
+        let body = handle_issue_tag_list(test_db.pool(), project_id)
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            body["issue_tags"].as_array().unwrap().len(),
+            1,
+            "幂等不得产生重复行"
+        );
     }
 
     #[tokio::test]
