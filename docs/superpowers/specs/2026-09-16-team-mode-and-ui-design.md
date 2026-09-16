@@ -121,22 +121,55 @@ Cookie 会话天生受 CSRF 威胁。三道防线：
 
 ### 6.4 第三方登录
 
-统一抽象 `OAuthProvider { authorize_url, token_url, userinfo_url, scopes, subject_field, email_field, name_field }`，预置三份：
+> 以下端点与字段已查官方文档核实（2026-09-16），核实结论见本节末尾的「已核实 / 未核实」。**实现时不得凭记忆写死，以官方文档与实测为准。**
 
-| 提供方 | 说明 |
-|---|---|
-| `feishu` | `open.feishu.cn`，`authen/v1/authorize` → `authen/v2/oauth/token` → `authen/v1/user_info` |
-| `lark` | `open.larksuite.com`，路径同上（域名不同，因此是两份配置而非一份） |
-| `google` | 标准 OIDC discovery 端点 |
+统一抽象 `OAuthProvider { authorize_url, token_url, token_body_format, userinfo_url, scopes, subject_field, email_field, name_field }`，预置三份：
 
+| 提供方 | 授权端点 | 换令牌端点 | 用户信息端点 |
+|---|---|---|---|
+| `feishu` | `https://accounts.feishu.cn/open-apis/authen/v1/authorize` | `https://accounts.feishu.cn/oauth/v3/token`（POST，form-urlencoded） | `https://open.feishu.cn/open-apis/authen/v1/user_info` |
+| `lark` | `https://accounts.larksuite.com/open-apis/authen/v1/authorize` | `https://open.larksuite.com/open-apis/authen/v2/oauth/token`（POST，JSON） | `https://open.larksuite.com/open-apis/authen/v1/user_info` |
+| `google` | `https://accounts.google.com/o/oauth2/v2/auth` | `https://oauth2.googleapis.com/token` | `https://openidconnect.googleapis.com/v1/userinfo` |
+
+要点：
+
+- **参数名是 `client_id` 不是 `app_id`**（飞书后台展示为 "App ID"，但 URL 参数是 `client_id`）。
+- **飞书的 v2 换令牌端点已被官方标注弃用**，用 v3；Lark 侧目前官方文档仍是 v2 且无弃用提示，两边版本不同步，因此 token 端点必须做成**可配置项**。
+- **飞书/Lark 的认证类接口是扁平结构**（`code` 与 `access_token` 同层），**不套** `{code,msg,data}` 信封——不要写一个通用的「剥 data 层」逻辑套所有飞书接口。
+- **稳定身份标识**：
+  - 飞书/Lark 用 **`union_id`**。`open_id` 是应用级的、换应用凭据就变；`user_id` 在管理员删号后可能被新用户复用；email/mobile 官方明文说「未经用户本人实时验证，不建议作为业务系统的登录凭证」。
+  - Google 用 **`sub`**。官方原文：`Don't use the email field as a unique identifier for a user. Always use the sub field.`
+  - 库里同时保存 `open_id` 备查，但绑定键只用 `union_id`/`sub`。
+- PKCE：飞书支持但不强制（应用一律视为机密客户端，必须带 `client_secret`）；Google 对服务端机密客户端不强制。实现时带上 PKCE 无害，优先做。
 - 凭据从 `asset_dir()/server.json` 或环境变量读取；未配置的提供方不出现在登录页。
 - 回调 `/api/local-auth/oauth/:provider/callback`：校验 `state`（服务端生成、一次性、10 分钟过期）→ 换 token → 拉用户信息 → 按 `(provider, subject)` 查 `local_user_identities`：
   - 已绑定 → 建会话登录。
   - 未绑定但 email 命中已有用户 → 需该用户已登录状态下手动绑定，**不自动合并**（防账号劫持）。
   - 未绑定且允许自助注册（配置项 `allow_oauth_signup`，默认关）→ 建新用户，角色 `member`。
   - 否则 → 提示「请联系管理员开通」。
-- 全流程不记录 access token，只记 `subject`。飞书/Lark 的 `subject` 取 `open_id`（应用内稳定），同时保存 `union_id` 备查；**换应用凭据会导致 open_id 变化、需要重新绑定**，文档要写明。三家的 authorize/token/userinfo 端点与字段在实现前必须查官方文档核实，不得凭记忆写死。
-- 无法在本机验证真实提供方，因此测试用一个本地 mock OIDC 服务（仅测试期启动）覆盖成功、state 失效、token 失败、userinfo 缺字段、subject 冲突等分支。
+- 全流程不记录 access token，只记 `subject`。授权码有效期短且一次性，令牌有效期以接口实际返回的 `expires_in` 为准，**不要硬编码任何时长数字**。
+- 限流错误码（飞书 `99991400`/`1000004`/`1000005`）官方建议指数退避。
+- 无法在本机验证真实提供方，因此测试用本地 mock OIDC 服务覆盖成功、state 失效、token 失败、userinfo 缺字段、subject 冲突、邮箱撞号不自动合并等分支。
+
+#### 回调地址限制对部署形态的影响（重要）
+
+Google 官方规定：`Redirect URIs must use the HTTPS scheme, not plain HTTP` 且 **`Hosts cannot be raw IP addresses`**，只有 `localhost`/`127.0.0.1`/`[::1]` 是例外。
+
+因此在「局域网 `http://192.168.x.x:8080`」这种部署形态下：
+
+| 登录方式 | 局域网 HTTP 部署 | 说明 |
+|---|---|---|
+| **账号密码** | ✅ 可用 | **这是团队版的主路径**，不受任何回调限制 |
+| 飞书 / Lark | ⚠️ 待实测 | 官方文档没有明文规定是否强制 HTTPS 或禁止裸 IP；社区实践显示 `http://localhost` 可注册。**上线前必须在开发者后台实测能否填入局域网地址** |
+| Google | ❌ 不可用 | 裸 IP 被明确禁止。要用 Google 登录必须给服务套一个真实域名 + HTTPS（见 8.5 的反向代理方案） |
+
+结论：**账号密码登录必须做到完全自洽可用**，第三方登录是加分项；登录页按配置与可用性动态显示，不可用时不出现入口。
+
+#### 已核实 / 未核实
+
+已核实（有官方原文）：三家的授权/令牌/用户信息端点与参数名、飞书 v2 弃用、飞书认证接口的扁平结构、`union_id`/`open_id`/`user_id` 的稳定性差异与官方推荐、Google 必须用 `sub`、Google 的裸 IP 与 HTTPS 限制、飞书常见错误码、Google 对机密客户端不强制 PKCE。
+
+**未核实（实现前必须确认，不得当作事实）**：飞书/Lark 的 redirect_uri 是否强制 HTTPS、是否允许局域网裸 IP（最大缺口）；Lark 是否也有 v3 令牌端点；Lark 的 user_info 响应字段是否与飞书一致；Lark 是否支持 PKCE；飞书/Lark 拿到 `union_id`/`name`/`email` 所需的最小权限点字符串（需在应用后台权限管理页核对，不要照抄）；Google 「Web application」与「Desktop app」客户端类型对 localhost 回调的支持范围（两份官方文档表述有出入）。
 
 ### 6.5 权限
 
