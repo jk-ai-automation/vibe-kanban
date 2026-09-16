@@ -253,6 +253,7 @@ mod tests {
         use api_types::issue::CreateIssueRequest;
         use db::models::{
             issue::Issues,
+            local_project::DEFAULT_USER_ID,
             local_project_status::{ProjectStatuses, StageType},
         };
 
@@ -280,6 +281,7 @@ mod tests {
                 parent_issue_sort_order: None,
                 extension_metadata: serde_json::json!({}),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();

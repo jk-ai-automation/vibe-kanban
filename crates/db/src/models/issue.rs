@@ -319,7 +319,11 @@ impl Issues {
         Ok(row.map(Issue::from))
     }
 
-    pub async fn create(pool: &SqlitePool, data: &CreateIssueRequest) -> Result<Issue, IssueError> {
+    pub async fn create(
+        pool: &SqlitePool,
+        data: &CreateIssueRequest,
+        creator_user_id: Uuid,
+    ) -> Result<Issue, IssueError> {
         let title = validate_title(&data.title)?;
         let description = data
             .description
@@ -426,7 +430,7 @@ impl Issues {
                 data.parent_issue_id,
                 data.parent_issue_sort_order,
                 metadata,
-                super::local_project::DEFAULT_USER_ID,
+                creator_user_id,
                 now
             )
             .fetch_one(&mut *tx)
@@ -925,7 +929,7 @@ mod tests {
     use super::{Issues, MAX_DESCRIPTION_LEN, MAX_METADATA_BYTES, MAX_TITLE_LEN};
     use crate::{
         models::{
-            local_project::{DEFAULT_ORGANIZATION_ID, LocalProjects},
+            local_project::{DEFAULT_ORGANIZATION_ID, DEFAULT_USER_ID, LocalProjects},
             local_project_status::{ProjectStatuses, StageType},
         },
         test_support::TestDb,
@@ -979,16 +983,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn 创建人取自参数而不是固定用户() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Vibe Kanban").await;
+
+        let creator = Uuid::from_u128(999);
+        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "指定创建人"), creator)
+            .await
+            .unwrap();
+
+        assert_eq!(issue.creator_user_id, Some(creator));
+    }
+
+    #[tokio::test]
+    async fn 创建人为默认用户时与旧行为一致() {
+        let test_db = TestDb::new().await;
+        let 场景 = 准备(&test_db, "Vibe Kanban").await;
+
+        let issue = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "默认创建人"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(issue.creator_user_id, Some(DEFAULT_USER_ID));
+    }
+
+    #[tokio::test]
     async fn 需求编号按项目自增且_simple_id_带项目前缀() {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
 
-        let first = Issues::create(test_db.pool(), &建需求请求(&场景, "第一条"))
-            .await
-            .unwrap();
-        let second = Issues::create(test_db.pool(), &建需求请求(&场景, "第二条"))
-            .await
-            .unwrap();
+        let first = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "第一条"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        let second = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "第二条"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(first.issue_number, 1);
         assert_eq!(second.issue_number, 2);
@@ -1002,10 +1043,10 @@ mod tests {
         let a = 准备(&test_db, "Alpha").await;
         let b = 准备(&test_db, "Beta").await;
 
-        let a1 = Issues::create(test_db.pool(), &建需求请求(&a, "A1"))
+        let a1 = Issues::create(test_db.pool(), &建需求请求(&a, "A1"), DEFAULT_USER_ID)
             .await
             .unwrap();
-        let b1 = Issues::create(test_db.pool(), &建需求请求(&b, "B1"))
+        let b1 = Issues::create(test_db.pool(), &建需求请求(&b, "B1"), DEFAULT_USER_ID)
             .await
             .unwrap();
 
@@ -1026,7 +1067,7 @@ mod tests {
             let pool = pool.clone();
             let request = 建需求请求(&场景, &format!("并发 {index}"));
             handles.push(tokio::spawn(async move {
-                Issues::create(&pool, &request).await
+                Issues::create(&pool, &request, DEFAULT_USER_ID).await
             }));
         }
 
@@ -1054,21 +1095,23 @@ mod tests {
 
         let mut 超长标题 = 建需求请求(&场景, &"标".repeat(MAX_TITLE_LEN + 1));
         assert!(matches!(
-            Issues::create(test_db.pool(), &超长标题).await,
+            Issues::create(test_db.pool(), &超长标题, DEFAULT_USER_ID).await,
             Err(super::IssueError::Validation(_))
         ));
 
         超长标题.title = "正常标题".to_string();
         超长标题.description = Some("描".repeat(MAX_DESCRIPTION_LEN + 1));
         assert!(matches!(
-            Issues::create(test_db.pool(), &超长标题).await,
+            Issues::create(test_db.pool(), &超长标题, DEFAULT_USER_ID).await,
             Err(super::IssueError::Validation(_))
         ));
 
         // 恰好卡在上限可以通过，且内容一字不改
         let mut 刚好 = 建需求请求(&场景, &"标".repeat(MAX_TITLE_LEN));
         刚好.description = Some("描".repeat(MAX_DESCRIPTION_LEN));
-        let issue = Issues::create(test_db.pool(), &刚好).await.unwrap();
+        let issue = Issues::create(test_db.pool(), &刚好, DEFAULT_USER_ID)
+            .await
+            .unwrap();
         assert_eq!(issue.title.chars().count(), MAX_TITLE_LEN);
         assert_eq!(
             issue.description.as_ref().unwrap().chars().count(),
@@ -1095,7 +1138,8 @@ mod tests {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
 
-        let result = Issues::create(test_db.pool(), &建需求请求(&场景, "   ")).await;
+        let result =
+            Issues::create(test_db.pool(), &建需求请求(&场景, "   "), DEFAULT_USER_ID).await;
         assert!(result.is_err(), "空白标题必须拒绝");
     }
 
@@ -1103,9 +1147,13 @@ mod tests {
     async fn 并发更新不同字段互不覆盖() {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
-        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "原标题"))
-            .await
-            .unwrap();
+        let issue = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "原标题"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         let pool_a = test_db.pool().clone();
         let pool_b = test_db.pool().clone();
@@ -1154,7 +1202,9 @@ mod tests {
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
         let mut request = 建需求请求(&场景, "带描述");
         request.description = Some("正文".to_string());
-        let issue = Issues::create(test_db.pool(), &request).await.unwrap();
+        let issue = Issues::create(test_db.pool(), &request, DEFAULT_USER_ID)
+            .await
+            .unwrap();
 
         let updated = Issues::update(
             test_db.pool(),
@@ -1174,7 +1224,7 @@ mod tests {
     async fn 批量更新排序在单事务内全成或全败() {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
-        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "拖拽"))
+        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "拖拽"), DEFAULT_USER_ID)
             .await
             .unwrap();
 
@@ -1209,12 +1259,20 @@ mod tests {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
 
-        Issues::create(test_db.pool(), &建需求请求(&场景, "登录页面"))
-            .await
-            .unwrap();
-        Issues::create(test_db.pool(), &建需求请求(&场景, "100%完成度"))
-            .await
-            .unwrap();
+        Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "登录页面"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "100%完成度"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         let hit = Issues::search(
             test_db.pool(),
@@ -1250,9 +1308,13 @@ mod tests {
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
 
         for index in 0..5 {
-            Issues::create(test_db.pool(), &建需求请求(&场景, &format!("需求 {index}")))
-                .await
-                .unwrap();
+            Issues::create(
+                test_db.pool(),
+                &建需求请求(&场景, &format!("需求 {index}")),
+                DEFAULT_USER_ID,
+            )
+            .await
+            .unwrap();
         }
 
         let page = Issues::search(
@@ -1295,10 +1357,10 @@ mod tests {
         let a = 准备(&test_db, "Alpha").await;
         let b = 准备(&test_db, "Beta").await;
 
-        Issues::create(test_db.pool(), &建需求请求(&a, "A1"))
+        Issues::create(test_db.pool(), &建需求请求(&a, "A1"), DEFAULT_USER_ID)
             .await
             .unwrap();
-        Issues::create(test_db.pool(), &建需求请求(&b, "B1"))
+        Issues::create(test_db.pool(), &建需求请求(&b, "B1"), DEFAULT_USER_ID)
             .await
             .unwrap();
 
@@ -1314,7 +1376,7 @@ mod tests {
     async fn 移动到已完成阶段会写入完成时间() {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
-        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "待办"))
+        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "待办"), DEFAULT_USER_ID)
             .await
             .unwrap();
         assert!(issue.completed_at.is_none());
@@ -1353,9 +1415,13 @@ mod tests {
     async fn 删除需求把工作区的_issue_id_置空() {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
-        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "要删的"))
-            .await
-            .unwrap();
+        let issue = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "要删的"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         let workspace_id = Uuid::new_v4();
         sqlx::query("INSERT INTO workspaces (id, branch, issue_id) VALUES (?1, 'vk/test', ?2)")
@@ -1384,14 +1450,18 @@ mod tests {
         let a = 准备(&test_db, "Alpha").await;
         let b = 准备(&test_db, "Beta").await;
 
-        let parent = Issues::create(test_db.pool(), &建需求请求(&b, "别的项目的父需求"))
-            .await
-            .unwrap();
+        let parent = Issues::create(
+            test_db.pool(),
+            &建需求请求(&b, "别的项目的父需求"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         let mut request = 建需求请求(&a, "子需求");
         request.parent_issue_id = Some(parent.id);
 
-        let err = Issues::create(test_db.pool(), &request)
+        let err = Issues::create(test_db.pool(), &request, DEFAULT_USER_ID)
             .await
             .expect_err("跨项目父需求必须拒绝");
         assert!(
@@ -1407,7 +1477,7 @@ mod tests {
         let mut request = 建需求请求(&场景, "子需求");
         request.parent_issue_id = Some(Uuid::from_u128(424242));
 
-        let err = Issues::create(test_db.pool(), &request)
+        let err = Issues::create(test_db.pool(), &request, DEFAULT_USER_ID)
             .await
             .expect_err("父需求不存在必须拒绝");
         assert!(matches!(err, super::IssueError::Validation(_)));
@@ -1422,7 +1492,7 @@ mod tests {
         request.id = Some(id);
         request.parent_issue_id = Some(id);
 
-        let err = Issues::create(test_db.pool(), &request)
+        let err = Issues::create(test_db.pool(), &request, DEFAULT_USER_ID)
             .await
             .expect_err("自引用必须拒绝");
         assert!(matches!(err, super::IssueError::Validation(_)));
@@ -1434,7 +1504,7 @@ mod tests {
         let a = 准备(&test_db, "Alpha").await;
         let b = 准备(&test_db, "Beta").await;
 
-        let issue = Issues::create(test_db.pool(), &建需求请求(&a, "A1"))
+        let issue = Issues::create(test_db.pool(), &建需求请求(&a, "A1"), DEFAULT_USER_ID)
             .await
             .unwrap();
 
@@ -1466,10 +1536,10 @@ mod tests {
         let a = 准备(&test_db, "Alpha").await;
         let b = 准备(&test_db, "Beta").await;
 
-        let issue = Issues::create(test_db.pool(), &建需求请求(&a, "A1"))
+        let issue = Issues::create(test_db.pool(), &建需求请求(&a, "A1"), DEFAULT_USER_ID)
             .await
             .unwrap();
-        let parent = Issues::create(test_db.pool(), &建需求请求(&b, "B1"))
+        let parent = Issues::create(test_db.pool(), &建需求请求(&b, "B1"), DEFAULT_USER_ID)
             .await
             .unwrap();
 
@@ -1496,7 +1566,7 @@ mod tests {
     async fn 更新时把自己当父需求被拒绝() {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Alpha").await;
-        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "A1"))
+        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "A1"), DEFAULT_USER_ID)
             .await
             .unwrap();
 
@@ -1517,10 +1587,10 @@ mod tests {
     async fn 更新同项目的状态列与父需求可以通过() {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Alpha").await;
-        let parent = Issues::create(test_db.pool(), &建需求请求(&场景, "父"))
+        let parent = Issues::create(test_db.pool(), &建需求请求(&场景, "父"), DEFAULT_USER_ID)
             .await
             .unwrap();
-        let child = Issues::create(test_db.pool(), &建需求请求(&场景, "子"))
+        let child = Issues::create(test_db.pool(), &建需求请求(&场景, "子"), DEFAULT_USER_ID)
             .await
             .unwrap();
         let dev = ProjectStatuses::find_stage(test_db.pool(), 场景.project_id, StageType::Dev)
@@ -1574,11 +1644,11 @@ mod tests {
         request.extension_metadata = serde_json::json!({ "blob": huge });
 
         assert!(matches!(
-            Issues::create(test_db.pool(), &request).await,
+            Issues::create(test_db.pool(), &request, DEFAULT_USER_ID).await,
             Err(super::IssueError::Validation(_))
         ));
 
-        let ok = Issues::create(test_db.pool(), &建需求请求(&场景, "正常"))
+        let ok = Issues::create(test_db.pool(), &建需求请求(&场景, "正常"), DEFAULT_USER_ID)
             .await
             .unwrap();
         assert!(matches!(
@@ -1611,7 +1681,7 @@ mod tests {
             request.extension_metadata = bad.clone();
             assert!(
                 matches!(
-                    Issues::create(test_db.pool(), &request).await,
+                    Issues::create(test_db.pool(), &request, DEFAULT_USER_ID).await,
                     Err(super::IssueError::Validation(_))
                 ),
                 "metadata {bad} 必须被拒绝"
@@ -1626,7 +1696,7 @@ mod tests {
 
         let mut request = 建需求请求(&场景, "前端默认值");
         request.extension_metadata = serde_json::Value::Null;
-        let issue = Issues::create(test_db.pool(), &request)
+        let issue = Issues::create(test_db.pool(), &request, DEFAULT_USER_ID)
             .await
             .expect("null 必须按空对象接受");
         assert_eq!(issue.extension_metadata, serde_json::json!({}));
@@ -1658,7 +1728,9 @@ mod tests {
             MAX_METADATA_BYTES
         );
 
-        let issue = Issues::create(test_db.pool(), &request).await.unwrap();
+        let issue = Issues::create(test_db.pool(), &request, DEFAULT_USER_ID)
+            .await
+            .unwrap();
         assert_eq!(
             issue.extension_metadata["blob"].as_str().unwrap().len(),
             MAX_METADATA_BYTES - 11
@@ -1703,7 +1775,9 @@ mod tests {
         ] {
             let mut request = 建需求请求(&场景, title);
             request.priority = priority;
-            Issues::create(test_db.pool(), &request).await.unwrap();
+            Issues::create(test_db.pool(), &request, DEFAULT_USER_ID)
+                .await
+                .unwrap();
         }
 
         assert_eq!(
@@ -1725,19 +1799,31 @@ mod tests {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
 
-        let first = Issues::create(test_db.pool(), &建需求请求(&场景, "第一条"))
-            .await
-            .unwrap();
-        let second = Issues::create(test_db.pool(), &建需求请求(&场景, "第二条"))
-            .await
-            .unwrap();
+        let first = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "第一条"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        let second = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "第二条"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
         assert_eq!(second.issue_number, 2);
 
         Issues::delete(test_db.pool(), second.id).await.unwrap();
 
-        let third = Issues::create(test_db.pool(), &建需求请求(&场景, "第三条"))
-            .await
-            .unwrap();
+        let third = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "第三条"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
         assert_eq!(third.issue_number, 3, "编号不得复用已删除的 2");
         assert_eq!(third.simple_id, "VK-3");
         assert_eq!(first.issue_number, 1);
@@ -1747,9 +1833,13 @@ mod tests {
     async fn 项目改名后前缀保持不变() {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Vibe Kanban").await;
-        let before = Issues::create(test_db.pool(), &建需求请求(&场景, "改名前"))
-            .await
-            .unwrap();
+        let before = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "改名前"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
         assert_eq!(before.simple_id, "VK-1");
 
         LocalProjects::update(
@@ -1764,9 +1854,13 @@ mod tests {
         .await
         .unwrap();
 
-        let after = Issues::create(test_db.pool(), &建需求请求(&场景, "改名后"))
-            .await
-            .unwrap();
+        let after = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "改名后"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
         assert_eq!(after.simple_id, "VK-2", "改名不得让新需求的前缀漂移");
 
         let stored = Issues::find_by_id(test_db.pool(), before.id)
@@ -1791,7 +1885,7 @@ mod tests {
                 let pool = pool.clone();
                 let request = 建需求请求(&场景, &format!("并发 {round}-{index}"));
                 handles.push(tokio::spawn(async move {
-                    Issues::create(&pool, &request).await
+                    Issues::create(&pool, &request, DEFAULT_USER_ID).await
                 }));
             }
 
@@ -1876,15 +1970,23 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        Issues::create(test_db.pool(), &建需求请求(&场景, "待开发"))
-            .await
-            .unwrap();
+        Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "待开发"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
         let mut in_dev = 建需求请求(&场景, "开发中");
         in_dev.status_id = dev.id;
-        Issues::create(test_db.pool(), &in_dev).await.unwrap();
+        Issues::create(test_db.pool(), &in_dev, DEFAULT_USER_ID)
+            .await
+            .unwrap();
         let mut finished = 建需求请求(&场景, "已完成");
         finished.status_id = done.id;
-        Issues::create(test_db.pool(), &finished).await.unwrap();
+        Issues::create(test_db.pool(), &finished, DEFAULT_USER_ID)
+            .await
+            .unwrap();
 
         let hit = Issues::search(
             test_db.pool(),
@@ -1948,15 +2050,27 @@ mod tests {
         .await
         .unwrap();
 
-        let a = Issues::create(test_db.pool(), &建需求请求(&场景, "带前端标签"))
-            .await
-            .unwrap();
-        let b = Issues::create(test_db.pool(), &建需求请求(&场景, "带后端标签"))
-            .await
-            .unwrap();
-        Issues::create(test_db.pool(), &建需求请求(&场景, "没有标签"))
-            .await
-            .unwrap();
+        let a = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "带前端标签"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        let b = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "带后端标签"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "没有标签"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         for (issue_id, tag_id) in [(a.id, 前端.id), (b.id, 后端.id)] {
             IssueTags::create(
@@ -2005,11 +2119,15 @@ mod tests {
 
         let mut urgent = 建需求请求(&场景, "登录页面崩溃");
         urgent.priority = Some(IssuePriority::Urgent);
-        Issues::create(test_db.pool(), &urgent).await.unwrap();
+        Issues::create(test_db.pool(), &urgent, DEFAULT_USER_ID)
+            .await
+            .unwrap();
 
         let mut low = 建需求请求(&场景, "登录页面配色");
         low.priority = Some(IssuePriority::Low);
-        Issues::create(test_db.pool(), &low).await.unwrap();
+        Issues::create(test_db.pool(), &low, DEFAULT_USER_ID)
+            .await
+            .unwrap();
 
         let hit = Issues::search(
             test_db.pool(),
@@ -2047,12 +2165,20 @@ mod tests {
         .await
         .unwrap();
 
-        let 命中 = Issues::create(test_db.pool(), &建需求请求(&场景, "带标签"))
-            .await
-            .unwrap();
-        Issues::create(test_db.pool(), &建需求请求(&场景, "没标签"))
-            .await
-            .unwrap();
+        let 命中 = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "带标签"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "没标签"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
         IssueTags::create(
             test_db.pool(),
             &CreateIssueTagRequest {
@@ -2129,10 +2255,10 @@ mod tests {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Alpha").await;
 
-        let 父 = Issues::create(test_db.pool(), &建需求请求(&场景, "父"))
+        let 父 = Issues::create(test_db.pool(), &建需求请求(&场景, "父"), DEFAULT_USER_ID)
             .await
             .unwrap();
-        let 子 = Issues::create(test_db.pool(), &建需求请求(&场景, "子"))
+        let 子 = Issues::create(test_db.pool(), &建需求请求(&场景, "子"), DEFAULT_USER_ID)
             .await
             .unwrap();
         Issues::update(
@@ -2178,7 +2304,7 @@ mod tests {
         for index in 0..super::MAX_PARENT_DEPTH + 5 {
             let mut request = 建需求请求(&场景, &format!("层 {index}"));
             request.parent_issue_id = previous;
-            let created = match Issues::create(test_db.pool(), &request).await {
+            let created = match Issues::create(test_db.pool(), &request, DEFAULT_USER_ID).await {
                 Ok(issue) => issue,
                 Err(err) => {
                     assert!(
@@ -2208,7 +2334,9 @@ mod tests {
                 .unwrap()
                 .with_timezone(&chrono::Utc),
         );
-        let issue = Issues::create(test_db.pool(), &request).await.unwrap();
+        let issue = Issues::create(test_db.pool(), &request, DEFAULT_USER_ID)
+            .await
+            .unwrap();
 
         let row: (String, String, String) =
             sqlx::query_as("SELECT created_at, updated_at, start_date FROM issues WHERE id = ?1")
@@ -2242,9 +2370,13 @@ mod tests {
     async fn 更新会推进_updated_at_且格式一致() {
         let test_db = TestDb::new().await;
         let 场景 = 准备(&test_db, "Alpha").await;
-        let issue = Issues::create(test_db.pool(), &建需求请求(&场景, "原标题"))
-            .await
-            .unwrap();
+        let issue = Issues::create(
+            test_db.pool(),
+            &建需求请求(&场景, "原标题"),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         Issues::update(

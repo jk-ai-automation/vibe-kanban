@@ -48,7 +48,8 @@ pub(crate) async fn handle_create(
     pool: &SqlitePool,
     payload: CreateIssueRequest,
 ) -> Result<Json<TxidResponse>, ApiError> {
-    Issues::create(pool, &payload)
+    // TODO(B4)：改用请求上下文里的当前用户，这里先保持个人版行为不变。
+    Issues::create(pool, &payload, db::models::local_project::DEFAULT_USER_ID)
         .await
         .map_err(map_issue_error)?;
     Ok(txid())

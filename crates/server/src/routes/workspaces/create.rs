@@ -506,7 +506,7 @@ mod tests {
         use db::{
             models::{
                 issue::Issues,
-                local_project::{DEFAULT_ORGANIZATION_ID, LocalProjects},
+                local_project::{DEFAULT_ORGANIZATION_ID, DEFAULT_USER_ID, LocalProjects},
                 local_project_status::{ProjectStatuses, StageType},
                 workspace::{CreateWorkspace, Workspace},
             },
@@ -547,6 +547,7 @@ mod tests {
                 parent_issue_sort_order: None,
                 extension_metadata: serde_json::json!({}),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
