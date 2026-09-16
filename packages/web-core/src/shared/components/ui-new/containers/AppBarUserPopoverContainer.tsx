@@ -52,9 +52,18 @@ export function AppBarUserPopoverContainer({
   const isPersonal = isLocalPersonalMode();
   const showSignIn = isTeam ? menuItems.includes('signIn') : !isPersonal;
   const showSignOut = isTeam ? menuItems.includes('signOut') : !isPersonal;
+  const showMembers = isTeam && menuItems.includes('members');
 
   const handleSignIn = async () => {
     await executeAction(Actions.SignIn);
+  };
+
+  const handleMembers = () => {
+    setOpen(false);
+    // `/members` 是团队模式独有的路由，走整页跳转而不是 `useAppNavigation`：
+    // 那套抽象是本地/远端两端共享的目的地枚举，个人版与云端构建都没有这个
+    // 页面，不值得为一个团队模式专属入口扩出一个新的 AppDestination 分支。
+    window.location.assign('/members');
   };
 
   const handleLogout = async () => {
@@ -90,6 +99,7 @@ export function AppBarUserPopoverContainer({
       onLogout={handleLogout}
       onAvatarError={() => setAvatarError(true)}
       onSettings={handleSettings}
+      onMembers={showMembers ? handleMembers : undefined}
       showSignIn={showSignIn}
       showSignOut={showSignOut}
       accountName={localSession?.user.display_name ?? null}

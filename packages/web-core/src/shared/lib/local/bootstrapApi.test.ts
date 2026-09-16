@@ -4,10 +4,13 @@ import {
   InvalidCredentialsError,
   LocalAuthRequestError,
   RateLimitedError,
+  SetupTokenInvalidError,
   fetchBootstrap,
   fetchMe,
+  fetchSetupStatus,
   login,
   logout,
+  submitSetupAdmin,
 } from '@/shared/lib/local/bootstrapApi';
 import {
   setLocalApiTransport,
@@ -191,6 +194,127 @@ describe('logout', () => {
     respond = () => new Response(null, { status: 500 });
 
     await expect(logout()).rejects.toBeInstanceOf(LocalAuthRequestError);
+  });
+});
+
+describe('fetchSetupStatus', () => {
+  it('有效令牌返回 valid:true，走 GET 并带上 token 查询参数', async () => {
+    respond = () =>
+      jsonResponse({
+        success: true,
+        data: { valid: true },
+        error_data: null,
+        message: null,
+      });
+
+    const result = await fetchSetupStatus('the-token');
+
+    expect(result.valid).toBe(true);
+    expect(calls[0].path).toBe('/api/local-auth/setup?token=the-token');
+    expect(calls[0].init.method).toBe('GET');
+  });
+
+  it('401 时抛 SetupTokenInvalidError（缺失/错误/过期/已用一律如此）', async () => {
+    respond = () => new Response(null, { status: 401 });
+
+    await expect(fetchSetupStatus('wrong')).rejects.toBeInstanceOf(
+      SetupTokenInvalidError
+    );
+  });
+});
+
+describe('submitSetupAdmin', () => {
+  const payload = {
+    token: 't',
+    username: 'amy',
+    display_name: 'amy',
+    password: 'hunter2hunter2',
+    email: null,
+  };
+
+  it('成功建号返回用户并走 POST', async () => {
+    respond = () =>
+      jsonResponse({
+        success: true,
+        data: {
+          id: 'u1',
+          username: 'amy',
+          display_name: 'amy',
+          email: null,
+          role: 'admin',
+          avatar_color: '#123456',
+        },
+        error_data: null,
+        message: null,
+      });
+
+    const user = await submitSetupAdmin(payload);
+
+    expect(user.role).toBe('admin');
+    expect(calls[0].path).toBe('/api/local-auth/setup');
+    expect(calls[0].init.method).toBe('POST');
+  });
+
+  it('401 时抛 SetupTokenInvalidError', async () => {
+    respond = () => new Response(null, { status: 401 });
+
+    await expect(submitSetupAdmin(payload)).rejects.toBeInstanceOf(
+      SetupTokenInvalidError
+    );
+  });
+
+  it('429 时抛 RateLimitedError', async () => {
+    respond = () => new Response(null, { status: 429 });
+
+    await expect(submitSetupAdmin(payload)).rejects.toBeInstanceOf(
+      RateLimitedError
+    );
+  });
+
+  it('409「已初始化」把后端原文透出（供上层区分该去登录页）', async () => {
+    respond = () =>
+      jsonResponse(
+        { success: false, data: null, error_data: null, message: '已初始化' },
+        409
+      );
+
+    const error = await submitSetupAdmin(payload).catch((e) => e);
+    expect(error).toBeInstanceOf(LocalAuthRequestError);
+    expect((error as LocalAuthRequestError).message).toBe('已初始化');
+  });
+
+  it('409 用户名冲突同样透出原文（与「已初始化」区分）', async () => {
+    respond = () =>
+      jsonResponse(
+        {
+          success: false,
+          data: null,
+          error_data: null,
+          message: '用户名已被占用',
+        },
+        409
+      );
+
+    const error = await submitSetupAdmin(payload).catch((e) => e);
+    expect((error as LocalAuthRequestError).message).toBe('用户名已被占用');
+  });
+
+  it('400 弱密码透出文案', async () => {
+    respond = () =>
+      jsonResponse(
+        {
+          success: false,
+          data: null,
+          error_data: null,
+          message: '密码至少需要 8 个字节',
+        },
+        400
+      );
+
+    const error = await submitSetupAdmin(payload).catch((e) => e);
+    expect((error as LocalAuthRequestError).message).toBe(
+      '密码至少需要 8 个字节'
+    );
   });
 });
 

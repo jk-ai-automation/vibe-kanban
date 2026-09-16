@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import type { LocalAuthBootstrap } from 'shared/types';
-import { SetupRequiredPanel } from '@vibe/ui/components/SetupRequiredPanel';
+import { SetupWizardContainer } from '@/features/local-auth/ui/SetupWizardContainer';
 import {
   AuthContext,
   type AuthContextValue,
@@ -112,7 +112,7 @@ export function LocalSessionProvider({ children }: { children: ReactNode }) {
 
   if (needsSetup) {
     return (
-      <SetupRequiredPanel
+      <SetupWizardContainer
         isChecking={bootstrapQuery.isFetching}
         onRetry={refetch}
       />

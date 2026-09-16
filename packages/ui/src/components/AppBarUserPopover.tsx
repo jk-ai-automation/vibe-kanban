@@ -5,6 +5,7 @@ import {
   SignInIcon,
   SignOutIcon,
   UserIcon,
+  UsersIcon,
 } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
@@ -46,6 +47,8 @@ interface AppBarUserPopoverProps {
   accountName?: string | null;
   /** 头像占位首字母（团队模式没有第三方头像 URL 时用）。 */
   accountInitials?: string | null;
+  /** 「成员管理」入口，只有团队模式下的 admin 才传这个。 */
+  onMembers?: () => void;
 }
 
 export function AppBarUserPopover({
@@ -66,6 +69,7 @@ export function AppBarUserPopover({
   showSignOut = true,
   accountName = null,
   accountInitials = null,
+  onMembers,
 }: AppBarUserPopoverProps) {
   const { t } = useTranslation();
   const settingsLabel = t('settings:settings.layout.nav.title', {
@@ -179,6 +183,14 @@ export function AppBarUserPopover({
             </span>
           </DropdownMenuItem>
         ))}
+        {onMembers && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem icon={UsersIcon} onClick={onMembers}>
+              {t('localAuth.members.pageTitle')}
+            </DropdownMenuItem>
+          </>
+        )}
         {onSettings && (
           <>
             <DropdownMenuSeparator />

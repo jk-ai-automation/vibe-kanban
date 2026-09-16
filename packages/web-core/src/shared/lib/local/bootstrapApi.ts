@@ -4,8 +4,11 @@ import type {
   LocalAuthBootstrap,
   LocalAuthUser,
   LocalLoginRequest,
+  SetupAdminRequest,
+  SetupStatusResponse,
 } from 'shared/types';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
+import { parseEnvelopeError } from '@/shared/lib/local/apiEnvelope';
 
 export const LOCAL_AUTH_PATHS = {
   bootstrap: '/api/local-auth/bootstrap',
@@ -13,6 +16,7 @@ export const LOCAL_AUTH_PATHS = {
   logout: '/api/local-auth/logout',
   me: '/api/local-auth/me',
   password: '/api/local-auth/password',
+  setup: '/api/local-auth/setup',
 } as const;
 
 /**
@@ -126,6 +130,71 @@ export async function logout(): Promise<void> {
     if (error instanceof LocalAuthRequestError && error.status === 401) return;
     throw error;
   }
+}
+
+/**
+ * 首启令牌缺失 / 错误 / 过期 / 已用——四种情况后端统一返回 401，
+ * 前端也统一按「链接已失效」处理，不细分。
+ */
+export class SetupTokenInvalidError extends Error {
+  constructor() {
+    super('Setup token missing, wrong, or expired');
+    this.name = 'SetupTokenInvalidError';
+  }
+}
+
+/**
+ * 查询首启令牌是否有效。**不消费令牌**，前端可以随便刷新这个请求。
+ */
+export async function fetchSetupStatus(
+  token: string
+): Promise<SetupStatusResponse> {
+  const response = await makeLocalApiRequest(
+    `${LOCAL_AUTH_PATHS.setup}?token=${encodeURIComponent(token)}`,
+    { method: 'GET' }
+  );
+  if (response.status === 401) throw new SetupTokenInvalidError();
+  const envelope = await readEnvelope<SetupStatusResponse>(
+    response,
+    LOCAL_AUTH_PATHS.setup
+  );
+  return envelope.data as SetupStatusResponse;
+}
+
+/**
+ * 建第一个管理员。
+ *
+ * 和登录不同，这里的失败文案是**特意写给人看的**（“已初始化”“用户名已被
+ * 占用”“密码至少需要 8 个字节”……），所以 400/409 直接把 `message` 透出
+ * 给调用方，而不是像 `readEnvelope` 那样丢弃——`SetupWizardPanel` 需要
+ * 靠这句文案区分「该去登录页」和「换个用户名重试」（见
+ * `features/local-auth/model/setupWizard.ts::isAlreadyInitializedMessage`）。
+ */
+export async function submitSetupAdmin(
+  payload: SetupAdminRequest
+): Promise<LocalAuthUser> {
+  const response = await makeLocalApiRequest(LOCAL_AUTH_PATHS.setup, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (response.status === 401) throw new SetupTokenInvalidError();
+  if (response.status === 429) throw new RateLimitedError();
+  if (!response.ok) {
+    const { message } = await parseEnvelopeError(response);
+    throw new LocalAuthRequestError(
+      message ??
+        `${LOCAL_AUTH_PATHS.setup} failed with status ${response.status}`,
+      response.status
+    );
+  }
+
+  const envelope = await readEnvelope<LocalAuthUser>(
+    response,
+    LOCAL_AUTH_PATHS.setup
+  );
+  return envelope.data as LocalAuthUser;
 }
 
 export async function changePassword(
