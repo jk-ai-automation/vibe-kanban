@@ -12,7 +12,8 @@ import { router } from '@web/app/router';
 import { oauthApi } from '@/shared/lib/api';
 import { tokenManager } from '@/shared/lib/auth/tokenManager';
 import { configureAuthRuntime } from '@/shared/lib/auth/runtime';
-import { configureDataSource } from '@/shared/lib/local/dataSource';
+import { fetchBootstrap } from '@/shared/lib/local/bootstrapApi';
+import { applyBootstrap } from '@/shared/lib/local/runtimeMode';
 import '@/shared/types/modals';
 import { queryClient } from '@/shared/lib/queryClient';
 import { isTauriApp } from '@/shared/lib/platform';
@@ -78,17 +79,6 @@ if (isTauriApp()) {
   document.addEventListener('gesturechange', (e) => e.preventDefault());
 }
 
-// 数据源：显式设置 VITE_VK_DATA_SOURCE 时以它为准；
-// 否则没有配置云端基址（VITE_VK_SHARED_API_BASE 为空）就走个人版。
-const dataSourceEnv = import.meta.env.VITE_VK_DATA_SOURCE as
-  | 'local'
-  | 'remote'
-  | undefined;
-configureDataSource(
-  dataSourceEnv ??
-    (import.meta.env.VITE_VK_SHARED_API_BASE ? 'remote' : 'local')
-);
-
 configureAuthRuntime({
   getToken: () => tokenManager.getToken(),
   triggerRefresh: () => tokenManager.triggerRefresh(),
@@ -96,23 +86,63 @@ configureAuthRuntime({
   getCurrentUser: () => oauthApi.getCurrentUser(),
 });
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <PostHogProvider client={posthog}>
-        <Sentry.ErrorBoundary
-          fallback={({ error, componentStack }) => (
-            <CrashScreen
-              error={error instanceof Error ? error : undefined}
-              componentStack={componentStack}
-            />
-          )}
-          showDialog
-        >
-          <ClickToComponent />
-          <App />
-        </Sentry.ErrorBoundary>
-      </PostHogProvider>
-    </QueryClientProvider>
-  </React.StrictMode>
-);
+const hasSharedApiBase = Boolean(import.meta.env.VITE_VK_SHARED_API_BASE);
+
+/**
+ * 运行时模式与数据源：由 `GET /api/local-auth/bootstrap` 决定，
+ * 不再依赖构建期的 `VITE_VK_DATA_SOURCE`（该变量全仓库无人声明，已删除）。
+ *
+ * `VITE_VK_SHARED_API_BASE` 仍然保留：个人模式下它决定数据从云端还是本机取，
+ * 官方云端构建靠它，删掉会让现有构建回退。团队模式一律本机。
+ */
+async function configureRuntime(): Promise<void> {
+  try {
+    applyBootstrap(await fetchBootstrap(), { hasSharedApiBase });
+  } catch (error) {
+    // 后端没起来、或者是不认识 /api/local-auth/bootstrap 的旧后端：
+    // 退回构建期的判断，按个人版渲染。这里**不能**渲染崩溃页——个人版
+    // 在后端短暂不可用时本来也只是各页面报错，不该整站白屏。
+    console.warn(
+      '[bootstrap] Falling back to personal mode; /api/local-auth/bootstrap failed:',
+      error
+    );
+    applyBootstrap(
+      {
+        mode: 'personal',
+        require_login: false,
+        authenticated: true,
+        needs_setup: false,
+        providers: [],
+        allow_oauth_signup: false,
+      },
+      { hasSharedApiBase }
+    );
+  }
+}
+
+async function main(): Promise<void> {
+  await configureRuntime();
+
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <PostHogProvider client={posthog}>
+          <Sentry.ErrorBoundary
+            fallback={({ error, componentStack }) => (
+              <CrashScreen
+                error={error instanceof Error ? error : undefined}
+                componentStack={componentStack}
+              />
+            )}
+            showDialog
+          >
+            <ClickToComponent />
+            <App />
+          </Sentry.ErrorBoundary>
+        </PostHogProvider>
+      </QueryClientProvider>
+    </React.StrictMode>
+  );
+}
+
+void main();
