@@ -6,6 +6,7 @@ pub mod execution_process_repo_state;
 pub mod file;
 pub mod issue;
 pub mod issue_side;
+pub mod local_auth;
 pub mod local_project;
 pub mod local_project_status;
 pub mod merge;
