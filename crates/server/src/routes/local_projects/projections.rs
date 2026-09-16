@@ -258,7 +258,7 @@ mod tests {
             );
         }
         // 确保没有误用数据库
-        assert!(test_db.pool().is_closed() == false);
+        assert!(!test_db.pool().is_closed());
     }
 
     #[tokio::test]

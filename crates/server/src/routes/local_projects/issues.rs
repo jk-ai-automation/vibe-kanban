@@ -267,7 +267,7 @@ mod tests {
     async fn 列表用_issues_作为_key() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "第一条"))
+        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "第一条"))
             .await
             .unwrap();
 
@@ -282,7 +282,7 @@ mod tests {
     async fn 快照不包含任何本地文件路径字段() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "第一条"))
+        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "第一条"))
             .await
             .unwrap();
 
@@ -313,10 +313,10 @@ mod tests {
     async fn 批量更新排序成功后按新顺序返回() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "A"))
+        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "A"))
             .await
             .unwrap();
-        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "B"))
+        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "B"))
             .await
             .unwrap();
 
@@ -328,7 +328,7 @@ mod tests {
             .parse()
             .unwrap();
 
-        handle_bulk_update(
+        let _ = handle_bulk_update(
             test_db.pool(),
             BulkUpdateRequest {
                 updates: vec![BulkUpdateItem {
@@ -366,7 +366,7 @@ mod tests {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
         for index in 0..3 {
-            handle_create(
+            let _ = handle_create(
                 test_db.pool(),
                 建需求请求(project_id, status_id, &format!("需求 {index}")),
             )
@@ -394,10 +394,10 @@ mod tests {
     async fn 删除需求只影响目标行() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "留"))
+        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "留"))
             .await
             .unwrap();
-        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "删"))
+        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "删"))
             .await
             .unwrap();
 
@@ -413,7 +413,7 @@ mod tests {
             .parse()
             .unwrap();
 
-        handle_delete(test_db.pool(), victim).await.unwrap();
+        let _ = handle_delete(test_db.pool(), victim).await.unwrap();
 
         let after = handle_list(test_db.pool(), project_id).await.unwrap().0;
         assert_eq!(after["issues"].as_array().unwrap().len(), 1);
@@ -471,7 +471,7 @@ mod tests {
         let (project_a, status_a) = 准备(&test_db).await;
         let (project_b, status_b) = 准备(&test_db).await;
 
-        handle_create(test_db.pool(), 建需求请求(project_b, status_b, "别家的"))
+        let _ = handle_create(test_db.pool(), 建需求请求(project_b, status_b, "别家的"))
             .await
             .unwrap();
         let parent_id: Uuid = handle_list(test_db.pool(), project_b).await.unwrap().0["issues"][0]
@@ -526,7 +526,7 @@ mod tests {
         let payload: CreateIssueRequest =
             serde_json::from_value(body).expect("前端报文必须能反序列化");
 
-        handle_create(test_db.pool(), payload)
+        let _ = handle_create(test_db.pool(), payload)
             .await
             .expect("前端真实报文必须创建成功");
 
@@ -546,7 +546,7 @@ mod tests {
         let (project_id, status_id) = 准备(&test_db).await;
         let mut request = 建需求请求(project_id, status_id, "带扩展");
         request.extension_metadata = serde_json::json!({ "a": 1 });
-        handle_create(test_db.pool(), request).await.unwrap();
+        let _ = handle_create(test_db.pool(), request).await.unwrap();
 
         let id: Uuid = handle_list(test_db.pool(), project_id).await.unwrap().0["issues"][0]["id"]
             .as_str()
@@ -557,7 +557,7 @@ mod tests {
         let payload: UpdateIssueRequest =
             serde_json::from_value(serde_json::json!({ "extension_metadata": null }))
                 .expect("更新报文必须能反序列化");
-        handle_update(test_db.pool(), id, payload)
+        let _ = handle_update(test_db.pool(), id, payload)
             .await
             .expect("null 的 extension_metadata 必须被接受");
 
@@ -588,7 +588,7 @@ mod tests {
     async fn 批量更新里有不存在的需求返回_404() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "A"))
+        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "A"))
             .await
             .unwrap();
 
@@ -694,12 +694,12 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "待开发"))
+        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "待开发"))
             .await
             .unwrap();
         let mut in_dev = 建需求请求(project_id, status_id, "开发中");
         in_dev.status_id = dev.id;
-        handle_create(test_db.pool(), in_dev).await.unwrap();
+        let _ = handle_create(test_db.pool(), in_dev).await.unwrap();
 
         let body = handle_search(
             test_db.pool(),
@@ -720,7 +720,7 @@ mod tests {
     async fn 快照在未截断时也带出_truncated_字段() {
         let test_db = TestDb::new().await;
         let (project_id, status_id) = 准备(&test_db).await;
-        handle_create(test_db.pool(), 建需求请求(project_id, status_id, "A"))
+        let _ = handle_create(test_db.pool(), 建需求请求(project_id, status_id, "A"))
             .await
             .unwrap();
 

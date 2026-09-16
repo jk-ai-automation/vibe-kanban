@@ -150,7 +150,7 @@ mod tests {
     #[tokio::test]
     async fn 列表响应使用_projects_作为_key() {
         let test_db = TestDb::new().await;
-        handle_create(test_db.pool(), 建项目请求("A"))
+        let _ = handle_create(test_db.pool(), 建项目请求("A"))
             .await
             .unwrap();
 
@@ -211,13 +211,13 @@ mod tests {
     #[tokio::test]
     async fn 删除只影响目标项目() {
         let test_db = TestDb::new().await;
-        handle_create(test_db.pool(), 建项目请求("留下"))
+        let _ = handle_create(test_db.pool(), 建项目请求("留下"))
             .await
             .unwrap();
         let body = handle_list(test_db.pool()).await.unwrap().0;
         let keep_id: Uuid = body["projects"][0]["id"].as_str().unwrap().parse().unwrap();
 
-        handle_create(test_db.pool(), 建项目请求("删掉"))
+        let _ = handle_create(test_db.pool(), 建项目请求("删掉"))
             .await
             .unwrap();
         let body = handle_list(test_db.pool()).await.unwrap().0;
@@ -232,7 +232,7 @@ mod tests {
             .parse()
             .unwrap();
 
-        handle_delete(test_db.pool(), victim_id).await.unwrap();
+        let _ = handle_delete(test_db.pool(), victim_id).await.unwrap();
 
         let after = handle_list(test_db.pool()).await.unwrap().0;
         let names: Vec<_> = after["projects"]
@@ -251,7 +251,7 @@ mod tests {
 
         let test_db = TestDb::new().await;
         for name in ["A", "B"] {
-            handle_create(test_db.pool(), 建项目请求(name))
+            let _ = handle_create(test_db.pool(), 建项目请求(name))
                 .await
                 .unwrap();
         }
@@ -269,7 +269,7 @@ mod tests {
                 .unwrap()
         };
 
-        handle_bulk_update(
+        let _ = handle_bulk_update(
             test_db.pool(),
             BulkUpdateRequest {
                 updates: vec![
@@ -366,7 +366,7 @@ mod tests {
         let mut request = 建项目请求("固定 id");
         request.id = Some(Uuid::from_u128(777));
 
-        handle_create(test_db.pool(), request.clone())
+        let _ = handle_create(test_db.pool(), request.clone())
             .await
             .unwrap();
         let err = handle_create(test_db.pool(), request)
@@ -381,7 +381,7 @@ mod tests {
     #[tokio::test]
     async fn 名称里的单引号不会破坏_sql() {
         let test_db = TestDb::new().await;
-        handle_create(
+        let _ = handle_create(
             test_db.pool(),
             建项目请求("O'Brien'); DROP TABLE issues;--"),
         )

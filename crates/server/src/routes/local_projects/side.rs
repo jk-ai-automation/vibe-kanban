@@ -390,7 +390,7 @@ mod tests {
     async fn 标签列表的_key_是_tags_而不是数据库表名() {
         let test_db = TestDb::new().await;
         let (project_id, _) = 准备(&test_db).await;
-        handle_tag_create(
+        let _ = handle_tag_create(
             test_db.pool(),
             CreateTagRequest {
                 id: None,
@@ -413,7 +413,7 @@ mod tests {
         let test_db = TestDb::new().await;
         let (project_id, issue_id) = 准备(&test_db).await;
         let tag_body = {
-            handle_tag_create(
+            let _ = handle_tag_create(
                 test_db.pool(),
                 CreateTagRequest {
                     id: None,
@@ -428,7 +428,7 @@ mod tests {
         };
         let tag_id: Uuid = tag_body["tags"][0]["id"].as_str().unwrap().parse().unwrap();
 
-        handle_issue_tag_create(
+        let _ = handle_issue_tag_create(
             test_db.pool(),
             CreateIssueTagRequest {
                 id: None,
@@ -450,7 +450,7 @@ mod tests {
     async fn 给不存在的需求加标签被拒绝() {
         let test_db = TestDb::new().await;
         let (project_id, _) = 准备(&test_db).await;
-        handle_tag_create(
+        let _ = handle_tag_create(
             test_db.pool(),
             CreateTagRequest {
                 id: None,
@@ -480,7 +480,7 @@ mod tests {
     async fn 评论列表按需求过滤() {
         let test_db = TestDb::new().await;
         let (_, issue_id) = 准备(&test_db).await;
-        handle_comment_create(
+        let _ = handle_comment_create(
             test_db.pool(),
             CreateIssueCommentRequest {
                 id: None,
@@ -528,7 +528,7 @@ mod tests {
         let (_, issue_a) = 准备具名(&test_db, "Alpha").await;
         let (project_b, _) = 准备具名(&test_db, "Beta").await;
 
-        handle_tag_create(
+        let _ = handle_tag_create(
             test_db.pool(),
             CreateTagRequest {
                 id: None,
@@ -652,7 +652,7 @@ mod tests {
     async fn 重复挂同一个标签是幂等的() {
         let test_db = TestDb::new().await;
         let (project_id, issue_id) = 准备(&test_db).await;
-        handle_tag_create(
+        let _ = handle_tag_create(
             test_db.pool(),
             CreateTagRequest {
                 id: None,
@@ -675,10 +675,10 @@ mod tests {
             issue_id,
             tag_id,
         };
-        handle_issue_tag_create(test_db.pool(), request.clone())
+        let _ = handle_issue_tag_create(test_db.pool(), request.clone())
             .await
             .unwrap();
-        handle_issue_tag_create(test_db.pool(), request)
+        let _ = handle_issue_tag_create(test_db.pool(), request)
             .await
             .expect("重复挂同一标签必须幂等成功，不得 500");
 
@@ -722,7 +722,7 @@ mod tests {
         .await
         .unwrap();
 
-        handle_comment_create(
+        let _ = handle_comment_create(
             test_db.pool(),
             CreateIssueCommentRequest {
                 id: None,

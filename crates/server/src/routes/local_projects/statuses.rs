@@ -236,7 +236,7 @@ mod tests {
             hidden: false,
         };
 
-        handle_create(test_db.pool(), request.clone())
+        let _ = handle_create(test_db.pool(), request.clone())
             .await
             .unwrap();
         let err = handle_create(test_db.pool(), request)
