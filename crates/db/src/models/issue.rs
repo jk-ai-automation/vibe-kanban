@@ -232,10 +232,7 @@ impl Issues {
         Ok(row.map(Issue::from))
     }
 
-    pub async fn create(
-        pool: &SqlitePool,
-        data: &CreateIssueRequest,
-    ) -> Result<Issue, IssueError> {
+    pub async fn create(pool: &SqlitePool, data: &CreateIssueRequest) -> Result<Issue, IssueError> {
         let title = truncate(data.title.trim(), MAX_TITLE_LEN);
         if title.is_empty() {
             return Err(IssueError::Validation("需求标题不能为空".to_string()));
@@ -254,9 +251,7 @@ impl Issues {
         match status {
             Some(status) if status.project_id == data.project_id => {}
             Some(_) => {
-                return Err(IssueError::Validation(
-                    "状态列不属于该项目".to_string(),
-                ));
+                return Err(IssueError::Validation("状态列不属于该项目".to_string()));
             }
             None => return Err(IssueError::Validation("状态列不存在".to_string())),
         }
@@ -269,10 +264,8 @@ impl Issues {
             let mut tx = match pool.begin().await {
                 Ok(tx) => tx,
                 Err(err) if is_retryable_db_error(&err) && attempt + 1 < NUMBER_RETRY => {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        5 * (attempt as u64 + 1),
-                    ))
-                    .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(5 * (attempt as u64 + 1)))
+                        .await;
                     continue;
                 }
                 Err(err) => return Err(IssueError::Database(err)),
@@ -288,10 +281,8 @@ impl Issues {
                 Ok(next) => next,
                 Err(err) if is_retryable_db_error(&err) && attempt + 1 < NUMBER_RETRY => {
                     let _ = tx.rollback().await;
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        5 * (attempt as u64 + 1),
-                    ))
-                    .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(5 * (attempt as u64 + 1)))
+                        .await;
                     continue;
                 }
                 Err(err) => return Err(IssueError::Database(err)),
@@ -353,17 +344,17 @@ impl Issues {
                 Err(err) if is_retryable_db_error(&err) && attempt + 1 < NUMBER_RETRY => {
                     // 并发下另一个事务先拿走了这个编号，或写锁被别的连接占用，回滚后重试
                     let _ = tx.rollback().await;
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        5 * (attempt as u64 + 1),
-                    ))
-                    .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(5 * (attempt as u64 + 1)))
+                        .await;
                     continue;
                 }
                 Err(err) => return Err(IssueError::Database(err)),
             }
         }
 
-        Err(IssueError::Validation("分配需求编号失败，请重试".to_string()))
+        Err(IssueError::Validation(
+            "分配需求编号失败，请重试".to_string(),
+        ))
     }
 
     pub async fn update(
@@ -756,8 +747,12 @@ mod tests {
         let a = 准备(&test_db, "Alpha").await;
         let b = 准备(&test_db, "Beta").await;
 
-        let a1 = Issues::create(test_db.pool(), &建需求请求(&a, "A1")).await.unwrap();
-        let b1 = Issues::create(test_db.pool(), &建需求请求(&b, "B1")).await.unwrap();
+        let a1 = Issues::create(test_db.pool(), &建需求请求(&a, "A1"))
+            .await
+            .unwrap();
+        let b1 = Issues::create(test_db.pool(), &建需求请求(&b, "B1"))
+            .await
+            .unwrap();
 
         assert_eq!(a1.issue_number, 1);
         assert_eq!(b1.issue_number, 1);
@@ -782,7 +777,13 @@ mod tests {
 
         let mut numbers = Vec::new();
         for handle in handles {
-            numbers.push(handle.await.unwrap().expect("并发建需求不应失败").issue_number);
+            numbers.push(
+                handle
+                    .await
+                    .unwrap()
+                    .expect("并发建需求不应失败")
+                    .issue_number,
+            );
         }
         numbers.sort_unstable();
 
@@ -853,7 +854,10 @@ mod tests {
         a.await.unwrap().unwrap();
         b.await.unwrap().unwrap();
 
-        let after = Issues::find_by_id(test_db.pool(), id).await.unwrap().unwrap();
+        let after = Issues::find_by_id(test_db.pool(), id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(after.title, "新标题", "并发更新不得丢失标题");
         assert!(
             matches!(after.priority, Some(IssuePriority::Urgent)),
@@ -910,7 +914,10 @@ mod tests {
 
         assert!(Issues::bulk_update(test_db.pool(), &updates).await.is_err());
 
-        let after = Issues::find_by_id(test_db.pool(), issue.id).await.unwrap().unwrap();
+        let after = Issues::find_by_id(test_db.pool(), issue.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(after.sort_order, 0.0, "失败必须整体回滚");
     }
 
@@ -1005,10 +1012,16 @@ mod tests {
         let a = 准备(&test_db, "Alpha").await;
         let b = 准备(&test_db, "Beta").await;
 
-        Issues::create(test_db.pool(), &建需求请求(&a, "A1")).await.unwrap();
-        Issues::create(test_db.pool(), &建需求请求(&b, "B1")).await.unwrap();
+        Issues::create(test_db.pool(), &建需求请求(&a, "A1"))
+            .await
+            .unwrap();
+        Issues::create(test_db.pool(), &建需求请求(&b, "B1"))
+            .await
+            .unwrap();
 
-        let list = Issues::find_by_project(test_db.pool(), a.project_id).await.unwrap();
+        let list = Issues::find_by_project(test_db.pool(), a.project_id)
+            .await
+            .unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].title, "A1");
     }
@@ -1028,10 +1041,11 @@ mod tests {
             .expect("应完成流转");
         assert!(done.completed_at.is_some());
 
-        let done_status = ProjectStatuses::find_stage(test_db.pool(), 场景.project_id, StageType::Done)
-            .await
-            .unwrap()
-            .unwrap();
+        let done_status =
+            ProjectStatuses::find_stage(test_db.pool(), 场景.project_id, StageType::Done)
+                .await
+                .unwrap()
+                .unwrap();
         assert_eq!(done.status_id, done_status.id);
 
         // 再流转回开发中，完成时间必须清空
@@ -1060,14 +1074,12 @@ mod tests {
             .unwrap();
 
         let workspace_id = Uuid::new_v4();
-        sqlx::query(
-            "INSERT INTO workspaces (id, branch, issue_id) VALUES (?1, 'vk/test', ?2)",
-        )
-        .bind(workspace_id)
-        .bind(issue.id)
-        .execute(test_db.pool())
-        .await
-        .expect("插入工作区失败");
+        sqlx::query("INSERT INTO workspaces (id, branch, issue_id) VALUES (?1, 'vk/test', ?2)")
+            .bind(workspace_id)
+            .bind(issue.id)
+            .execute(test_db.pool())
+            .await
+            .expect("插入工作区失败");
 
         Issues::delete(test_db.pool(), issue.id).await.unwrap();
 

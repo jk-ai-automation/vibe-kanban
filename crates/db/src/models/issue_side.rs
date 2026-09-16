@@ -370,7 +370,9 @@ mod tests {
         .await
         .unwrap();
 
-        let same = ProjectTags::find_by_project(test_db.pool(), project_id).await.unwrap();
+        let same = ProjectTags::find_by_project(test_db.pool(), project_id)
+            .await
+            .unwrap();
         assert_eq!(same.len(), 1);
         assert_eq!(same[0].id, tag.id);
 
@@ -409,7 +411,10 @@ mod tests {
         assert_eq!(updated.name, "后端");
         assert_eq!(updated.color, "#22c55e", "未传的字段保持原值");
 
-        assert_eq!(ProjectTags::delete(test_db.pool(), tag.id).await.unwrap(), 1);
+        assert_eq!(
+            ProjectTags::delete(test_db.pool(), tag.id).await.unwrap(),
+            1
+        );
         assert_eq!(
             ProjectTags::delete(test_db.pool(), tag.id).await.unwrap(),
             0,
@@ -444,7 +449,9 @@ mod tests {
             "同一需求同一标签不得重复关联"
         );
 
-        let list = IssueTags::find_by_project(test_db.pool(), project_id).await.unwrap();
+        let list = IssueTags::find_by_project(test_db.pool(), project_id)
+            .await
+            .unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].issue_id, issue_id);
     }
@@ -488,14 +495,18 @@ mod tests {
 
         Issues::delete(test_db.pool(), issue_id).await.unwrap();
 
-        assert!(IssueTags::find_by_project(test_db.pool(), project_id)
-            .await
-            .unwrap()
-            .is_empty());
-        assert!(IssueComments::find_by_issue(test_db.pool(), issue_id)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            IssueTags::find_by_project(test_db.pool(), project_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            IssueComments::find_by_issue(test_db.pool(), issue_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -515,7 +526,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(comment.message.chars().count(), MAX_COMMENT_LEN);
-        assert_eq!(comment.author_id, Some(crate::models::local_project::DEFAULT_USER_ID));
+        assert_eq!(
+            comment.author_id,
+            Some(crate::models::local_project::DEFAULT_USER_ID)
+        );
 
         let updated = IssueComments::update(
             test_db.pool(),
@@ -530,10 +544,17 @@ mod tests {
         assert_eq!(updated.message, "改后");
         assert!(updated.updated_at >= comment.updated_at);
 
-        let list = IssueComments::find_by_issue(test_db.pool(), issue_id).await.unwrap();
+        let list = IssueComments::find_by_issue(test_db.pool(), issue_id)
+            .await
+            .unwrap();
         assert_eq!(list.len(), 1);
 
-        assert_eq!(IssueComments::delete(test_db.pool(), comment.id).await.unwrap(), 1);
+        assert_eq!(
+            IssueComments::delete(test_db.pool(), comment.id)
+                .await
+                .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]

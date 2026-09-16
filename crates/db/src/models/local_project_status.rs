@@ -299,7 +299,9 @@ mod tests {
         let a = 建项目(&test_db, "A").await;
         let b = 建项目(&test_db, "B").await;
 
-        let statuses = ProjectStatuses::find_by_project(test_db.pool(), a).await.unwrap();
+        let statuses = ProjectStatuses::find_by_project(test_db.pool(), a)
+            .await
+            .unwrap();
         assert!(
             statuses.iter().all(|s| s.project_id == a),
             "不得返回项目 {b} 的状态列"

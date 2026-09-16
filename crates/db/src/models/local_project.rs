@@ -269,7 +269,10 @@ mod tests {
             vec![b.id, a.id],
             "sort_order 小的在前"
         );
-        assert!(list.iter().all(|p| p.organization_id == DEFAULT_ORGANIZATION_ID));
+        assert!(
+            list.iter()
+                .all(|p| p.organization_id == DEFAULT_ORGANIZATION_ID)
+        );
     }
 
     #[tokio::test]
@@ -303,7 +306,10 @@ mod tests {
     #[test]
     fn simple_id_前缀取名称首字母最多三位() {
         assert_eq!(LocalProjects::simple_id_prefix("Vibe Kanban Web"), "VKW");
-        assert_eq!(LocalProjects::simple_id_prefix("Vibe Kanban Web Extra"), "VKW");
+        assert_eq!(
+            LocalProjects::simple_id_prefix("Vibe Kanban Web Extra"),
+            "VKW"
+        );
         assert_eq!(LocalProjects::simple_id_prefix("kanban"), "K");
         assert_eq!(LocalProjects::simple_id_prefix("需求管理"), "ISS");
         assert_eq!(LocalProjects::simple_id_prefix("   "), "ISS");
