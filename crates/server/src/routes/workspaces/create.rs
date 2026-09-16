@@ -23,6 +23,7 @@ use crate::{
 pub(crate) async fn create_workspace_record(
     deployment: &DeploymentImpl,
     name: Option<String>,
+    created_by_user_id: Uuid,
 ) -> Result<Workspace, ApiError> {
     let workspace_id = Uuid::new_v4();
     let branch_label = name
@@ -41,6 +42,7 @@ pub(crate) async fn create_workspace_record(
             name: name.filter(|workspace_name| !workspace_name.is_empty()),
         },
         workspace_id,
+        created_by_user_id,
     )
     .await?;
 
@@ -49,9 +51,10 @@ pub(crate) async fn create_workspace_record(
 
 pub async fn create_workspace(
     State(deployment): State<DeploymentImpl>,
+    current_user: crate::middleware::local_session::CurrentUser,
     Json(payload): Json<CreateWorkspaceApiRequest>,
 ) -> Result<ResponseJson<ApiResponse<Workspace>>, ApiError> {
-    let workspace = create_workspace_record(&deployment, payload.name).await?;
+    let workspace = create_workspace_record(&deployment, payload.name, current_user.id).await?;
 
     deployment
         .track_if_analytics_allowed(
@@ -211,6 +214,7 @@ fn rewrite_imported_issue_attachments_markdown(
 
 pub async fn create_and_start_workspace(
     State(deployment): State<DeploymentImpl>,
+    current_user: crate::middleware::local_session::CurrentUser,
     Json(payload): Json<CreateAndStartWorkspaceRequest>,
 ) -> Result<ResponseJson<ApiResponse<CreateAndStartWorkspaceResponse>>, ApiError> {
     let CreateAndStartWorkspaceRequest {
@@ -236,7 +240,7 @@ pub async fn create_and_start_workspace(
 
     let mut managed_workspace = deployment
         .workspace_manager()
-        .load_managed_workspace(create_workspace_record(&deployment, name).await?)
+        .load_managed_workspace(create_workspace_record(&deployment, name, current_user.id).await?)
         .await?;
 
     for repo in &repos {
@@ -559,6 +563,7 @@ mod tests {
                 name: None,
             },
             Uuid::new_v4(),
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();

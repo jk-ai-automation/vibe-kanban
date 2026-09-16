@@ -314,15 +314,20 @@ impl Workspace {
         .await
     }
 
+    /// `created_by_user_id` 是团队版权限判定的依据（谁创建的才能开/删），
+    /// 见 `crates/server/src/routes/local_projects/projections.rs` 的
+    /// `handle_workspaces` 投影。不属于云端 Workspace 结构的字段，所以不在
+    /// `Workspace` 结构体上、也不出现在 RETURNING 列表里。
     pub async fn create(
         pool: &SqlitePool,
         data: &CreateWorkspace,
         id: Uuid,
+        created_by_user_id: Uuid,
     ) -> Result<Self, WorkspaceError> {
         Ok(sqlx::query_as!(
             Workspace,
-            r#"INSERT INTO workspaces (id, task_id, issue_id, container_ref, branch, setup_completed_at, name)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)
+            r#"INSERT INTO workspaces (id, task_id, issue_id, container_ref, branch, setup_completed_at, name, created_by_user_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", issue_id as "issue_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool""#,
             id,
             Option::<Uuid>::None,
@@ -330,7 +335,8 @@ impl Workspace {
             Option::<String>::None,
             data.branch,
             Option::<DateTime<Utc>>::None,
-            data.name
+            data.name,
+            created_by_user_id
         )
         .fetch_one(pool)
         .await?)
@@ -797,6 +803,7 @@ mod tests {
                 name: Some("演示".to_string()),
             },
             Uuid::new_v4(),
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -824,7 +831,10 @@ mod tests {
     #[tokio::test]
     async fn 绑定到不存在的需求会被外键拒绝() {
         use crate::{
-            models::workspace::{CreateWorkspace, Workspace},
+            models::{
+                local_project::DEFAULT_USER_ID,
+                workspace::{CreateWorkspace, Workspace},
+            },
             test_support::TestDb,
         };
 
@@ -836,6 +846,7 @@ mod tests {
                 name: None,
             },
             Uuid::new_v4(),
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();

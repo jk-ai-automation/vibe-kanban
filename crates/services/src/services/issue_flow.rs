@@ -110,6 +110,7 @@ mod tests {
                 name: None,
             },
             Uuid::new_v4(),
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -172,6 +173,7 @@ mod tests {
                 name: None,
             },
             Uuid::new_v4(),
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();

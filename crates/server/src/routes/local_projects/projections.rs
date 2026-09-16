@@ -4,6 +4,7 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, Utc};
+use db::models::local_project::DEFAULT_USER_ID;
 use deployment::Deployment;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -78,11 +79,11 @@ fn project_pr_status(raw: &str) -> &str {
 pub(crate) async fn handle_workspaces(
     pool: &SqlitePool,
     project_id: Uuid,
-    owner_user_id: Uuid,
 ) -> Result<Json<Value>, ApiError> {
     struct Row {
         id: Uuid,
         issue_id: Option<Uuid>,
+        created_by_user_id: Option<Uuid>,
         name: Option<String>,
         archived: bool,
         created_at: DateTime<Utc>,
@@ -91,12 +92,13 @@ pub(crate) async fn handle_workspaces(
 
     let rows = sqlx::query_as!(
         Row,
-        r#"SELECT w.id         AS "id!: Uuid",
-                  w.issue_id   AS "issue_id: Uuid",
+        r#"SELECT w.id                 AS "id!: Uuid",
+                  w.issue_id           AS "issue_id: Uuid",
+                  w.created_by_user_id AS "created_by_user_id: Uuid",
                   w.name,
-                  w.archived   AS "archived!: bool",
-                  w.created_at AS "created_at!: DateTime<Utc>",
-                  w.updated_at AS "updated_at!: DateTime<Utc>"
+                  w.archived           AS "archived!: bool",
+                  w.created_at         AS "created_at!: DateTime<Utc>",
+                  w.updated_at         AS "updated_at!: DateTime<Utc>"
            FROM workspaces w
            JOIN issues i ON i.id = w.issue_id
            WHERE i.project_id = $1
@@ -112,11 +114,12 @@ pub(crate) async fn handle_workspaces(
         .map(|row| ProjectedWorkspace {
             id: row.id,
             project_id,
-            // 本地 workspaces 表没有真正的 owner 列：这里投影的是「当前请求者」，
-            // 用来满足云端 Workspace 结构的形状，不是任何持久化的归属关系。
-            // 团队版下不同成员看到的这个字段会不一样——这是刻意的，见
-            // docs/superpowers/plans/2026-09-17-team-mode-and-ui.md §12.17。
-            owner_user_id,
+            // `owner_user_id` 现在是工作区**创建者**（workspaces.created_by_user_id），
+            // 不再是「当前请求者」：前端的 isOwnedByCurrentUser 门控（打开/删除按钮）
+            // 直接拿这个字段跟登录用户比较，投影成请求者会让谁都能删别人的工作区。
+            // created_by_user_id 只在创建者账号被删除时才是 NULL（ON DELETE SET
+            // NULL），这里退回本机默认用户，避免云端结构里出现空 owner。
+            owner_user_id: row.created_by_user_id.unwrap_or(DEFAULT_USER_ID),
             issue_id: row.issue_id,
             local_workspace_id: Some(row.id),
             name: row.name,
@@ -202,9 +205,8 @@ pub fn router() -> Router<DeploymentImpl> {
                 &["GET"],
                 get(
                     |State(d): State<DeploymentImpl>,
-                     current_user: crate::middleware::local_session::CurrentUser,
                      Query(q): Query<ProjectScopedQuery>| async move {
-                        handle_workspaces(&d.db().pool, q.project_id, current_user.id).await
+                        handle_workspaces(&d.db().pool, q.project_id).await
                     },
                 ),
             )
@@ -323,7 +325,7 @@ mod tests {
             .unwrap();
         }
 
-        let body = handle_workspaces(test_db.pool(), project.id, DEFAULT_USER_ID)
+        let body = handle_workspaces(test_db.pool(), project.id)
             .await
             .unwrap()
             .0;
@@ -338,11 +340,12 @@ mod tests {
         assert_ne!(linked, orphan);
     }
 
-    /// `owner_user_id` 投影的是**当前请求者**，不是固定的本机用户——
-    /// 本地 workspaces 表没有真正的 owner 列，这个字段只是为了满足云端
-    /// Workspace 结构的形状，语义上等价于「谁在看，就说是谁的」。
+    /// 本次修复的核心断言：`owner_user_id` 投影的是工作区的**创建者**
+    /// （`workspaces.created_by_user_id`），不是任何「当前请求者」——投影函数
+    /// 现在根本不接受请求者参数，甲创建的工作区不管谁调用投影都恒等于甲，
+    /// 不会出现「乙一看就变成乙的」从而误得到删除权限的情况。
     #[tokio::test]
-    async fn 工作区投影的_owner_user_id_取自当前用户() {
+    async fn 工作区投影的_owner_user_id_是创建者不是请求者() {
         let test_db = TestDb::new().await;
         let project = LocalProjects::create(
             test_db.pool(),
@@ -380,24 +383,118 @@ mod tests {
         )
         .await
         .unwrap();
+
+        // 甲创建了这个工作区（团队版下甲、乙是两个不同的本地账号）。
+        let jia = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO workspaces (id, branch, name, issue_id) VALUES (?1, 'vk/x', 'W', ?2)",
+            "INSERT INTO local_users (id, username, display_name) VALUES (?1, 'jia', '甲')",
+        )
+        .bind(jia)
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO workspaces (id, branch, name, issue_id, created_by_user_id) \
+             VALUES (?1, 'vk/x', 'W', ?2, ?3)",
         )
         .bind(Uuid::new_v4())
         .bind(issue.id)
+        .bind(jia)
         .execute(test_db.pool())
         .await
         .unwrap();
 
-        let requester = Uuid::from_u128(5);
-        let body = handle_workspaces(test_db.pool(), project.id, requester)
+        let body = handle_workspaces(test_db.pool(), project.id)
             .await
             .unwrap()
             .0;
         let rows = body["workspaces"].as_array().unwrap();
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["owner_user_id"], requester.to_string());
+        assert_eq!(
+            rows[0]["owner_user_id"],
+            jia.to_string(),
+            "乙（或任何人）看这个投影，owner_user_id 都必须是创建者甲"
+        );
+    }
+
+    /// `created_by_user_id` 为 NULL（创建者账号后来被删除，外键
+    /// `ON DELETE SET NULL`）时，投影必须退回 `DEFAULT_USER_ID`，
+    /// 不能把 NULL 直接编码进云端结构要求非空的 `owner_user_id` 字段。
+    #[tokio::test]
+    async fn 创建者账号缺失时_owner_user_id_退回本机默认用户() {
+        let test_db = TestDb::new().await;
+        let project = LocalProjects::create(
+            test_db.pool(),
+            &CreateProjectRequest {
+                id: None,
+                organization_id: DEFAULT_ORGANIZATION_ID,
+                name: "Vibe Kanban".to_string(),
+                color: "#6366f1".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let todo = ProjectStatuses::find_stage(test_db.pool(), project.id, StageType::Todo)
+            .await
+            .unwrap()
+            .unwrap();
+        let issue = Issues::create(
+            test_db.pool(),
+            &CreateIssueRequest {
+                id: None,
+                project_id: project.id,
+                status_id: todo.id,
+                title: "示例".to_string(),
+                description: None,
+                priority: None,
+                start_date: None,
+                target_date: None,
+                completed_at: None,
+                sort_order: 0.0,
+                parent_issue_id: None,
+                parent_issue_sort_order: None,
+                extension_metadata: serde_json::json!({}),
+            },
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+
+        let bing = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO local_users (id, username, display_name) VALUES (?1, 'bing', '丙')",
+        )
+        .bind(bing)
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO workspaces (id, branch, name, issue_id, created_by_user_id) \
+             VALUES (?1, 'vk/x', 'W', ?2, ?3)",
+        )
+        .bind(Uuid::new_v4())
+        .bind(issue.id)
+        .bind(bing)
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        // 丙的账号被删除：外键 ON DELETE SET NULL 把 created_by_user_id 置空。
+        sqlx::query("DELETE FROM local_users WHERE id = ?1")
+            .bind(bing)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+        let body = handle_workspaces(test_db.pool(), project.id)
+            .await
+            .unwrap()
+            .0;
+        let rows = body["workspaces"].as_array().unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["owner_user_id"], DEFAULT_USER_ID.to_string());
     }
 
     #[tokio::test]
@@ -450,7 +547,7 @@ mod tests {
         .await
         .unwrap();
 
-        let body = handle_workspaces(test_db.pool(), project.id, DEFAULT_USER_ID)
+        let body = handle_workspaces(test_db.pool(), project.id)
             .await
             .unwrap()
             .0;

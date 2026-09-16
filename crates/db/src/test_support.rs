@@ -424,11 +424,13 @@ mod tests {
         legacy_migrator.run(&pool).await.expect("旧迁移应成功");
 
         let workspace_id = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO workspaces (id, branch, name) VALUES (?1, 'vk/legacy', '旧工作区')")
-            .bind(workspace_id)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO workspaces (id, branch, name) VALUES (?1, 'vk/legacy', '旧工作区')",
+        )
+        .bind(workspace_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         // 升级到最新（含新迁移）。
         migrator.run(&pool).await.expect("新迁移应能应用在旧库上");
@@ -448,13 +450,12 @@ mod tests {
 
         // 重复执行：已应用的迁移不会重跑（sqlx 按版本号记账），回填结果不变。
         migrator.run(&pool).await.expect("重复执行迁移应成功");
-        let again: Vec<u8> =
-            sqlx::query("SELECT created_by_user_id FROM workspaces WHERE id = ?1")
-                .bind(workspace_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap()
-                .get("created_by_user_id");
+        let again: Vec<u8> = sqlx::query("SELECT created_by_user_id FROM workspaces WHERE id = ?1")
+            .bind(workspace_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .get("created_by_user_id");
         assert_eq!(again, created_by, "重复执行迁移不得改动已回填的数据");
     }
 
