@@ -76,7 +76,7 @@ pub struct CreateIssueRequest {
     pub extension_metadata: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 pub struct UpdateIssueRequest {
     #[serde(
         default,
@@ -151,7 +151,7 @@ pub struct ListIssuesQuery {
     pub project_id: Uuid,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 pub struct SearchIssuesRequest {
     pub project_id: Uuid,
     #[ts(optional)]

@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT it.id       AS \"id!: Uuid\",\n                      it.issue_id AS \"issue_id!: Uuid\",\n                      it.tag_id   AS \"tag_id!: Uuid\"\n               FROM issue_tags it\n               JOIN issues i ON i.id = it.issue_id\n               WHERE i.project_id = $1\n               ORDER BY it.rowid ASC\n               LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "issue_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "tag_id!: Uuid",
+        "ordinal": 2,
+        "type_info": "Blob"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "242b07d74912e638eac646bc967f919d7da3d862f0106e06dbe0057de9609297"
+}

@@ -2019,6 +2019,7 @@ name = "db"
 version = "0.1.44"
 dependencies = [
  "anyhow",
+ "api-types",
  "chrono",
  "executors",
  "futures",
@@ -2028,7 +2029,9 @@ dependencies = [
  "sqlx",
  "strum",
  "strum_macros 0.27.2",
+ "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "ts-rs 11.0.1",
  "utils",

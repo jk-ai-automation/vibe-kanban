@@ -224,6 +224,7 @@ jobs:
       always()
       && (needs.changes.outputs['backend-remote'] == 'true' || needs.changes.result == 'skipped')
       && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      && vars.HAS_PRIVATE_DEPLOY_KEY == 'true'
     runs-on: *runner_label
     env:
       SCCACHE_GHA_ENABLED: "true"

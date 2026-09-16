@@ -59,6 +59,8 @@ runs:
       if: ${{ inputs.setup-sqlx-cli == 'true' }}
       uses: taiki-e/cache-cargo-install-action@34ce5120836e5f9f1508d8713d7fdea0e8facd6f # v3.0.1
       with:
-        tool: sqlx-cli
+        # 锁定版本：0.9.0 要求 rustc >= 1.94，而 rust-toolchain.toml 固定为 nightly-2025-12-04（1.93），
+        # 不锁版本会拉到 0.9.0 并在安装阶段直接失败
+        tool: sqlx-cli@0.8.6
         no-default-features: true
         features: sqlite,postgres

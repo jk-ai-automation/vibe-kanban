@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT w.id         AS \"id!: Uuid\",\n                  w.issue_id   AS \"issue_id: Uuid\",\n                  w.name,\n                  w.archived   AS \"archived!: bool\",\n                  w.created_at AS \"created_at!: DateTime<Utc>\",\n                  w.updated_at AS \"updated_at!: DateTime<Utc>\"\n           FROM workspaces w\n           JOIN issues i ON i.id = w.issue_id\n           WHERE i.project_id = $1\n           ORDER BY w.created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "issue_id: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "name",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "archived!: bool",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!: DateTime<Utc>",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "59e9bd359a6120ff88f2f72b4da94869bb464d24cda4af9ebf84b050a628dd3c"
+}

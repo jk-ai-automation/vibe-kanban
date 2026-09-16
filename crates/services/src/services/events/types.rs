@@ -25,6 +25,12 @@ pub enum HookTables {
     ExecutionProcesses,
     #[strum(to_string = "scratch")]
     Scratch,
+    #[strum(to_string = "issues")]
+    Issues,
+    #[strum(to_string = "project_statuses")]
+    ProjectStatuses,
+    #[strum(to_string = "issue_comments")]
+    IssueComments,
 }
 
 #[derive(Serialize, Deserialize, TS)]
@@ -45,6 +51,18 @@ pub enum RecordTypes {
         rowid: i64,
         scratch_id: Option<Uuid>,
         scratch_type: Option<String>,
+    },
+    Issue(api_types::issue::Issue),
+    ProjectStatus(db::models::local_project_status::LocalProjectStatus),
+    IssueComment(api_types::issue_comment::IssueComment),
+    DeletedIssue {
+        rowid: i64,
+    },
+    DeletedProjectStatus {
+        rowid: i64,
+    },
+    DeletedIssueComment {
+        rowid: i64,
     },
 }
 

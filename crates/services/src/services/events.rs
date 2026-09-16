@@ -20,7 +20,10 @@ mod streams;
 #[path = "events/types.rs"]
 pub mod types;
 
-pub use patches::{execution_process_patch, scratch_patch, workspace_patch};
+pub use patches::{
+    execution_process_patch, issue_comment_patch, issue_patch, project_status_patch, scratch_patch,
+    workspace_patch,
+};
 pub use types::{EventError, EventPatch, EventPatchInner, HookTables, RecordTypes};
 
 #[derive(Clone)]
@@ -111,6 +114,30 @@ impl EventService {
                                     msg_store_for_preupdate.push_patch(patch);
                                 }
                             }
+                            "issues" => {
+                                if let Ok(value) = preupdate.get_old_column_value(0)
+                                    && let Ok(issue_id) = <Uuid as Decode<Sqlite>>::decode(value)
+                                {
+                                    msg_store_for_preupdate
+                                        .push_patch(issue_patch::remove(issue_id));
+                                }
+                            }
+                            "project_statuses" => {
+                                if let Ok(value) = preupdate.get_old_column_value(0)
+                                    && let Ok(status_id) = <Uuid as Decode<Sqlite>>::decode(value)
+                                {
+                                    msg_store_for_preupdate
+                                        .push_patch(project_status_patch::remove(status_id));
+                                }
+                            }
+                            "issue_comments" => {
+                                if let Ok(value) = preupdate.get_old_column_value(0)
+                                    && let Ok(comment_id) = <Uuid as Decode<Sqlite>>::decode(value)
+                                {
+                                    msg_store_for_preupdate
+                                        .push_patch(issue_comment_patch::remove(comment_id));
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -128,7 +155,10 @@ impl EventService {
                             let record_type: RecordTypes = match (table, hook.operation.clone()) {
                                 (HookTables::Workspaces, SqliteOperation::Delete)
                                 | (HookTables::ExecutionProcesses, SqliteOperation::Delete)
-                                | (HookTables::Scratch, SqliteOperation::Delete) => {
+                                | (HookTables::Scratch, SqliteOperation::Delete)
+                                | (HookTables::Issues, SqliteOperation::Delete)
+                                | (HookTables::ProjectStatuses, SqliteOperation::Delete)
+                                | (HookTables::IssueComments, SqliteOperation::Delete) => {
                                     return;
                                 }
                                 (HookTables::Workspaces, _) => {
@@ -173,6 +203,54 @@ impl EventService {
                                         },
                                         Err(e) => {
                                             tracing::error!("Failed to fetch scratch: {:?}", e);
+                                            return;
+                                        }
+                                    }
+                                }
+                                (HookTables::Issues, _) => {
+                                    match db::models::issue::Issues::find_by_rowid(&db.pool, rowid)
+                                        .await
+                                    {
+                                        Ok(Some(issue)) => RecordTypes::Issue(issue),
+                                        Ok(None) => RecordTypes::DeletedIssue { rowid },
+                                        Err(e) => {
+                                            tracing::error!("读取 issue rowid={} 失败: {}", rowid, e);
+                                            return;
+                                        }
+                                    }
+                                }
+                                (HookTables::ProjectStatuses, _) => {
+                                    match db::models::local_project_status::ProjectStatuses::find_by_rowid(
+                                        &db.pool, rowid,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some(status)) => RecordTypes::ProjectStatus(status),
+                                        Ok(None) => RecordTypes::DeletedProjectStatus { rowid },
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "读取 project_status rowid={} 失败: {}",
+                                                rowid,
+                                                e
+                                            );
+                                            return;
+                                        }
+                                    }
+                                }
+                                (HookTables::IssueComments, _) => {
+                                    match db::models::issue_side::IssueComments::find_by_rowid(
+                                        &db.pool, rowid,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some(comment)) => RecordTypes::IssueComment(comment),
+                                        Ok(None) => RecordTypes::DeletedIssueComment { rowid },
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "读取 issue_comment rowid={} 失败: {}",
+                                                rowid,
+                                                e
+                                            );
                                             return;
                                         }
                                     }
@@ -275,6 +353,30 @@ impl EventService {
                                             );
                                     }
 
+                                    return;
+                                }
+                                RecordTypes::Issue(issue) => {
+                                    let patch = match hook.operation {
+                                        SqliteOperation::Insert => issue_patch::add(issue),
+                                        _ => issue_patch::replace(issue),
+                                    };
+                                    msg_store_for_hook.push_patch(patch);
+                                    return;
+                                }
+                                RecordTypes::ProjectStatus(status) => {
+                                    let patch = match hook.operation {
+                                        SqliteOperation::Insert => project_status_patch::add(status),
+                                        _ => project_status_patch::replace(status),
+                                    };
+                                    msg_store_for_hook.push_patch(patch);
+                                    return;
+                                }
+                                RecordTypes::IssueComment(comment) => {
+                                    let patch = match hook.operation {
+                                        SqliteOperation::Insert => issue_comment_patch::add(comment),
+                                        _ => issue_comment_patch::replace(comment),
+                                    };
+                                    msg_store_for_hook.push_patch(patch);
                                     return;
                                 }
                                 _ => {}

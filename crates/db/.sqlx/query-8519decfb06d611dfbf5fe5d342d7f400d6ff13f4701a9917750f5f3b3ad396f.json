@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT  id                AS \"id!: Uuid\",\n                       task_id           AS \"task_id: Uuid\",\n                       container_ref,\n                       branch,\n                       setup_completed_at AS \"setup_completed_at: DateTime<Utc>\",\n                       created_at        AS \"created_at!: DateTime<Utc>\",\n                       updated_at        AS \"updated_at!: DateTime<Utc>\",\n                       archived          AS \"archived!: bool\",\n                       pinned            AS \"pinned!: bool\",\n                       name,\n                       worktree_deleted  AS \"worktree_deleted!: bool\"\n               FROM    workspaces\n               WHERE   id = $1",
+  "query": "SELECT  id                AS \"id!: Uuid\",\n                       task_id           AS \"task_id: Uuid\",\n                       issue_id          AS \"issue_id: Uuid\",\n                       container_ref,\n                       branch,\n                       setup_completed_at AS \"setup_completed_at: DateTime<Utc>\",\n                       created_at        AS \"created_at!: DateTime<Utc>\",\n                       updated_at        AS \"updated_at!: DateTime<Utc>\",\n                       archived          AS \"archived!: bool\",\n                       pinned            AS \"pinned!: bool\",\n                       name,\n                       worktree_deleted  AS \"worktree_deleted!: bool\"\n               FROM    workspaces\n               WHERE   rowid = $1",
   "describe": {
     "columns": [
       {
@@ -14,48 +14,53 @@
         "type_info": "Blob"
       },
       {
-        "name": "container_ref",
+        "name": "issue_id: Uuid",
         "ordinal": 2,
-        "type_info": "Text"
+        "type_info": "Blob"
       },
       {
-        "name": "branch",
+        "name": "container_ref",
         "ordinal": 3,
         "type_info": "Text"
       },
       {
-        "name": "setup_completed_at: DateTime<Utc>",
+        "name": "branch",
         "ordinal": 4,
         "type_info": "Text"
       },
       {
-        "name": "created_at!: DateTime<Utc>",
+        "name": "setup_completed_at: DateTime<Utc>",
         "ordinal": 5,
         "type_info": "Text"
       },
       {
-        "name": "updated_at!: DateTime<Utc>",
+        "name": "created_at!: DateTime<Utc>",
         "ordinal": 6,
         "type_info": "Text"
       },
       {
-        "name": "archived!: bool",
+        "name": "updated_at!: DateTime<Utc>",
         "ordinal": 7,
-        "type_info": "Integer"
+        "type_info": "Text"
       },
       {
-        "name": "pinned!: bool",
+        "name": "archived!: bool",
         "ordinal": 8,
         "type_info": "Integer"
       },
       {
-        "name": "name",
+        "name": "pinned!: bool",
         "ordinal": 9,
+        "type_info": "Integer"
+      },
+      {
+        "name": "name",
+        "ordinal": 10,
         "type_info": "Text"
       },
       {
         "name": "worktree_deleted!: bool",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Bool"
       }
     ],
@@ -63,6 +68,7 @@
       "Right": 1
     },
     "nullable": [
+      true,
       true,
       true,
       true,
@@ -76,5 +82,5 @@
       false
     ]
   },
-  "hash": "766fa107de23b7e6c579223b083d916e252d422e2908c27f6718fcbd851de2c1"
+  "hash": "8519decfb06d611dfbf5fe5d342d7f400d6ff13f4701a9917750f5f3b3ad396f"
 }

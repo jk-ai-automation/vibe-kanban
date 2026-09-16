@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE project_tags SET\n                   name  = CASE WHEN $2 THEN $3 ELSE name END,\n                   color = CASE WHEN $4 THEN $5 ELSE color END\n               WHERE id = $1\n               RETURNING id AS \"id!: Uuid\",\n                         project_id AS \"project_id!: Uuid\",\n                         name AS \"name!\",\n                         color AS \"color!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "project_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "name!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "color!",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2e4e1777e2bdfc317a818ea6e4f020908dbfb41958aad609a3eb4b616dba361c"
+}

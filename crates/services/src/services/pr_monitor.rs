@@ -154,12 +154,24 @@ impl<C: ContainerService + Send + Sync + 'static> PrMonitorService<C> {
         )
         .await?;
 
-        // If this is a workspace PR and it was merged, try to archive
+        // If this is a workspace PR and it was merged, try to archive and
+        // advance any bound local issue to "done" (personal edition only;
+        // no-op when the workspace has no bound issue).
         if matches!(&status.status, MergeStatus::Merged)
             && let Some(workspace_id) = pr.workspace_id
         {
             self.try_archive_workspace(workspace_id, pr.pr_number)
                 .await?;
+
+            if let Err(e) = crate::services::issue_flow::advance_issue_for_workspace(
+                &self.db.pool,
+                workspace_id,
+                crate::services::issue_flow::IssueFlowStage::Done,
+            )
+            .await
+            {
+                warn!("PR 合并后需求流转失败: {}", e);
+            }
         }
 
         info!("PR #{} status changed to {:?}", pr.pr_number, status.status);

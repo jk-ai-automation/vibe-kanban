@@ -71,6 +71,8 @@ pub enum ApiError {
     RemoteClient(#[from] RemoteClientError),
     #[error("Unauthorized")]
     Unauthorized,
+    #[error("Not found")]
+    NotFound,
     #[error("Bad request: {0}")]
     BadRequest(String),
     #[error("Conflict: {0}")]
@@ -459,6 +461,7 @@ impl IntoResponse for ApiError {
                 "Unauthorized",
                 "Unauthorized. Please sign in again.",
             ),
+            ApiError::NotFound => ErrorInfo::not_found("NotFound", "Not found."),
             ApiError::BadRequest(msg) => ErrorInfo::bad_request("BadRequest", msg.clone()),
             ApiError::Conflict(msg) => ErrorInfo::conflict("ConflictError", msg.clone()),
             ApiError::Forbidden(msg) => {

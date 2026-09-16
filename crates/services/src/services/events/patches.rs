@@ -135,6 +135,52 @@ pub mod scratch_patch {
     }
 }
 
+/// 需求相关 patch。三张表都走 "/<表名>/<id>" 的路径，
+/// 前端按 value.project_id 过滤，因此 value 必须包含 project_id。
+macro_rules! id_keyed_patch_module {
+    ($module:ident, $root:expr, $ty:ty) => {
+        pub mod $module {
+            use super::*;
+
+            fn path_for(id: Uuid) -> String {
+                format!("{}/{}", $root, escape_pointer_segment(&id.to_string()))
+            }
+
+            pub fn add(record: &$ty) -> Patch {
+                Patch(vec![PatchOperation::Add(AddOperation {
+                    path: path_for(record.id).try_into().expect("路径应合法"),
+                    value: serde_json::to_value(record).expect("序列化不应失败"),
+                })])
+            }
+
+            pub fn replace(record: &$ty) -> Patch {
+                Patch(vec![PatchOperation::Replace(ReplaceOperation {
+                    path: path_for(record.id).try_into().expect("路径应合法"),
+                    value: serde_json::to_value(record).expect("序列化不应失败"),
+                })])
+            }
+
+            pub fn remove(id: Uuid) -> Patch {
+                Patch(vec![PatchOperation::Remove(RemoveOperation {
+                    path: path_for(id).try_into().expect("路径应合法"),
+                })])
+            }
+        }
+    };
+}
+
+id_keyed_patch_module!(issue_patch, "/issues", api_types::issue::Issue);
+id_keyed_patch_module!(
+    project_status_patch,
+    "/project_statuses",
+    db::models::local_project_status::LocalProjectStatus
+);
+id_keyed_patch_module!(
+    issue_comment_patch,
+    "/issue_comments",
+    api_types::issue_comment::IssueComment
+);
+
 /// Helper functions for creating approval-specific patches.
 pub mod approvals_patch {
     use super::*;
@@ -180,5 +226,108 @@ pub mod approvals_patch {
                 .try_into()
                 .expect("Approval path should be valid"),
         })])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use api_types::issue::Issue;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    use super::{issue_comment_patch, issue_patch, project_status_patch};
+
+    fn 示例需求(project_id: Uuid) -> Issue {
+        Issue {
+            id: Uuid::from_u128(7),
+            project_id,
+            issue_number: 1,
+            simple_id: "VK-1".to_string(),
+            status_id: Uuid::from_u128(8),
+            title: "示例".to_string(),
+            description: None,
+            priority: None,
+            start_date: None,
+            target_date: None,
+            completed_at: None,
+            sort_order: 0.0,
+            parent_issue_id: None,
+            parent_issue_sort_order: None,
+            extension_metadata: serde_json::json!({}),
+            creator_user_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn 新增需求的_patch_路径为_issues_加_id() {
+        let issue = 示例需求(Uuid::from_u128(1));
+        let patch = issue_patch::add(&issue);
+        let op = patch.0.first().expect("必须有一个操作");
+        assert_eq!(
+            op.path().to_string(),
+            format!("/issues/{}", Uuid::from_u128(7))
+        );
+    }
+
+    #[test]
+    fn 需求_patch_的值包含_project_id_供前端按项目过滤() {
+        let project_id = Uuid::from_u128(1);
+        let patch = issue_patch::replace(&示例需求(project_id));
+        let json_patch::PatchOperation::Replace(op) = patch.0.first().unwrap() else {
+            panic!("应为 Replace 操作");
+        };
+        assert_eq!(op.value["project_id"], project_id.to_string());
+    }
+
+    #[test]
+    fn 需求_patch_不包含任何本地路径信息() {
+        let patch = issue_patch::replace(&示例需求(Uuid::from_u128(1)));
+        let text = serde_json::to_string(&patch).unwrap();
+        for leak in ["container_ref", "worktree", "/Users/", "/home/"] {
+            assert!(!text.contains(leak), "需求 patch 不得泄露 {leak}");
+        }
+    }
+
+    #[test]
+    fn 删除需求生成_remove_操作() {
+        let patch = issue_patch::remove(Uuid::from_u128(7));
+        assert!(matches!(
+            patch.0.first().unwrap(),
+            json_patch::PatchOperation::Remove(_)
+        ));
+    }
+
+    #[test]
+    fn 状态列与评论的_patch_路径前缀正确() {
+        let status = db::models::local_project_status::LocalProjectStatus {
+            id: Uuid::from_u128(9),
+            project_id: Uuid::from_u128(1),
+            name: "开发中".to_string(),
+            color: "#3b82f6".to_string(),
+            sort_order: 2,
+            hidden: false,
+            stage_type: "dev".to_string(),
+            created_at: Utc::now(),
+        };
+        assert_eq!(
+            project_status_patch::add(&status).0[0].path().to_string(),
+            format!("/project_statuses/{}", Uuid::from_u128(9))
+        );
+
+        let comment = api_types::issue_comment::IssueComment {
+            id: Uuid::from_u128(10),
+            issue_id: Uuid::from_u128(7),
+            author_id: None,
+            parent_id: None,
+            message: "评论".to_string(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        assert_eq!(
+            issue_comment_patch::add(&comment).0[0].path().to_string(),
+            format!("/issue_comments/{}", Uuid::from_u128(10))
+        );
     }
 }

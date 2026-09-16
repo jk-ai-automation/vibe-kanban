@@ -4,6 +4,7 @@ import { getFirstProjectDestination } from '@/shared/lib/firstProjectDestination
 import { useOrganizationStore } from '@/shared/stores/useOrganizationStore';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { isLocalMode } from '@/shared/lib/local/dataSource';
 
 export function RootRedirectPage() {
   const { config, loading, loginStatus } = useUserSystem();
@@ -22,7 +23,9 @@ export function RootRedirectPage() {
         return;
       }
 
-      if (loginStatus?.status !== 'loggedin') {
+      // 个人版没有登录态，直接进项目；无项目时下面的 destination 为空，
+      // 会落到创建工作区页，用户从那里新建项目。
+      if (!isLocalMode() && loginStatus?.status !== 'loggedin') {
         appNavigation.goToWorkspacesCreate({ replace: true });
         return;
       }

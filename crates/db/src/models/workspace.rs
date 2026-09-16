@@ -42,6 +42,8 @@ struct WorkspaceContainerRefRow {
 pub struct Workspace {
     pub id: Uuid,
     pub task_id: Option<Uuid>,
+    /// 个人版：绑定的本地需求。需求删除时由外键置空。
+    pub issue_id: Option<Uuid>,
     pub container_ref: Option<String>,
     pub branch: String,
     pub setup_completed_at: Option<DateTime<Utc>>,
@@ -94,6 +96,7 @@ impl Workspace {
             Workspace,
             r#"SELECT id AS "id!: Uuid",
                           task_id AS "task_id: Uuid",
+                          issue_id AS "issue_id: Uuid",
                           container_ref,
                           branch,
                           setup_completed_at AS "setup_completed_at: DateTime<Utc>",
@@ -196,6 +199,7 @@ impl Workspace {
             Workspace,
             r#"SELECT  id                AS "id!: Uuid",
                        task_id           AS "task_id: Uuid",
+                       issue_id          AS "issue_id: Uuid",
                        container_ref,
                        branch,
                        setup_completed_at AS "setup_completed_at: DateTime<Utc>",
@@ -218,6 +222,7 @@ impl Workspace {
             Workspace,
             r#"SELECT  id                AS "id!: Uuid",
                        task_id           AS "task_id: Uuid",
+                       issue_id          AS "issue_id: Uuid",
                        container_ref,
                        branch,
                        setup_completed_at AS "setup_completed_at: DateTime<Utc>",
@@ -261,6 +266,7 @@ impl Workspace {
             SELECT
                 w.id as "id!: Uuid",
                 w.task_id as "task_id: Uuid",
+                w.issue_id as "issue_id: Uuid",
                 w.container_ref,
                 w.branch as "branch!",
                 w.setup_completed_at as "setup_completed_at: DateTime<Utc>",
@@ -315,10 +321,11 @@ impl Workspace {
     ) -> Result<Self, WorkspaceError> {
         Ok(sqlx::query_as!(
             Workspace,
-            r#"INSERT INTO workspaces (id, task_id, container_ref, branch, setup_completed_at, name)
-               VALUES ($1, $2, $3, $4, $5, $6)
-               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool""#,
+            r#"INSERT INTO workspaces (id, task_id, issue_id, container_ref, branch, setup_completed_at, name)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               RETURNING id as "id!: Uuid", task_id as "task_id: Uuid", issue_id as "issue_id: Uuid", container_ref, branch, setup_completed_at as "setup_completed_at: DateTime<Utc>", created_at as "created_at!: DateTime<Utc>", updated_at as "updated_at!: DateTime<Utc>", archived as "archived!: bool", pinned as "pinned!: bool", name, worktree_deleted as "worktree_deleted!: bool""#,
             id,
+            Option::<Uuid>::None,
             Option::<Uuid>::None,
             Option::<String>::None,
             data.branch,
@@ -505,6 +512,7 @@ impl Workspace {
             r#"SELECT
                 w.id AS "id!: Uuid",
                 w.task_id AS "task_id: Uuid",
+                w.issue_id AS "issue_id: Uuid",
                 w.container_ref,
                 w.branch,
                 w.setup_completed_at AS "setup_completed_at: DateTime<Utc>",
@@ -547,6 +555,7 @@ impl Workspace {
                 workspace: Workspace {
                     id: rec.id,
                     task_id: rec.task_id,
+                    issue_id: rec.issue_id,
                     container_ref: rec.container_ref,
                     branch: rec.branch,
                     setup_completed_at: rec.setup_completed_at,
@@ -599,6 +608,7 @@ impl Workspace {
             r#"SELECT
                 w.id AS "id!: Uuid",
                 w.task_id AS "task_id: Uuid",
+                w.issue_id AS "issue_id: Uuid",
                 w.container_ref,
                 w.branch,
                 w.setup_completed_at AS "setup_completed_at: DateTime<Utc>",
@@ -644,6 +654,7 @@ impl Workspace {
             workspace: Workspace {
                 id: rec.id,
                 task_id: rec.task_id,
+                issue_id: rec.issue_id,
                 container_ref: rec.container_ref,
                 branch: rec.branch,
                 setup_completed_at: rec.setup_completed_at,
@@ -667,6 +678,23 @@ impl Workspace {
         }
 
         Ok(Some(ws))
+    }
+
+    /// 绑定/解绑需求。issue_id 为 None 时解绑。
+    pub async fn set_issue_id(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        issue_id: Option<Uuid>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query!(
+            "UPDATE workspaces SET issue_id = $2, updated_at = datetime('now', 'subsec') \
+             WHERE id = $1",
+            workspace_id,
+            issue_id
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 }
 
@@ -708,5 +736,112 @@ mod tests {
         );
 
         assert_eq!(selected, None);
+    }
+
+    #[tokio::test]
+    async fn 工作区可以绑定和解绑需求() {
+        use api_types::{issue::CreateIssueRequest, project::CreateProjectRequest};
+
+        use crate::{
+            models::{
+                issue::Issues,
+                local_project::{DEFAULT_ORGANIZATION_ID, LocalProjects},
+                local_project_status::{ProjectStatuses, StageType},
+                workspace::{CreateWorkspace, Workspace},
+            },
+            test_support::TestDb,
+        };
+
+        let test_db = TestDb::new().await;
+        let project = LocalProjects::create(
+            test_db.pool(),
+            &CreateProjectRequest {
+                id: None,
+                organization_id: DEFAULT_ORGANIZATION_ID,
+                name: "Vibe Kanban".to_string(),
+                color: "#6366f1".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let todo = ProjectStatuses::find_stage(test_db.pool(), project.id, StageType::Todo)
+            .await
+            .unwrap()
+            .unwrap();
+        let issue = Issues::create(
+            test_db.pool(),
+            &CreateIssueRequest {
+                id: None,
+                project_id: project.id,
+                status_id: todo.id,
+                title: "示例".to_string(),
+                description: None,
+                priority: None,
+                start_date: None,
+                target_date: None,
+                completed_at: None,
+                sort_order: 0.0,
+                parent_issue_id: None,
+                parent_issue_sort_order: None,
+                extension_metadata: serde_json::json!({}),
+            },
+        )
+        .await
+        .unwrap();
+
+        let workspace = Workspace::create(
+            test_db.pool(),
+            &CreateWorkspace {
+                branch: "vk/demo".to_string(),
+                name: Some("演示".to_string()),
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(workspace.issue_id, None, "新建工作区默认不绑定需求");
+
+        Workspace::set_issue_id(test_db.pool(), workspace.id, Some(issue.id))
+            .await
+            .unwrap();
+        let bound = Workspace::find_by_id(test_db.pool(), workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(bound.issue_id, Some(issue.id));
+
+        Workspace::set_issue_id(test_db.pool(), workspace.id, None)
+            .await
+            .unwrap();
+        let unbound = Workspace::find_by_id(test_db.pool(), workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unbound.issue_id, None);
+    }
+
+    #[tokio::test]
+    async fn 绑定到不存在的需求会被外键拒绝() {
+        use crate::{
+            models::workspace::{CreateWorkspace, Workspace},
+            test_support::TestDb,
+        };
+
+        let test_db = TestDb::new().await;
+        let workspace = Workspace::create(
+            test_db.pool(),
+            &CreateWorkspace {
+                branch: "vk/demo".to_string(),
+                name: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+
+        let result =
+            Workspace::set_issue_id(test_db.pool(), workspace.id, Some(Uuid::from_u128(999999)))
+                .await;
+        assert!(result.is_err(), "绑定不存在的需求必须被外键拒绝");
     }
 }
