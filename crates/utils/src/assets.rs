@@ -52,6 +52,12 @@ pub fn relay_host_credentials_path() -> std::path::PathBuf {
     asset_dir().join("relay_host_credentials.json")
 }
 
+/// 服务端运行设置（运行模式、会话有效期、OAuth 凭据）。
+/// 不存在时全部走默认值（个人版）；环境变量优先级高于本文件。
+pub fn server_settings_path() -> std::path::PathBuf {
+    asset_dir().join("server.json")
+}
+
 #[derive(RustEmbed)]
 #[folder = "../../assets/sounds"]
 pub struct SoundAssets;
