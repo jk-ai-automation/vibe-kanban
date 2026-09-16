@@ -178,7 +178,7 @@ mod tests {
         let body = handle_list(test_db.pool(), a).await.unwrap().0;
         let rows = body["project_statuses"].as_array().unwrap();
 
-        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.len(), 6);
         assert!(rows.iter().all(|r| r["project_id"] == a.to_string()));
         assert_ne!(a, b);
     }

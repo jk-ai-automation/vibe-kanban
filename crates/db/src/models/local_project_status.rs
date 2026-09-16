@@ -28,6 +28,7 @@ pub enum StageType {
     Todo,
     Dev,
     Review,
+    Test,
     Done,
 }
 
@@ -38,6 +39,7 @@ impl StageType {
             StageType::Todo => "todo",
             StageType::Dev => "dev",
             StageType::Review => "review",
+            StageType::Test => "test",
             StageType::Done => "done",
         }
     }
@@ -300,9 +302,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(statuses.len(), 5);
+        assert_eq!(statuses.len(), 6);
         assert_eq!(statuses[0].stage_type, "backlog");
-        assert_eq!(statuses[4].stage_type, "done");
+        assert_eq!(statuses[4].stage_type, "test");
+        assert_eq!(statuses[5].stage_type, "done");
         assert!(statuses.iter().all(|s| s.project_id == project_id));
     }
 
@@ -497,9 +500,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(updated.len(), 5);
+        assert_eq!(updated.len(), 6);
         assert_eq!(updated[0].sort_order, 10);
-        assert_eq!(updated[4].sort_order, 6);
+        assert_eq!(updated[5].sort_order, 5);
     }
 
     #[test]
@@ -508,6 +511,254 @@ mod tests {
         assert_eq!(StageType::Todo.as_str(), "todo");
         assert_eq!(StageType::Dev.as_str(), "dev");
         assert_eq!(StageType::Review.as_str(), "review");
+        assert_eq!(StageType::Test.as_str(), "test");
         assert_eq!(StageType::Done.as_str(), "done");
+    }
+
+    #[tokio::test]
+    async fn 按阶段可以查到测试中状态列() {
+        let test_db = TestDb::new().await;
+        let project_id = 建项目(&test_db, "A").await;
+
+        let 测试 = ProjectStatuses::find_stage(test_db.pool(), project_id, StageType::Test)
+            .await
+            .unwrap()
+            .expect("应存在 test 阶段状态列");
+        assert_eq!(测试.name, "测试中");
+        assert_eq!(测试.stage_type, "test");
+    }
+
+    // ---- 迁移 20260917100000_add_test_stage_status.sql 的回填行为 ----
+
+    const 回填迁移: &str =
+        include_str!("../../migrations/20260917100000_add_test_stage_status.sql");
+
+    /// 把项目退回「迁移前」的样子：删掉测试中列，并把它后面的列 sort_order 补回来。
+    async fn 退回迁移前(pool: &sqlx::SqlitePool, project_id: Uuid) {
+        let target: (i64,) = sqlx::query_as(
+            "SELECT sort_order FROM project_statuses WHERE project_id = ?1 AND stage_type = 'test'",
+        )
+        .bind(project_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM project_statuses WHERE project_id = ?1 AND stage_type = 'test'")
+            .bind(project_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE project_statuses SET sort_order = sort_order - 1 \
+             WHERE project_id = ?1 AND sort_order > ?2",
+        )
+        .bind(project_id)
+        .bind(target.0)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn 阶段顺序(pool: &sqlx::SqlitePool, project_id: Uuid) -> Vec<String> {
+        ProjectStatuses::find_by_project(pool, project_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.stage_type)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn 迁移给已有项目补上测试中列且排在评审与完成之间() {
+        let test_db = TestDb::new().await;
+        let project_id = 建项目(&test_db, "老项目").await;
+        退回迁移前(test_db.pool(), project_id).await;
+        assert_eq!(
+            阶段顺序(test_db.pool(), project_id).await,
+            vec!["backlog", "todo", "dev", "review", "done"]
+        );
+
+        sqlx::raw_sql(回填迁移)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            阶段顺序(test_db.pool(), project_id).await,
+            vec!["backlog", "todo", "dev", "review", "test", "done"]
+        );
+        let 测试列 = ProjectStatuses::find_stage(test_db.pool(), project_id, StageType::Test)
+            .await
+            .unwrap()
+            .expect("回填后应能按 stage_type 查到");
+        assert_eq!(测试列.name, "测试中");
+        assert_eq!(测试列.color, "#06b6d4");
+        assert!(!测试列.hidden);
+    }
+
+    /// randomblob(16) 生成的主键必须能被 sqlx 解码成 Uuid，
+    /// created_at 也必须能被解码成 DateTime<Utc>（上面的 find_by_project 已覆盖解码）。
+    #[tokio::test]
+    async fn 迁移回填的行能被解码成_uuid_与时间戳() {
+        let test_db = TestDb::new().await;
+        let project_id = 建项目(&test_db, "老项目").await;
+        退回迁移前(test_db.pool(), project_id).await;
+        sqlx::raw_sql(回填迁移)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+        let 测试列 = ProjectStatuses::find_stage(test_db.pool(), project_id, StageType::Test)
+            .await
+            .unwrap()
+            .expect("应存在");
+        assert_ne!(测试列.id, Uuid::nil());
+        // 按 id 再查一次，确认写进去的 BLOB 和读出来的 Uuid 能对上
+        let 再查 = ProjectStatuses::find_by_id(test_db.pool(), 测试列.id)
+            .await
+            .unwrap()
+            .expect("按 id 应能查到回填的行");
+        assert_eq!(再查.id, 测试列.id);
+    }
+
+    #[tokio::test]
+    async fn 迁移可重复执行且不会重复插入() {
+        let test_db = TestDb::new().await;
+        let project_id = 建项目(&test_db, "老项目").await;
+        退回迁移前(test_db.pool(), project_id).await;
+
+        for _ in 0..3 {
+            sqlx::raw_sql(回填迁移)
+                .execute(test_db.pool())
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            阶段顺序(test_db.pool(), project_id).await,
+            vec!["backlog", "todo", "dev", "review", "test", "done"]
+        );
+    }
+
+    /// 已经有测试中列的项目（例如新建项目）整条跳过，sort_order 一格都不能动。
+    #[tokio::test]
+    async fn 迁移不碰已有测试中列的项目() {
+        let test_db = TestDb::new().await;
+        let project_id = 建项目(&test_db, "新项目").await;
+        let 之前 = ProjectStatuses::find_by_project(test_db.pool(), project_id)
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(回填迁移)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+        let 之后 = ProjectStatuses::find_by_project(test_db.pool(), project_id)
+            .await
+            .unwrap();
+        assert_eq!(之后.len(), 之前.len());
+        for (a, b) in 之前.iter().zip(之后.iter()) {
+            assert_eq!(a.id, b.id);
+            assert_eq!(a.sort_order, b.sort_order);
+            assert_eq!(a.stage_type, b.stage_type);
+        }
+    }
+
+    /// 用户删掉了「待评审」列：回填要退而求其次，插在第一条 done 之前。
+    #[tokio::test]
+    async fn 没有评审列时测试中插在已完成之前() {
+        let test_db = TestDb::new().await;
+        let project_id = 建项目(&test_db, "老项目").await;
+        退回迁移前(test_db.pool(), project_id).await;
+        sqlx::query("DELETE FROM project_statuses WHERE project_id = ?1 AND stage_type = 'review'")
+            .bind(project_id)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+        sqlx::raw_sql(回填迁移)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            阶段顺序(test_db.pool(), project_id).await,
+            vec!["backlog", "todo", "dev", "test", "done"]
+        );
+    }
+
+    /// 既没有评审列也没有完成列：追加到末尾，不动任何既有列。
+    #[tokio::test]
+    async fn 既无评审也无完成时测试中追加到末尾() {
+        let test_db = TestDb::new().await;
+        let project_id = 建项目(&test_db, "老项目").await;
+        退回迁移前(test_db.pool(), project_id).await;
+        sqlx::query(
+            "DELETE FROM project_statuses WHERE project_id = ?1 \
+             AND stage_type IN ('review', 'done')",
+        )
+        .bind(project_id)
+        .execute(test_db.pool())
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(回填迁移)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            阶段顺序(test_db.pool(), project_id).await,
+            vec!["backlog", "todo", "dev", "test"]
+        );
+    }
+
+    /// 回填不得改动任何需求的状态归属。
+    #[tokio::test]
+    async fn 迁移不改动需求的状态归属() {
+        use api_types::issue::CreateIssueRequest;
+
+        use crate::models::{issue::Issues, local_project::DEFAULT_USER_ID};
+
+        let test_db = TestDb::new().await;
+        let project_id = 建项目(&test_db, "老项目").await;
+        退回迁移前(test_db.pool(), project_id).await;
+
+        let done = ProjectStatuses::find_stage(test_db.pool(), project_id, StageType::Done)
+            .await
+            .unwrap()
+            .unwrap();
+        let issue = Issues::create(
+            test_db.pool(),
+            &CreateIssueRequest {
+                id: None,
+                project_id,
+                status_id: done.id,
+                title: "已完成的需求".to_string(),
+                description: None,
+                priority: None,
+                start_date: None,
+                target_date: None,
+                completed_at: None,
+                sort_order: 0.0,
+                parent_issue_id: None,
+                parent_issue_sort_order: None,
+                extension_metadata: serde_json::json!({}),
+            },
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(回填迁移)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+
+        let 之后 = Issues::find_by_id(test_db.pool(), issue.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(之后.status_id, done.id, "回填不得改动需求的状态列归属");
     }
 }
