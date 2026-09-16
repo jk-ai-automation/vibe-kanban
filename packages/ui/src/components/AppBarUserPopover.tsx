@@ -36,6 +36,16 @@ interface AppBarUserPopoverProps {
   onSignIn: () => void;
   onLogout: () => void;
   onAvatarError: () => void;
+  /**
+   * 是否显示「登录」/「退出」。个人版没有登录概念，两个都传 `false`。
+   * 默认 `true`，保证既有调用方行为不变。
+   */
+  showSignIn?: boolean;
+  showSignOut?: boolean;
+  /** 团队模式下当前登录用户的显示名；有值时在菜单顶部显示一行。 */
+  accountName?: string | null;
+  /** 头像占位首字母（团队模式没有第三方头像 URL 时用）。 */
+  accountInitials?: string | null;
 }
 
 export function AppBarUserPopover({
@@ -52,6 +62,10 @@ export function AppBarUserPopover({
   onSignIn,
   onLogout,
   onAvatarError,
+  showSignIn = true,
+  showSignOut = true,
+  accountName = null,
+  accountInitials = null,
 }: AppBarUserPopoverProps) {
   const { t } = useTranslation();
   const settingsLabel = t('settings:settings.layout.nav.title', {
@@ -77,12 +91,14 @@ export function AppBarUserPopover({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent side="right" align="end" className="min-w-[200px]">
-          <DropdownMenuItem icon={SignInIcon} onClick={onSignIn}>
-            {t('signIn')}
-          </DropdownMenuItem>
+          {showSignIn && (
+            <DropdownMenuItem icon={SignInIcon} onClick={onSignIn}>
+              {t('signIn')}
+            </DropdownMenuItem>
+          )}
           {onSettings && (
             <>
-              <DropdownMenuSeparator />
+              {showSignIn && <DropdownMenuSeparator />}
               <DropdownMenuItem icon={GearIcon} onClick={onSettings}>
                 {settingsLabel}
               </DropdownMenuItem>
@@ -115,14 +131,28 @@ export function AppBarUserPopover({
               className="w-full h-full object-cover"
               onError={onAvatarError}
             />
+          ) : accountInitials ? (
+            <span aria-hidden="true">{accountInitials}</span>
           ) : (
             <UserIcon className="size-icon-sm" weight="bold" />
           )}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent side="right" align="end" className="min-w-[200px]">
-        <DropdownMenuLabel>{t('orgSwitcher.organizations')}</DropdownMenuLabel>
-        <DropdownMenuSeparator />
+        {accountName && (
+          <>
+            <DropdownMenuLabel>{accountName}</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+          </>
+        )}
+        {organizations.length > 0 && (
+          <>
+            <DropdownMenuLabel>
+              {t('orgSwitcher.organizations')}
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+          </>
+        )}
         {organizations.map((org) => (
           <DropdownMenuItem
             key={org.id}
@@ -157,10 +187,14 @@ export function AppBarUserPopover({
             </DropdownMenuItem>
           </>
         )}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem icon={SignOutIcon} onClick={onLogout}>
-          {t('signOut')}
-        </DropdownMenuItem>
+        {showSignOut && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem icon={SignOutIcon} onClick={onLogout}>
+              {t('signOut')}
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
