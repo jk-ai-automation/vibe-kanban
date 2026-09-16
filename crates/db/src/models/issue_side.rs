@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use super::{issue::IssueError, local_project::DEFAULT_USER_ID};
+use super::issue::IssueError;
 
 /// 标签名长度上限。
 pub const MAX_TAG_NAME_LEN: usize = 60;
@@ -292,6 +292,7 @@ impl IssueComments {
     pub async fn create(
         pool: &SqlitePool,
         data: &CreateIssueCommentRequest,
+        author_id: Uuid,
     ) -> Result<IssueComment, IssueError> {
         let message = truncate(data.message.trim(), MAX_COMMENT_LEN);
         if message.is_empty() {
@@ -329,7 +330,7 @@ impl IssueComments {
                          updated_at AS "updated_at!: DateTime<Utc>""#,
             id,
             data.issue_id,
-            DEFAULT_USER_ID,
+            author_id,
             data.parent_id,
             message,
             now
@@ -462,7 +463,7 @@ mod tests {
     use crate::{
         models::{
             issue::Issues,
-            local_project::{DEFAULT_ORGANIZATION_ID, LocalProjects},
+            local_project::{DEFAULT_ORGANIZATION_ID, DEFAULT_USER_ID, LocalProjects},
             local_project_status::{ProjectStatuses, StageType},
         },
         test_support::TestDb,
@@ -507,11 +508,34 @@ mod tests {
                 parent_issue_sort_order: None,
                 extension_metadata: serde_json::json!({}),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
 
         (project.id, issue.id)
+    }
+
+    #[tokio::test]
+    async fn 评论作者取自参数() {
+        let test_db = TestDb::new().await;
+        let (_, issue_id) = 准备(&test_db).await;
+
+        let author = Uuid::from_u128(888);
+        let comment = IssueComments::create(
+            test_db.pool(),
+            &CreateIssueCommentRequest {
+                id: None,
+                issue_id,
+                message: "指定作者".to_string(),
+                parent_id: None,
+            },
+            author,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(comment.author_id, Some(author));
     }
 
     #[tokio::test]
@@ -652,6 +676,7 @@ mod tests {
                 message: "评论".to_string(),
                 parent_id: None,
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -687,6 +712,7 @@ mod tests {
                 message: "评".repeat(MAX_COMMENT_LEN + 50),
                 parent_id: None,
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -735,6 +761,7 @@ mod tests {
                 message: "  \n ".to_string(),
                 parent_id: None,
             },
+            DEFAULT_USER_ID,
         )
         .await;
         assert!(result.is_err(), "空白评论必须拒绝");
@@ -880,6 +907,7 @@ mod tests {
                 parent_issue_sort_order: None,
                 extension_metadata: serde_json::json!({}),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -892,6 +920,7 @@ mod tests {
                 message: "甲".to_string(),
                 parent_id: None,
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -905,6 +934,7 @@ mod tests {
                 message: "串台".to_string(),
                 parent_id: Some(甲的评论.id),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .expect_err("跨需求的父评论必须拒绝");
@@ -922,6 +952,7 @@ mod tests {
                 message: "乙".to_string(),
                 parent_id: None,
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -949,6 +980,7 @@ mod tests {
                 message: "回复甲".to_string(),
                 parent_id: Some(甲的评论.id),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -967,6 +999,7 @@ mod tests {
                 message: "自己".to_string(),
                 parent_id: None,
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -1093,6 +1126,7 @@ mod tests {
                 message: "甲".to_string(),
                 parent_id: None,
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -1104,6 +1138,7 @@ mod tests {
                 message: "乙".to_string(),
                 parent_id: Some(甲.id),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();

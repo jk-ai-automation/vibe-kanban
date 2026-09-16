@@ -148,7 +148,8 @@ pub(crate) async fn handle_comment_create(
     if Issues::find_by_id(pool, payload.issue_id).await?.is_none() {
         return Err(ApiError::BadRequest("需求不存在".to_string()));
     }
-    IssueComments::create(pool, &payload)
+    // TODO(B4)：改用请求上下文里的当前用户，这里先保持个人版行为不变。
+    IssueComments::create(pool, &payload, db::models::local_project::DEFAULT_USER_ID)
         .await
         .map_err(map_issue_error)?;
     Ok(txid())
@@ -316,7 +317,7 @@ mod tests {
     use db::{
         models::{
             issue::Issues,
-            local_project::{DEFAULT_ORGANIZATION_ID, LocalProjects},
+            local_project::{DEFAULT_ORGANIZATION_ID, DEFAULT_USER_ID, LocalProjects},
             local_project_status::{ProjectStatuses, StageType},
         },
         test_support::TestDb,
@@ -380,6 +381,7 @@ mod tests {
                 parent_issue_sort_order: None,
                 extension_metadata: serde_json::json!({}),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -718,6 +720,7 @@ mod tests {
                 parent_issue_sort_order: None,
                 extension_metadata: serde_json::json!({}),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
