@@ -69,7 +69,7 @@ pub(crate) struct LoginOutcome {
 impl LoginOutcome {
     // ApiError 体积较大，但全仓库的 handler 都用它；与 origin.rs 的处理一致。
     #[allow(clippy::result_large_err)]
-    fn headers(&self) -> Result<HeaderMap, ApiError> {
+    pub(crate) fn headers(&self) -> Result<HeaderMap, ApiError> {
         let mut headers = HeaderMap::new();
         for cookie in [&self.session_cookie, &self.csrf_cookie] {
             let value = HeaderValue::from_str(cookie)
@@ -226,7 +226,7 @@ pub(crate) async fn handle_login(
 }
 
 /// 建会话并生成两条 Cookie。明文令牌只在这个函数里出现，不进日志。
-async fn start_session(
+pub(crate) async fn start_session(
     pool: &SqlitePool,
     runtime: &LocalAuthRuntime,
     user: &LocalUser,
@@ -441,7 +441,7 @@ pub(crate) async fn change_password(
     ))
 }
 
-fn map_local_user_error(error: db::models::local_user::LocalUserError) -> ApiError {
+pub(crate) fn map_local_user_error(error: db::models::local_user::LocalUserError) -> ApiError {
     use db::models::local_user::LocalUserError;
     match error {
         LocalUserError::InvalidUsername => ApiError::BadRequest(error.to_string()),

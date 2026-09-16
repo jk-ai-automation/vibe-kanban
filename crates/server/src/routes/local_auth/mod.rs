@@ -9,6 +9,7 @@
 //! [`public_endpoints`] 只是把这组路径登记下来供契约测试对账，
 //! 它**不是**运行时的放行依据。
 
+pub mod invite_routes;
 pub mod password_routes;
 
 use std::sync::{Mutex, OnceLock};
@@ -52,11 +53,16 @@ pub fn public_router() -> Router<DeploymentImpl> {
     register_public("/health", "GET");
     register_public("/local-auth/bootstrap", "GET");
     register_public("/local-auth/login", "POST");
+    register_public("/local-auth/invites/accept", "POST");
 
     Router::new()
         .route("/health", get(health::health_check))
         .route("/local-auth/bootstrap", get(password_routes::bootstrap))
         .route("/local-auth/login", post(password_routes::login))
+        .route(
+            "/local-auth/invites/accept",
+            post(invite_routes::accept_invite),
+        )
 }
 
 /// 需要会话的本地账号路由。由调用方套上 `require_local_session`。
@@ -127,6 +133,7 @@ mod tests {
             vec![
                 ("/api/health".to_string(), "GET"),
                 ("/api/local-auth/bootstrap".to_string(), "GET"),
+                ("/api/local-auth/invites/accept".to_string(), "POST"),
                 ("/api/local-auth/login".to_string(), "POST"),
             ],
             "免鉴权端点是一份短白名单；新增任何一条都必须显式改这条测试"
@@ -139,10 +146,13 @@ mod tests {
         let _ = public_router();
         for (path, method) in public_endpoints() {
             if method != "GET" {
-                assert_eq!(
-                    (path.as_str(), method),
-                    ("/api/local-auth/login", "POST"),
-                    "只有登录允许是免鉴权的写方法"
+                assert!(
+                    matches!(
+                        (path.as_str(), method),
+                        ("/api/local-auth/login", "POST")
+                            | ("/api/local-auth/invites/accept", "POST")
+                    ),
+                    "免鉴权的写方法只允许登录与邀请注册，多出来的是：{path} {method}"
                 );
             }
         }

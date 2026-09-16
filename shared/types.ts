@@ -356,6 +356,28 @@ export type UpdateLocalUserRequest = { display_name: string | null, email?: stri
 
 export type AdminResetPasswordRequest = { new_password: string, };
 
+export type LocalInviteInfo = { id: string, 
+/**
+ * `"admin"` 或 `"member"`。
+ */
+role: string, created_by: string | null, expires_at: string, used_by: string | null, used_at: string | null, created_at: string, };
+
+export type ListInvitesResponse = { invites: Array<LocalInviteInfo>, };
+
+export type CreateInviteRequest = { 
+/**
+ * `"admin"` 或 `"member"`，缺省 `"member"`。
+ */
+role: string | null, 
+/**
+ * 有效期天数，缺省 [`DEFAULT_INVITE_TTL_DAYS`]，上限 [`MAX_INVITE_TTL_DAYS`]。
+ */
+expires_in_days: bigint | null, };
+
+export type CreateInviteResponse = { invite: LocalInviteInfo, code: string, };
+
+export type AcceptInviteRequest = { code: string, username: string, display_name: string, password: string, email: string | null, };
+
 export type StartSpake2EnrollmentRequest = { enrollment_code: string, client_message_b64: string, };
 
 export type FinishSpake2EnrollmentRequest = { enrollment_id: string, client_id: string, client_name: string, client_browser: string, client_os: string, client_device: string, public_key_b64: string, client_proof_b64: string, };

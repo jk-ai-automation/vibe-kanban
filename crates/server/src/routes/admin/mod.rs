@@ -9,6 +9,7 @@
 //! 本组必须嵌在 `require_local_session` **里面**（见 `routes/mod.rs`）：
 //! `CurrentUser` 是那道中间件放进 extensions 的，未登录请求在更外层就已 401。
 
+pub mod invites;
 pub mod users;
 
 use std::sync::{Mutex, OnceLock};
@@ -89,6 +90,7 @@ pub(crate) fn map_local_user_error(error: db::models::local_user::LocalUserError
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .merge(users::router())
+        .merge(invites::router())
         .layer(axum::middleware::from_fn(require_admin_middleware))
 }
 
@@ -125,6 +127,9 @@ mod tests {
         assert_eq!(
             admin_endpoints(),
             vec![
+                ("/api/admin/invites".to_string(), "GET"),
+                ("/api/admin/invites".to_string(), "POST"),
+                ("/api/admin/invites/{id}".to_string(), "DELETE"),
                 ("/api/admin/users".to_string(), "GET"),
                 ("/api/admin/users".to_string(), "POST"),
                 ("/api/admin/users/{id}".to_string(), "PATCH"),

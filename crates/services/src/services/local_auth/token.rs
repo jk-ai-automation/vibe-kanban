@@ -44,6 +44,25 @@ pub fn generate_csrf_token() -> String {
     random_token()
 }
 
+/// 生成邀请码。与会话令牌同一套原语：32 字节 `OsRng` + base64url 无填充。
+///
+/// 邀请码会被拼进链接发给同事，所以字符集必须是 URL 安全的；
+/// 熵取满 256 位是因为它是**免鉴权注册**的唯一凭据，撞对一个就多一个账号。
+pub fn generate_invite_code() -> String {
+    random_token()
+}
+
+/// 生成首启初始化令牌。同上，一次性、只存在于进程内存里。
+pub fn generate_setup_token() -> String {
+    random_token()
+}
+
+/// 邀请码的 SHA-256。与 [`hash_session_token`] **同一实现**：
+/// 两者都是均匀随机的高熵串，不存在弱口令，用不着慢哈希。
+pub fn hash_invite_code(code: &str) -> String {
+    hash_session_token(code)
+}
+
 fn random_token() -> String {
     let mut bytes = [0u8; TOKEN_BYTES];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
@@ -514,5 +533,38 @@ mod tests {
             MACHINE_TOKEN_HEADER,
             MACHINE_TOKEN_HEADER.to_ascii_lowercase()
         );
+    }
+
+    /// 邀请码与初始化令牌的熵必须与会话令牌一样满：43 个 base64url 字符 = 256 位。
+    /// 短了就能被离线枚举，而它们都是**免鉴权**接口的唯一凭据。
+    #[test]
+    fn 邀请码与初始化令牌有足够熵且字符集_url_安全() {
+        for 生成 in [
+            generate_invite_code as fn() -> String,
+            generate_setup_token as fn() -> String,
+        ] {
+            let a = 生成();
+            let b = 生成();
+            assert_eq!(a.len(), 43, "32 字节 base64url 无填充应是 43 个字符：{a}");
+            assert_ne!(a, b, "两次生成不得相同");
+            assert!(
+                a.bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
+                "字符集必须是 URL 安全的：{a}"
+            );
+        }
+    }
+
+    /// 邀请码哈希与会话令牌哈希是同一个实现——换实现会让已发出去的邀请全部失效。
+    #[test]
+    fn 邀请码哈希与会话令牌哈希一致() {
+        let code = generate_invite_code();
+        assert_eq!(hash_invite_code(&code), hash_session_token(&code));
+        assert_eq!(
+            hash_invite_code(&code).len(),
+            64,
+            "SHA-256 十六进制是 64 位"
+        );
+        assert!(!hash_invite_code(&code).contains(&code), "哈希不得含明文");
     }
 }
