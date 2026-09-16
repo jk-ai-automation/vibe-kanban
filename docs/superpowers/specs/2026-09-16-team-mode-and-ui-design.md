@@ -262,7 +262,7 @@ VK_MODE=team HOST=0.0.0.0 BACKEND_PORT=8080 vibe-kanban
 
 ### 8.5 局域网与 HTTPS
 
-- 文档说明：`VK_ALLOWED_ORIGINS` 要配成成员实际访问的来源（如 `http://192.168.1.10:8080`、`http://kanban.lan:8080`）。
+- `VK_ALLOWED_ORIGINS` **通常不需要配**：Origin 校验是「Origin 与 Host 对得上就放行」（`middleware/origin.rs:76-100`），成员直接用 `http://<IP>:<端口>` 访问时两者天然一致。真正需要配它的是**反代改写了 Host** 或**走别名域名**的场景。
 - 明文 HTTP 下 Cookie 无 `Secure`，仅建议在受信任的内网使用；需要 HTTPS 时给出 Caddy 反代的十行配置示例（自动证书），并说明此时要设 `VK_TRUST_PROXY=1` 以便取真实客户端 IP 做限速。
 
 ### 8.6 构建
@@ -285,7 +285,7 @@ VK_MODE=team HOST=0.0.0.0 BACKEND_PORT=8080 vibe-kanban
 | 风险 | 对策 |
 |---|---|
 | 监听 `0.0.0.0` 后被内网未授权访问 | 团队版强制登录；未创建管理员前只开放初始化路由；文档强调不要暴露到公网 |
-| Cookie 会话的 CSRF | SameSite=Strict + Origin 强校验 + 双提交令牌，三者都要有测试 |
+| Cookie 会话的 CSRF | SameSite=Lax（Strict 会打断 OAuth 回调，见 6.2）+ 写方法与 WebSocket 升级的 Origin 强校验 + 双提交令牌，三者都要有测试 |
 | OAuth 无法在本机验证真实提供方 | 用 mock OIDC 服务覆盖分支；文档写明上线前需用真实凭据实测一次 |
 | 自动按 email 合并账号导致劫持 | 明确不自动合并，只能登录后手动绑定 |
 | WAL 切换引发钩子或备份问题 | 单独一批任务验证 + 可回退配置项 |
