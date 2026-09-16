@@ -9,6 +9,7 @@ pub mod issue_side;
 pub mod local_auth;
 pub mod local_project;
 pub mod local_project_status;
+pub mod local_user;
 pub mod merge;
 pub mod project;
 pub mod pull_request;

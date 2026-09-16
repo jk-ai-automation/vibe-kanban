@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE local_users\n                       SET display_name = $2, email = $3, updated_at = $4\n                       WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "fb2dd8f1be2fe070cb201ac1c06bda97047d44fb34669cadd995c4ae9113a68f"
+}

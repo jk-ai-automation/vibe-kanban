@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO local_users\n                           (id, username, display_name, email, password_hash, role, status,\n                            avatar_color, created_at, updated_at)\n                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)\n                       RETURNING id            AS \"id!: Uuid\",\n                                 username      AS \"username!\",\n                                 display_name  AS \"display_name!\",\n                                 email         AS \"email?\",\n                                 role          AS \"role!: LocalUserRole\",\n                                 status        AS \"status!: LocalUserStatus\",\n                                 avatar_color  AS \"avatar_color!\",\n                                 created_at    AS \"created_at!: DateTime<Utc>\",\n                                 updated_at    AS \"updated_at!: DateTime<Utc>\",\n                                 last_login_at AS \"last_login_at?: DateTime<Utc>\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "username!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "display_name!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "email?",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "role!: LocalUserRole",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "status!: LocalUserStatus",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "avatar_color!",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!: DateTime<Utc>",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "last_login_at?: DateTime<Utc>",
+        "ordinal": 9,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "d7356e9072e980c12b0a5a93a3df211b91181508494fea5682eb06a5447162ac"
+}
