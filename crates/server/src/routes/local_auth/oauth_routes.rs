@@ -36,7 +36,7 @@ use axum::{
 };
 use chrono::Utc;
 use db::models::{
-    local_auth::{IdentityLinkError, LocalSessions, LocalUserIdentities},
+    local_auth::{IdentityLinkError, IdentityUnlinkError, LocalSessions, LocalUserIdentities},
     local_user::{LocalUser, LocalUserRole, LocalUserStatus, LocalUsers, NewLocalUser},
 };
 use deployment::Deployment;
@@ -105,6 +105,8 @@ const MSG_SIGNUP_DISABLED: &str = "该账号尚未开通，请联系管理员";
 const MSG_DISABLED_USER: &str = "账号已停用，请联系管理员";
 const MSG_ALREADY_LINKED: &str = "该第三方账号已绑定到其他用户";
 const MSG_UNKNOWN_PROVIDER: &str = "登录方式不可用";
+const MSG_LAST_LOGIN_METHOD: &str =
+    "这是你唯一的登录方式，解绑后将无法登录；请先设置密码或再绑定一个第三方账号";
 
 /// 派生用户名时最多试多少个后缀。
 const MAX_USERNAME_ATTEMPTS: u32 = 20;
@@ -148,6 +150,36 @@ pub struct OAuthCallbackQuery {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 pub struct OAuthBindStart {
     pub authorize_url: String,
+}
+
+/// 当前用户的一条第三方绑定，**对外可见的那一部分**。
+///
+/// 刻意**不含 `subject`**：它是提供方那边的稳定标识（飞书/Lark 的
+/// `union_id`、Google 的 `sub`），展示出来对用户没有任何意义，
+/// 却把一份可用于跨系统关联的标识摊到了前端、日志与浏览器历史里。
+/// 也不含 `user_id` 与行 id——前端按 `provider` 就能定位。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct OAuthBinding {
+    /// 白名单里的提供方 id：`feishu` / `lark` / `google`。
+    pub provider: String,
+    pub bound_at: chrono::DateTime<Utc>,
+    /// 绑定时提供方给的邮箱，仅供用户辨认绑的是哪个账号；**不是**绑定键。
+    pub email: Option<String>,
+}
+
+/// `GET /bindings` 的响应。**只描述当前这一个人。**
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+pub struct OAuthBindings {
+    /// 本机已配齐凭据、可以发起绑定的提供方 id（字典序）。
+    /// 与登录页用的是同一份来源，没配凭据的不会出现。
+    pub available_providers: Vec<String>,
+    /// 当前用户已绑定的（按提供方字典序）。
+    pub bindings: Vec<OAuthBinding>,
+    /// 当前账号有没有设密码。
+    ///
+    /// 前端据此**提前**把「这是你唯一的登录方式，解绑后进不来」说清楚，
+    /// 而不是让用户点下去才吃一个 409。只讲自己的账号，不泄露任何别人的事。
+    pub has_password: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -653,6 +685,102 @@ async fn bind_identity(
     })
 }
 
+// ------------------------------------------------------- 绑定列表 / 解绑
+
+/// 团队模式之外整组接口在功能上不存在。与 [`require_provider`] 同一条理由：
+/// 个人版没有本机账号体系，给 403 等于承认「这里还有个东西」。
+#[allow(clippy::result_large_err)]
+fn require_team_mode(runtime: &LocalAuthRuntime) -> Result<(), ApiError> {
+    if runtime.mode() != ServerMode::Team {
+        return Err(ApiError::NotFound);
+    }
+    Ok(())
+}
+
+/// 取当前用户并确认他还是启用状态。
+///
+/// 中间件已经拒过一遍被停用的会话，这里再拦一次是刻意的冗余：
+/// 这两个 handler 会改数据，判据不该只存在于另一个文件里。
+async fn require_active_user(pool: &SqlitePool, user_id: Uuid) -> Result<LocalUser, ApiError> {
+    let user = LocalUsers::find_by_id(pool, user_id)
+        .await
+        .map_err(ApiError::from)?
+        // 会话还在但用户没了：报 401，**不能**当成「他没绑过」而继续往下走。
+        .ok_or(ApiError::Unauthorized)?;
+    if user.status != LocalUserStatus::Active {
+        return Err(ApiError::Forbidden(MSG_DISABLED_USER.to_string()));
+    }
+    Ok(user)
+}
+
+/// 列出**当前用户自己**的绑定，外加本机可绑的提供方。
+pub(crate) async fn handle_list_bindings(
+    pool: &SqlitePool,
+    runtime: &LocalAuthRuntime,
+    user_id: Uuid,
+) -> Result<OAuthBindings, ApiError> {
+    require_team_mode(runtime)?;
+    require_active_user(pool, user_id).await?;
+
+    // 查询条件里写死 `user_id`，没有任何来自请求的筛选参数——
+    // 「只返回自己的」是 SQL 层的性质，不是 handler 里的一个 if。
+    let rows = LocalUserIdentities::list_for_user(pool, user_id)
+        .await
+        .map_err(ApiError::from)?;
+    let bindings = rows
+        .into_iter()
+        // `subject` 在这一步被丢掉，绝不进响应。
+        .map(|row| OAuthBinding {
+            provider: row.provider,
+            bound_at: row.created_at,
+            email: row.email,
+        })
+        .collect();
+
+    let has_password = LocalUsers::find_password_hash(pool, user_id)
+        .await
+        .map_err(ApiError::from)?
+        .is_some();
+
+    Ok(OAuthBindings {
+        available_providers: runtime.available_providers(),
+        bindings,
+        has_password,
+    })
+}
+
+/// 解除当前用户在某个提供方上的绑定。
+///
+/// 这里只查**白名单**（`provider_config`），不查「凭据配齐没有」：
+/// 管理员撤掉某个提供方的凭据之后，已经绑上的人还得能把这一行清掉，
+/// 否则那条绑定就永远卡在账号上了。
+pub(crate) async fn handle_unlink(
+    pool: &SqlitePool,
+    runtime: &LocalAuthRuntime,
+    provider_id: &str,
+    user_id: Uuid,
+) -> Result<(), ApiError> {
+    require_team_mode(runtime)?;
+    // 先过白名单：`provider_id` 来自 URL 路径，这是它进入任何后续处理之前
+    // 的唯一一道闸，命不中就是 404，原字符串到此为止。
+    if provider_config(provider_id).is_none() {
+        return Err(ApiError::NotFound);
+    }
+    require_active_user(pool, user_id).await?;
+
+    LocalUserIdentities::unlink(pool, user_id, provider_id)
+        .await
+        .map_err(|err| match err {
+            // 「别人名下有」在数据层就已经与「根本没有」合并成了同一条，
+            // 这里也一样报 404：403 会把它变成一台枚举机。
+            IdentityUnlinkError::NotFound => ApiError::NotFound,
+            IdentityUnlinkError::LastLoginMethod => {
+                ApiError::Conflict(MSG_LAST_LOGIN_METHOD.to_string())
+            }
+            IdentityUnlinkError::Database(err) => ApiError::from(err),
+        })
+}
+
 async fn current_session_user(
     pool: &SqlitePool,
     cookie_header: Option<&str>,
@@ -839,6 +967,36 @@ pub(crate) async fn bind(
             authorize_url: outcome.authorize_url,
         })),
     ))
+}
+
+pub(crate) async fn list_bindings(
+    State(deployment): State<DeploymentImpl>,
+    current: CurrentUser,
+) -> Result<ResponseJson<ApiResponse<OAuthBindings>>, ApiError> {
+    let view = handle_list_bindings(
+        &deployment.db().pool,
+        deployment.local_auth(),
+        // 用户 id 只能来自会话中间件注入的 `CurrentUser`，
+        // **绝不**从查询参数或请求体里读——那就等于开放了「看别人绑了什么」。
+        current.id,
+    )
+    .await?;
+    Ok(ResponseJson(ApiResponse::success(view)))
+}
+
+pub(crate) async fn unbind(
+    State(deployment): State<DeploymentImpl>,
+    Path(provider): Path<String>,
+    current: CurrentUser,
+) -> Result<ResponseJson<ApiResponse<String>>, ApiError> {
+    handle_unlink(
+        &deployment.db().pool,
+        deployment.local_auth(),
+        &provider,
+        current.id,
+    )
+    .await?;
+    Ok(ResponseJson(ApiResponse::success("OK".to_string())))
 }
 
 #[cfg(test)]
@@ -2213,6 +2371,475 @@ mod tests {
             assert!(target.starts_with('/'), "{target}");
             assert!(!target.starts_with("//"), "{target} 是协议相对 URL");
             assert!(!target.contains("://"), "{target}");
+        }
+    }
+
+    // -------------------------------------------------- 绑定列表 / 解绑
+
+    /// 造一个「已绑定 provider」的用户。
+    async fn 绑上(db: &TestDb, user: &LocalUser, provider: &str, subject: &str) {
+        LocalUserIdentities::link(db.pool(), user.id, provider, subject, Some("a@x.com"))
+            .await
+            .expect("绑定失败");
+    }
+
+    async fn 该用户的提供方(db: &TestDb, user_id: Uuid) -> Vec<String> {
+        LocalUserIdentities::list_for_user(db.pool(), user_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|it| it.provider)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn 绑定列表只含自己的且带可绑提供方() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let runtime = 运行时(设置(ServerMode::Team, &idp.base_url, false));
+        let amy = 建用户(&db, "amy", None, LocalUserRole::Member).await;
+        let bob = 建用户(&db, "bob", None, LocalUserRole::Member).await;
+        绑上(&db, &amy, "feishu", "on_amy").await;
+        绑上(&db, &bob, "google", "sub_bob").await;
+
+        let view = handle_list_bindings(db.pool(), &runtime, amy.id)
+            .await
+            .expect("列表应成功");
+        assert_eq!(
+            view.bindings
+                .iter()
+                .map(|b| b.provider.as_str())
+                .collect::<Vec<_>>(),
+            ["feishu"],
+            "只能看到自己的绑定"
+        );
+        assert_eq!(
+            view.available_providers,
+            ["feishu", "google"],
+            "只列已配齐凭据的提供方"
+        );
+        assert!(view.has_password, "建用户时给了密码哈希");
+    }
+
+    /// `subject` 是提供方那边的稳定标识，展示出来没有意义还扩大泄漏面。
+    /// 令牌与密码哈希更不能出现。
+    #[tokio::test]
+    async fn 绑定列表的序列化结果不含_subject_令牌与密码哈希() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let runtime = 运行时(设置(ServerMode::Team, &idp.base_url, false));
+        let amy = 建用户(&db, "amy", None, LocalUserRole::Member).await;
+        绑上(&db, &amy, "feishu", "on_secret_subject").await;
+
+        let view = handle_list_bindings(db.pool(), &runtime, amy.id)
+            .await
+            .expect("列表应成功");
+        let json = serde_json::to_string(&view).expect("应可序列化");
+        for 泄漏 in [
+            "on_secret_subject",
+            "subject",
+            "access_token",
+            "token",
+            "password_hash",
+            "$argon2",
+            "user_id",
+            "client_secret",
+        ] {
+            assert!(!json.contains(泄漏), "绑定列表泄露了 {泄漏}：{json}");
+        }
+        // 唯一带 password 字样的只能是那个布尔量。
+        assert_eq!(
+            json.matches("password").count(),
+            1,
+            "除 has_password 外不该出现任何 password 字样：{json}"
+        );
+        assert!(json.contains("\"has_password\":true"), "{json}");
+
+        // 字段集合是钉死的白名单：任何人加字段都必须显式改这条测试。
+        let 对象: serde_json::Map<String, Value> =
+            serde_json::from_str(&json).expect("应是 JSON 对象");
+        let mut 顶层: Vec<&str> = 对象.keys().map(String::as_str).collect();
+        顶层.sort_unstable();
+        assert_eq!(顶层, ["available_providers", "bindings", "has_password"]);
+        let 条目 = 对象["bindings"][0].as_object().expect("应是对象");
+        let mut 字段: Vec<&str> = 条目.keys().map(String::as_str).collect();
+        字段.sort_unstable();
+        assert_eq!(字段, ["bound_at", "email", "provider"]);
+    }
+
+    /// 个人版没有本机账号体系，整组接口在功能上不存在。
+    #[tokio::test]
+    async fn 个人模式下绑定列表与解绑都是_404() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let runtime = 运行时(设置(ServerMode::Personal, &idp.base_url, false));
+        let amy = 建用户(&db, "amy", None, LocalUserRole::Member).await;
+        绑上(&db, &amy, "feishu", "on_amy").await;
+
+        assert!(matches!(
+            handle_list_bindings(db.pool(), &runtime, amy.id).await,
+            Err(ApiError::NotFound)
+        ));
+        assert!(matches!(
+            handle_unlink(db.pool(), &runtime, "feishu", amy.id).await,
+            Err(ApiError::NotFound)
+        ));
+        assert_eq!(身份数(&db).await, 1, "个人模式下不该动到任何绑定");
+    }
+
+    /// provider 不在白名单 → 404，且原字符串不进错误消息、不进错误页。
+    #[tokio::test]
+    async fn 解绑非白名单_provider_是_404_且不回显原字符串() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let runtime = 运行时(设置(ServerMode::Team, &idp.base_url, false));
+        let amy = 建用户(&db, "amy", None, LocalUserRole::Member).await;
+
+        for 恶意 in [
+            "../../etc/passwd",
+            "<script>alert(1)</script>",
+            "FEISHU",
+            "feishu ",
+            "github",
+            "",
+        ] {
+            let err = handle_unlink(db.pool(), &runtime, 恶意, amy.id)
+                .await
+                .expect_err("非白名单 provider 应 404");
+            assert!(matches!(err, ApiError::NotFound), "{恶意:?} → {err:?}");
+            let page = error_page(&err);
+            let body = page.body();
+            assert!(
+                !body.contains(恶意) || 恶意.is_empty(),
+                "错误页回显了 {恶意:?}"
+            );
+        }
+    }
+
+    /// **最重要的一条**：没有密码且只剩一个绑定时解绑必须被拒，绑定仍在。
+    #[tokio::test]
+    async fn 无密码且只剩一个绑定时解绑被拒且绑定完好() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let runtime = 运行时(设置(ServerMode::Team, &idp.base_url, false));
+        let amy = 建用户(&db, "amy", None, LocalUserRole::Member).await;
+        绑上(&db, &amy, "feishu", "on_amy").await;
+        LocalUsers::set_password_hash(db.pool(), amy.id, None)
+            .await
+            .expect("清空密码失败");
+
+        let err = handle_unlink(db.pool(), &runtime, "feishu", amy.id)
+            .await
+            .expect_err("唯一登录方式不该能解绑");
+        assert!(matches!(err, ApiError::Conflict(_)), "{err:?}");
+        assert_eq!(
+            该用户的提供方(&db, amy.id).await,
+            ["feishu"],
+            "绑定必须完好"
+        );
+
+        // 列表也要如实告诉前端「你没有密码」，好让界面提前把话说清。
+        let view = handle_list_bindings(db.pool(), &runtime, amy.id)
+            .await
+            .unwrap();
+        assert!(!view.has_password);
+    }
+
+    /// 有密码时解掉最后一个绑定是允许的——他还能用密码登录。
+    #[tokio::test]
+    async fn 有密码时可以解绑最后一个绑定() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let runtime = 运行时(设置(ServerMode::Team, &idp.base_url, false));
+        let amy = 建用户(&db, "amy", None, LocalUserRole::Member).await;
+        绑上(&db, &amy, "feishu", "on_amy").await;
+
+        handle_unlink(db.pool(), &runtime, "feishu", amy.id)
+            .await
+            .expect("有密码兜底时应允许解绑");
+        assert!(该用户的提供方(&db, amy.id).await.is_empty());
+    }
+
+    /// A 解 B 的绑定：报 404（不是 403，403 等于确认「这里有东西」），B 的绑定完好。
+    #[tokio::test]
+    async fn 解绑他人的绑定报_404_且对方绑定完好() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let runtime = 运行时(设置(ServerMode::Team, &idp.base_url, false));
+        let amy = 建用户(&db, "amy", None, LocalUserRole::Member).await;
+        let bob = 建用户(&db, "bob", None, LocalUserRole::Member).await;
+        绑上(&db, &bob, "feishu", "on_bob").await;
+
+        let err = handle_unlink(db.pool(), &runtime, "feishu", amy.id)
+            .await
+            .expect_err("不该动别人的绑定");
+        assert!(matches!(err, ApiError::NotFound), "{err:?}");
+        assert_eq!(
+            该用户的提供方(&db, bob.id).await,
+            ["feishu"],
+            "B 的绑定完好"
+        );
+    }
+
+    #[tokio::test]
+    async fn 解绑自己没有的绑定是_404() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let runtime = 运行时(设置(ServerMode::Team, &idp.base_url, false));
+        let amy = 建用户(&db, "amy", None, LocalUserRole::Member).await;
+
+        assert!(matches!(
+            handle_unlink(db.pool(), &runtime, "google", amy.id).await,
+            Err(ApiError::NotFound)
+        ));
+    }
+
+    /// 管理员把某个提供方的凭据撤了之后，已经绑上的人还得能解掉——
+    /// 所以解绑只查白名单，不查「凭据配齐没有」。
+    #[tokio::test]
+    async fn 凭据已被撤掉的提供方仍可解绑() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let runtime = 运行时(设置(ServerMode::Team, &idp.base_url, false));
+        let amy = 建用户(&db, "amy", None, LocalUserRole::Member).await;
+        // 设置()里只配了 feishu 与 google，lark 没有凭据。
+        绑上(&db, &amy, "lark", "on_amy").await;
+
+        assert!(
+            !handle_list_bindings(db.pool(), &runtime, amy.id)
+                .await
+                .unwrap()
+                .available_providers
+                .contains(&"lark".to_string()),
+            "没配凭据的提供方不该出现在可绑列表里"
+        );
+        handle_unlink(db.pool(), &runtime, "lark", amy.id)
+            .await
+            .expect("凭据撤了也要能解绑，否则这行永远清不掉");
+    }
+
+    /// 被停用的用户调这两个接口一律拒绝。
+    #[tokio::test]
+    async fn 被停用用户调列表与解绑都被拒() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let runtime = 运行时(设置(ServerMode::Team, &idp.base_url, false));
+        let amy = 建用户(&db, "amy", None, LocalUserRole::Member).await;
+        绑上(&db, &amy, "feishu", "on_amy").await;
+        LocalUsers::set_status(db.pool(), amy.id, LocalUserStatus::Disabled)
+            .await
+            .expect("停用失败");
+
+        assert!(matches!(
+            handle_list_bindings(db.pool(), &runtime, amy.id).await,
+            Err(ApiError::Forbidden(_))
+        ));
+        assert!(matches!(
+            handle_unlink(db.pool(), &runtime, "feishu", amy.id).await,
+            Err(ApiError::Forbidden(_))
+        ));
+        assert_eq!(该用户的提供方(&db, amy.id).await, ["feishu"]);
+    }
+
+    /// 用户已经被删掉（会话还在手上）时报 401，不能当成「没绑过」而放行。
+    #[tokio::test]
+    async fn 用户不存在时列表与解绑报_401() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let runtime = 运行时(设置(ServerMode::Team, &idp.base_url, false));
+        let 幽灵 = Uuid::new_v4();
+
+        assert!(matches!(
+            handle_list_bindings(db.pool(), &runtime, 幽灵).await,
+            Err(ApiError::Unauthorized)
+        ));
+        assert!(matches!(
+            handle_unlink(db.pool(), &runtime, "feishu", 幽灵).await,
+            Err(ApiError::Unauthorized)
+        ));
+    }
+
+    // ------------------------------------------- 鉴权与 CSRF（中间件层）
+
+    /// 绑定 / 解绑 / 列表这三条都在受保护组里，所以门禁由
+    /// `require_local_session` 统一把守：没有会话 401，写方法缺 CSRF 头 403。
+    /// 这里直接打中间件的判定函数——它才是真正生效的那一层。
+    mod 门禁 {
+        use axum::http::{HeaderMap, HeaderValue, Method};
+        use db::{models::local_user::LocalUserStatus, test_support::TestDb};
+        use services::services::{
+            local_auth::token::{CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE},
+            server_settings::{ServerMode, ServerSettings},
+        };
+
+        use super::{LocalUserRole, LocalUsers, 建用户};
+        use crate::{
+            error::ApiError, middleware::local_session::authenticate,
+            routes::local_auth::password_routes::start_session,
+        };
+
+        fn 团队运行时() -> services::services::local_auth::runtime::LocalAuthRuntime {
+            services::services::local_auth::runtime::LocalAuthRuntime::new(
+                ServerSettings {
+                    mode: ServerMode::Team,
+                    ..ServerSettings::default()
+                },
+                String::new(),
+            )
+        }
+
+        fn 头(pairs: &[(&str, &str)]) -> HeaderMap {
+            let mut headers = HeaderMap::new();
+            let cookies: Vec<String> = pairs
+                .iter()
+                .filter(|(k, _)| *k != CSRF_HEADER)
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            if !cookies.is_empty() {
+                headers.insert(
+                    axum::http::header::COOKIE,
+                    HeaderValue::from_str(&cookies.join("; ")).unwrap(),
+                );
+            }
+            for (k, v) in pairs.iter().filter(|(k, _)| *k == CSRF_HEADER) {
+                headers.insert(CSRF_HEADER, HeaderValue::from_str(v).unwrap());
+                let _ = k;
+            }
+            headers
+        }
+
+        /// 返回 `(会话令牌, csrf 令牌)`。
+        async fn 登录(
+            db: &TestDb,
+            runtime: &services::services::local_auth::runtime::LocalAuthRuntime,
+        ) -> (String, String) {
+            let amy = 建用户(db, "amy", None, LocalUserRole::Member).await;
+            assert_eq!(amy.status, LocalUserStatus::Active);
+            let outcome = start_session(db.pool(), runtime, &amy, None, None)
+                .await
+                .expect("建会话失败");
+            let 取值 = |cookie: &str| {
+                cookie
+                    .split(';')
+                    .next()
+                    .and_then(|kv| kv.split_once('='))
+                    .map(|(_, v)| v.to_string())
+                    .expect("Cookie 应可解析")
+            };
+            (取值(&outcome.session_cookie), 取值(&outcome.csrf_cookie))
+        }
+
+        #[tokio::test]
+        async fn 没有会话时列表与解绑都是_401() {
+            let db = TestDb::new().await;
+            let runtime = 团队运行时();
+            for method in [Method::GET, Method::DELETE] {
+                let err = authenticate(&runtime, db.pool(), &method, &头(&[]))
+                    .await
+                    .expect_err("没有会话应被拒");
+                assert!(matches!(err, ApiError::Unauthorized), "{method} → {err:?}");
+            }
+        }
+
+        /// 缺 CSRF 头是 **403 而不是 401**：401 会让前端误判成会话过期
+        /// 而去跳登录页，用户反复登录也修不好。
+        #[tokio::test]
+        async fn 解绑缺_csrf_头是_403_而不是_401() {
+            let db = TestDb::new().await;
+            let runtime = 团队运行时();
+            let (session, csrf) = 登录(&db, &runtime).await;
+
+            let err = authenticate(
+                &runtime,
+                db.pool(),
+                &Method::DELETE,
+                &头(&[(SESSION_COOKIE, &session), (CSRF_COOKIE, &csrf)]),
+            )
+            .await
+            .expect_err("缺 CSRF 头应被拒");
+            assert!(matches!(err, ApiError::Forbidden(_)), "{err:?}");
+
+            // 头对上了就放行。
+            authenticate(
+                &runtime,
+                db.pool(),
+                &Method::DELETE,
+                &头(&[
+                    (SESSION_COOKIE, &session),
+                    (CSRF_COOKIE, &csrf),
+                    (CSRF_HEADER, &csrf),
+                ]),
+            )
+            .await
+            .expect("双提交对上时应放行");
+        }
+
+        /// CSRF 头对不上（跨站猜的）同样 403。
+        #[tokio::test]
+        async fn 解绑的_csrf_头对不上是_403() {
+            let db = TestDb::new().await;
+            let runtime = 团队运行时();
+            let (session, csrf) = 登录(&db, &runtime).await;
+
+            let err = authenticate(
+                &runtime,
+                db.pool(),
+                &Method::DELETE,
+                &头(&[
+                    (SESSION_COOKIE, &session),
+                    (CSRF_COOKIE, &csrf),
+                    (CSRF_HEADER, "猜的"),
+                ]),
+            )
+            .await
+            .expect_err("CSRF 不匹配应被拒");
+            assert!(matches!(err, ApiError::Forbidden(_)), "{err:?}");
+        }
+
+        /// 列表是 GET，安全方法不要求 CSRF；但仍然要求会话。
+        #[tokio::test]
+        async fn 列表是_get_不要求_csrf_但要求会话() {
+            let db = TestDb::new().await;
+            let runtime = 团队运行时();
+            let (session, _) = 登录(&db, &runtime).await;
+
+            authenticate(
+                &runtime,
+                db.pool(),
+                &Method::GET,
+                &头(&[(SESSION_COOKIE, &session)]),
+            )
+            .await
+            .expect("GET 不该要求 CSRF");
+        }
+
+        /// 被停用的用户连中间件这一层都过不去。
+        #[tokio::test]
+        async fn 被停用用户拿着旧会话也过不了门禁() {
+            let db = TestDb::new().await;
+            let runtime = 团队运行时();
+            let (session, csrf) = 登录(&db, &runtime).await;
+            let amy = LocalUsers::find_by_username(db.pool(), "amy")
+                .await
+                .unwrap()
+                .expect("amy 应存在");
+            LocalUsers::set_status(db.pool(), amy.id, LocalUserStatus::Disabled)
+                .await
+                .expect("停用失败");
+
+            let err = authenticate(
+                &runtime,
+                db.pool(),
+                &Method::DELETE,
+                &头(&[
+                    (SESSION_COOKIE, &session),
+                    (CSRF_COOKIE, &csrf),
+                    (CSRF_HEADER, &csrf),
+                ]),
+            )
+            .await
+            .expect_err("停用后旧会话应失效");
+            assert!(matches!(err, ApiError::Unauthorized), "{err:?}");
         }
     }
 

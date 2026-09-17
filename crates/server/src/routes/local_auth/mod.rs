@@ -18,7 +18,7 @@ use std::sync::{Mutex, OnceLock};
 
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -99,6 +99,17 @@ pub fn protected_router() -> Router<DeploymentImpl> {
         .route(
             "/local-auth/oauth/{provider}/bind",
             post(oauth_routes::bind),
+        )
+        // 解绑同理，而且是写操作，DELETE 会被 CSRF 双提交拦一道。
+        .route(
+            "/local-auth/oauth/{provider}/binding",
+            delete(oauth_routes::unbind),
+        )
+        // 只读，只返回**自己**的绑定。段数与 `{provider}` 那两条不同，
+        // 不会与它们抢路由。
+        .route(
+            "/local-auth/oauth/bindings",
+            get(oauth_routes::list_bindings),
         )
 }
 
@@ -202,6 +213,9 @@ mod tests {
             "/api/local-auth/password",
             // 绑定必须由已登录用户发起，不能进免鉴权组。
             "/api/local-auth/oauth/{provider}/bind",
+            // 解绑与「看自己绑了什么」同理。
+            "/api/local-auth/oauth/{provider}/binding",
+            "/api/local-auth/oauth/bindings",
         ] {
             assert!(!public.contains(&path.to_string()), "{path} 不应免鉴权");
         }

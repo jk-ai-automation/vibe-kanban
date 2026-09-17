@@ -409,6 +409,34 @@ export type AcceptInviteRequest = { code: string, username: string, display_name
 
 export type OAuthBindStart = { authorize_url: string, };
 
+export type OAuthBinding = { 
+/**
+ * 白名单里的提供方 id：`feishu` / `lark` / `google`。
+ */
+provider: string, bound_at: string, 
+/**
+ * 绑定时提供方给的邮箱，仅供用户辨认绑的是哪个账号；**不是**绑定键。
+ */
+email: string | null, };
+
+export type OAuthBindings = { 
+/**
+ * 本机已配齐凭据、可以发起绑定的提供方 id（字典序）。
+ * 与登录页用的是同一份来源，没配凭据的不会出现。
+ */
+available_providers: Array<string>, 
+/**
+ * 当前用户已绑定的（按提供方字典序）。
+ */
+bindings: Array<OAuthBinding>, 
+/**
+ * 当前账号有没有设密码。
+ *
+ * 前端据此**提前**把「这是你唯一的登录方式，解绑后进不来」说清楚，
+ * 而不是让用户点下去才吃一个 409。只讲自己的账号，不泄露任何别人的事。
+ */
+has_password: boolean, };
+
 export type SetupStatusResponse = { valid: boolean, };
 
 export type SetupAdminRequest = { token: string, username: string, display_name: string, password: string, email: string | null, };
