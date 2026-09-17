@@ -1,0 +1,317 @@
+---
+title: "Team Mode"
+description: "Run one Vibe Kanban binary for a whole team: accounts, sessions and member management on a single SQLite file, with no Docker and no external database"
+---
+
+Vibe Kanban ships as a single executable with the web interface embedded in it. The same binary serves two modes:
+
+- **Personal mode** (`VK_MODE=personal`, the default) — no sign-in. Every request is attributed to a fixed local user.
+- **Team mode** (`VK_MODE=team`) — sign-in is mandatory. Members get their own accounts, and everything they create is attributed to them.
+
+Nothing else changes between the two: same binary, same SQLite file, same data directory. Switching modes affects authentication only.
+
+<Warning>
+Never run personal mode on `0.0.0.0`. Personal mode has no sign-in, so anyone who can reach the port has full control: they can create workspaces, run coding agents on your machine and read every repository it can see. If more than one person needs access, switch to team mode.
+
+The install scripts refuse the `--mode personal --host 0.0.0.0` combination outright.
+</Warning>
+
+## Choosing a mode
+
+|                      | `personal` (default)                      | `team`                                        |
+| -------------------- | ----------------------------------------- | --------------------------------------------- |
+| Sign-in              | None; a fixed local user is injected      | Mandatory; unauthenticated `/api/*` returns 401 |
+| Recommended `HOST`   | `127.0.0.1`                               | `0.0.0.0`                                     |
+| Suits                | One person, one machine                   | A team sharing one machine                    |
+| Cloud relay          | Supported                                 | **Not supported** — relay requests return 401 |
+
+## Starting the server
+
+<Tabs>
+<Tab title="Personal">
+
+```bash
+./vibe-kanban
+```
+
+Listens on `127.0.0.1` and picks a free port unless you set `BACKEND_PORT`.
+
+</Tab>
+<Tab title="Team">
+
+```bash
+VK_MODE=team HOST=0.0.0.0 BACKEND_PORT=8080 ./vibe-kanban
+```
+
+Members then browse to `http://<server-ip>:8080`.
+
+</Tab>
+</Tabs>
+
+To install the server as a login-started service, use `deploy/install-macos.sh` (launchd) or `deploy/install-linux.sh` (systemd user unit). Both default to `--mode team --host 0.0.0.0`, refuse to run as root, and are idempotent. See the deployment quick reference in [`deploy/README.md`](https://github.com/jk-ai-automation/vibe-kanban/blob/main/deploy/README.md) for the exact flags.
+
+## First-run setup
+
+The first time the server starts in team mode with no administrator who can sign in, it prints a one-time setup link to the log:
+
+```
+http://127.0.0.1:8080/login?setup=<token>
+```
+
+<Steps>
+<Step title="Read the link from the log">
+The link is written to the server log, so it also lands under `<data-dir>/logs/` once the server is installed as a service. When the server listens on `0.0.0.0`, the printed host is `127.0.0.1`; replace it with the address members actually use if you open the link from another machine.
+</Step>
+<Step title="Open it within 30 minutes">
+The token lives in process memory only and expires after 30 minutes. It is never written to the database or to disk.
+</Step>
+<Step title="Create the first administrator">
+The account created here is always an administrator; the request body has no role field, so the endpoint cannot be used to mint anything else.
+</Step>
+</Steps>
+
+<Note>
+The token is single-use, but only a **successful** setup consumes it. A mistyped username or a password that fails validation leaves the token usable, so one typo does not force a server restart. Restarting the server always invalidates the old token and prints a fresh one.
+</Note>
+
+Once an administrator exists, the setup endpoints return `409`. In personal mode they return `404` — the wizard does not exist there at all.
+
+## Members and invitations
+
+Administrators manage members from **Settings → Members**. The backing endpoints are:
+
+| Endpoint                              | Purpose                                             |
+| ------------------------------------- | --------------------------------------------------- |
+| `GET /api/admin/users`                | List members                                        |
+| `POST /api/admin/users`               | Create a member (a password is required)            |
+| `PATCH /api/admin/users/{id}`         | Change role, display name, email, or enable/disable |
+| `POST /api/admin/users/{id}/password` | Reset someone's password                            |
+| `GET /api/admin/invites`              | List invitations                                    |
+| `POST /api/admin/invites`             | Create an invitation                                |
+| `DELETE /api/admin/invites/{id}`      | Revoke an invitation                                |
+
+Roles are `admin` and `member`; status is `active` or `disabled`. Disabling someone revokes all of their sessions immediately, and so does an administrator password reset.
+
+### Invitation links
+
+An invitation produces a code that the recipient exchanges for an account at `POST /api/local-auth/invites/accept`, which is reachable without signing in. Three properties matter when you hand one out:
+
+- **The plaintext code is returned once, at creation.** Only its SHA-256 hash is stored. If nobody wrote the code down, revoke the invitation and issue a new one.
+- **It is single-use.** Redemption creates the account and marks the invitation used inside one transaction.
+- **It expires.** The default is 7 days; the accepted range is 1 to 30 days.
+
+The role of the resulting account comes from the invitation, never from the sign-up form.
+
+### The built-in `local` account
+
+Every database carries a fixed user named `local` (display name 本机). It exists so that history written in personal mode keeps a valid author, and it has **no password and no linked identity**, which means it cannot sign in and does not count towards the "at least one administrator" rule.
+
+The member list hides the role and disable controls for it. The server enforces two related rules of its own:
+
+- You cannot change your own role, and you cannot disable yourself (`403`).
+- You cannot remove or disable the last administrator who is able to sign in (`409`).
+
+## Configuration
+
+### `server.json`
+
+Optional, and read from the data directory (`~/Library/Application Support/ai.bloop.vibe-kanban` on macOS, `${XDG_DATA_HOME:-~/.local/share}/vibe-kanban` on Linux). A copy with every field filled in ships as `deploy/server.example.json`.
+
+| Field                | Type    | Default      | Meaning                                                             |
+| -------------------- | ------- | ------------ | ------------------------------------------------------------------- |
+| `mode`               | string  | `"personal"` | `personal` or `team`. Any other value fails startup                 |
+| `allow_oauth_signup` | boolean | `false`      | Let third-party sign-in create accounts that do not exist yet       |
+| `session_ttl_days`   | number  | `30`         | Session lifetime, 1–3650                                            |
+| `sqlite_wal`         | boolean | `true`       | Set to `false` to fall back to the `DELETE` journal mode            |
+| `trust_proxy`        | boolean | `false`      | Take the client IP from `X-Forwarded-For`                           |
+| `public_base_url`    | string  | none         | The address members actually use. Decides cookie `Secure` and the OAuth redirect URI |
+| `oauth`              | object  | none         | Credentials, keyed by `feishu`, `lark` or `google`. Other keys are ignored |
+
+<Warning>
+A malformed `server.json` fails startup instead of falling back to personal mode. Silently dropping to a mode with no sign-in would be fail-open, so it is deliberately not done.
+</Warning>
+
+### Environment variables
+
+Environment variables take precedence over `server.json`.
+
+| Variable                                 | Default        | Notes                                                        |
+| ---------------------------------------- | -------------- | ------------------------------------------------------------ |
+| `VK_MODE`                                | `personal`     | `personal` or `team`                                         |
+| `HOST`                                   | `127.0.0.1`    | Listen address                                               |
+| `BACKEND_PORT` (falls back to `PORT`)    | random free port | Listen port                                                |
+| `VK_ALLOWED_ORIGINS`                     | empty          | Extra origins to accept, comma-separated. Read once at startup |
+| `VK_PUBLIC_BASE_URL`                     | empty          | See `public_base_url` above                                  |
+| `VK_TRUST_PROXY`                         | `0`            | Only enable behind a reverse proxy                           |
+| `VK_SESSION_TTL_DAYS`                    | `30`           | 1–3650                                                       |
+| `VK_ALLOW_OAUTH_SIGNUP`                  | `0`            | Off by default                                               |
+| `VK_SQLITE_WAL`                          | `1`            | `0` falls back to the `DELETE` journal mode                  |
+| `VK_OAUTH_{FEISHU,LARK,GOOGLE}_CLIENT_ID` / `_CLIENT_SECRET` | empty | OAuth credentials                        |
+| `VK_OAUTH_{FEISHU,LARK,GOOGLE}_AUTHORIZE_URL` / `_TOKEN_URL` / `_USERINFO_URL` / `_SCOPES` / `_PKCE` | built-in values | Escape hatches if a provider moves an endpoint |
+
+Boolean variables accept `1`/`true` and `0`/`false` only. Anything else falls back to the default, so a typo can never switch a protection off by accident.
+
+<Note>
+`VK_ALLOWED_ORIGINS` is cached for the lifetime of the process. Changing it requires a restart.
+</Note>
+
+### Exit codes
+
+| Code  | Meaning                                                                             |
+| ----- | ----------------------------------------------------------------------------------- |
+| `0`   | Clean shutdown after `SIGINT` or `SIGTERM`                                          |
+| `1`   | Startup failure: invalid `server.json`, machine token unreadable, port in use, database unavailable |
+| `101` | Panic (the Rust default), for example a TLS provider or data directory that cannot be created |
+
+## Access over a local network
+
+The simplest deployment is team mode, `HOST=0.0.0.0`, and members browsing `http://<server-ip>:8080`.
+
+### When `VK_ALLOWED_ORIGINS` is needed
+
+The origin check accepts a request whose `Origin` matches the `Host` the server sees. When members connect directly by IP and port those two agree, so **`VK_ALLOWED_ORIGINS` usually needs no configuration at all**.
+
+Configure it when:
+
+- a reverse proxy rewrites the `Host` header, or
+- members reach the server through a DNS alias or forwarded port that differs from the `Host` the backend sees.
+
+The value is a comma-separated list of complete origins with no path:
+
+```bash
+VK_ALLOWED_ORIGINS="http://kanban.lan:8080,https://kanban.example.com"
+```
+
+### Limits of plain HTTP
+
+| Fact                                                                                         | Consequence                                       |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Without `VK_PUBLIC_BASE_URL` set to an `https://` address, the session cookie has no `Secure` flag | The cookie travels in clear and can be sniffed |
+| The cookie is `HttpOnly` and `SameSite=Lax`; writes also carry a double-submit CSRF token and a strict origin check | CSRF is covered; eavesdropping is not          |
+| Passwords are submitted in clear over plain HTTP                                              | Same exposure                                     |
+
+<Warning>
+Plain HTTP is for trusted internal networks only. Do not expose it to the public internet.
+
+The converse also bites: do **not** set `VK_PUBLIC_BASE_URL=https://…` while members browse over HTTP. The server would issue `Secure` cookies, the browser would drop them on an HTTP page, and sign-in would appear to succeed and then bounce straight back to the login page.
+</Warning>
+
+## HTTPS
+
+Put Caddy in front and let it obtain and renew the certificate. The full example is `deploy/Caddyfile.selfhost.example`:
+
+```caddy
+kanban.example.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:8080 {
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        flush_interval -1
+    }
+}
+```
+
+The backend then runs with:
+
+```bash
+VK_MODE=team
+HOST=127.0.0.1
+BACKEND_PORT=8080
+VK_TRUST_PROXY=1
+VK_PUBLIC_BASE_URL=https://kanban.example.com
+VK_ALLOWED_ORIGINS=https://kanban.example.com
+```
+
+Three points decide whether this is secure:
+
+<Steps>
+<Step title="Set VK_TRUST_PROXY=1 once a proxy is in front">
+Without it every request appears to come from the proxy's single IP, so the sign-in rate limiter buckets the whole company together and one person's mistyped password locks everyone out.
+</Step>
+<Step title="Make the proxy overwrite X-Forwarded-For, never append">
+With `VK_TRUST_PROXY=1` the server takes the leftmost entry of `X-Forwarded-For` unconditionally — there is no allowlist of upstream addresses. If the proxy appends (`header_up +X-Forwarded-For`), an attacker who sends their own `X-Forwarded-For: 1.2.3.4` lands every attempt in a different rate-limit bucket and brute-force protection stops working. The `header_up X-Forwarded-For {remote_host}` above replaces the header outright, which is the correct form.
+</Step>
+<Step title="Move HOST back to 127.0.0.1">
+Leaving the backend on `0.0.0.0` behind a proxy lets anyone on the same network bypass Caddy and talk to port 8080 in clear — and with `VK_TRUST_PROXY=1` their forged `X-Forwarded-For` is then trusted verbatim.
+</Step>
+</Steps>
+
+For an internal hostname that cannot get a public certificate, Caddy's `tls internal` issues a self-signed one, at the cost of trusting Caddy's root certificate on every client.
+
+## Third-party sign-in
+
+Username and password is the primary path in team mode and is enough on its own. Feishu, Lark and Google sign-in are optional extras. Providers with no credentials configured are simply absent from the login page, so an unconfigured deployment shows no dead buttons.
+
+A provider counts as configured only when **both** `client_id` and `client_secret` are non-empty.
+
+### Prerequisite: `public_base_url`
+
+<Warning>
+`public_base_url` (or `VK_PUBLIC_BASE_URL`) must be set before any provider will work. It is the only source of the OAuth redirect URI; the server deliberately does not fall back to the request's `Host` header, because that header is attacker-controlled. Without it, `GET /api/local-auth/oauth/{provider}/start` returns **400** with an HTML error page rather than starting a flow.
+</Warning>
+
+The redirect URI you register with the provider is therefore exactly:
+
+```
+{public_base_url}/api/local-auth/oauth/{provider}/callback
+```
+
+### Google needs a domain name
+
+<Warning>
+Google sign-in cannot work on a plain `http://<ip>:<port>` deployment. Google rejects bare IP addresses as OAuth redirect targets, and rejects `http://` redirects other than `localhost`. Using it requires a domain name and HTTPS — that is, the reverse-proxy setup above, with `VK_PUBLIC_BASE_URL` pointing at the HTTPS address.
+</Warning>
+
+Feishu and Lark may be more permissive, but that has not been confirmed against the live services; see the checklist below.
+
+### Account linking
+
+`VK_ALLOW_OAUTH_SIGNUP` is off by default, so third-party sign-in only signs in accounts that already exist and are already linked.
+
+Accounts are never merged automatically by email address. An unlinked third-party identity whose email matches an existing account is rejected with `403`; the owner of that account must sign in first and link the identity from settings. Automatic merging would mean whoever registers an address first can take over the account.
+
+### Still to verify against the live providers
+
+The endpoints and parameters below were taken from published documentation but have not been exercised with real credentials. The same list lives in the module documentation of `crates/services/src/services/local_auth/oauth.rs`.
+
+| Question                                                                                    | Current assumption                                                 |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Do Feishu and Lark require HTTPS redirect URIs, and do they accept a bare LAN IP address?   | Unknown. Google is documented as rejecting both                    |
+| Does Lark also have a v3 token endpoint?                                                    | v2 is configured; override with `VK_OAUTH_LARK_TOKEN_URL` if not   |
+| Do Lark's `user_info` fields match Feishu's?                                                | Assumed identical; the field names are configurable if not         |
+| Does Lark support PKCE?                                                                     | Configured off for Lark, on for Feishu and Google; `VK_OAUTH_<ID>_PKCE` overrides |
+| Which minimal permission strings yield `union_id`, name and email?                          | No `scope` is sent for Feishu and Lark; permissions come from the provider console. Use `VK_OAUTH_<ID>_SCOPES` if that proves wrong |
+| How far do Google's "Web application" and "Desktop app" client types differ on localhost redirects? | Affects only which client type you create; documentation is inconsistent |
+
+Configured endpoints, for reference:
+
+| Provider | Authorisation                                                    | Token                                                          |
+| -------- | ---------------------------------------------------------------- | -------------------------------------------------------------- |
+| Feishu   | `https://accounts.feishu.cn/open-apis/authen/v1/authorize`        | `https://accounts.feishu.cn/oauth/v3/token`                    |
+| Lark     | `https://accounts.larksuite.com/open-apis/authen/v1/authorize`    | `https://open.larksuite.com/open-apis/authen/v2/oauth/token`   |
+| Google   | `https://accounts.google.com/o/oauth2/v2/auth`                    | `https://oauth2.googleapis.com/token`                          |
+
+## What team mode does not support
+
+- **Cloud relay.** Relay requests are rejected with 401 in team mode, and the cloud OAuth handoff endpoints return 404. Remote access is the reverse-proxy setup above.
+- **More than one server process.** OAuth `state` entries and the setup token live in process memory, so a second instance behind a load balancer would fail half the sign-in flows. Run exactly one process against one SQLite file.
+- **Per-project visibility.** Everyone in the team sees every project and every issue. Only workspace ownership is tracked, and it is surfaced in the interface rather than enforced by the API.
+
+## Troubleshooting
+
+**Sign-in succeeds and immediately bounces back to the login page.** `VK_PUBLIC_BASE_URL` is an `https://` address while members browse over HTTP. Remove it or move to HTTPS.
+
+**Writes return 403.** Either the origin check failed — check that the address members use matches the `Host` the backend sees, and add it to `VK_ALLOWED_ORIGINS` if a proxy rewrites `Host` — or the CSRF token is missing. Remember `VK_ALLOWED_ORIGINS` only takes effect after a restart.
+
+**One person mistypes a password and everyone is locked out.** There is a proxy in front but `VK_TRUST_PROXY=1` is not set.
+
+**Sign-in is refused for a while after repeated failures.** That is the rate limiter: ten failures for a username-and-IP pair, or thirty for an IP, within a fifteen-minute window, then an exponential back-off starting at 30 seconds and capped at 15 minutes.
+
+**MCP cannot connect although the service is running.** On Linux the systemd unit has `PrivateTmp=true`. It must stay `false`, because MCP clients discover the port through a file under `$TMPDIR`.
+
+**Remote access over the cloud does not work in team mode.** That is by design; see above.
+
+## Related
+
+- [Backup, Restore and Upgrades](/self-hosting/backup-restore)
+- [`deploy/README.md`](https://github.com/jk-ai-automation/vibe-kanban/blob/main/deploy/README.md) — the same material as a Chinese quick reference shipped inside the deployment bundle
