@@ -15,7 +15,10 @@ import type {
 import {
   SETTINGS_SECTION_DEFINITIONS,
   isHostSpecificSettingsSection,
+  visibleSettingsSections,
 } from './settings/settingsRegistry';
+import { isSettingsSectionVisible } from './settings/sectionVisibility';
+import { isLocalTeamMode } from '@/shared/lib/local/runtimeMode';
 import {
   SettingsDirtyProvider,
   useSettingsDirty,
@@ -54,12 +57,10 @@ function SettingsDialogNavigation({
     selectedHostId,
     setSelectedHostId,
   } = useSettingsHost();
-  const hostSections = SETTINGS_SECTION_DEFINITIONS.filter(
-    (section) => section.group === 'host'
-  );
-  const universalSections = SETTINGS_SECTION_DEFINITIONS.filter(
-    (section) => section.group === 'universal'
-  );
+  // 有些 section 只在特定部署形态下存在（比如「账号」只在本机团队版）。
+  const visibility = { localTeamMode: isLocalTeamMode() };
+  const hostSections = visibleSettingsSections('host', visibility);
+  const universalSections = visibleSettingsSections('universal', visibility);
   const hostOptions = availableHosts.map((host) => ({
     value: host.id,
     label: host.status != null ? `${host.label} (${host.status})` : host.label,
@@ -166,7 +167,11 @@ function SettingsDialogContent({
       initialSection &&
       SETTINGS_SECTION_DEFINITIONS.some(
         (section) => section.id === initialSection
-      )
+      ) &&
+      // 导航栏里没有的 section 也不能靠 `initialSection` 直接打开。
+      isSettingsSectionVisible(initialSection, {
+        localTeamMode: isLocalTeamMode(),
+      })
     ) {
       return initialSection;
     }

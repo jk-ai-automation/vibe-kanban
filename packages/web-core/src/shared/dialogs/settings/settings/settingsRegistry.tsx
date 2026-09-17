@@ -6,6 +6,7 @@ import {
   CpuIcon,
   PlugIcon,
   BroadcastIcon,
+  UserCircleIcon,
 } from '@phosphor-icons/react';
 import type { Icon } from '@phosphor-icons/react';
 import { GeneralSettingsSection } from './GeneralSettingsSection';
@@ -15,6 +16,13 @@ import { RemoteProjectsSettingsSection } from './RemoteProjectsSettingsSection';
 import { AgentsSettingsSection } from './AgentsSettingsSection';
 import { McpSettingsSection } from './McpSettingsSection';
 import { RelaySettingsSectionContent } from './RelaySettingsSection';
+import { AccountSettingsSection } from './AccountSettingsSection';
+import {
+  filterVisibleSections,
+  type SettingsSectionVisibilityContext,
+} from './sectionVisibility';
+
+export type { SettingsSectionVisibilityContext };
 
 export type SettingsSectionType =
   | 'general'
@@ -23,7 +31,8 @@ export type SettingsSectionType =
   | 'remote-projects'
   | 'agents'
   | 'mcp'
-  | 'relay';
+  | 'relay'
+  | 'account';
 
 export type SettingsSectionGroup = 'host' | 'universal';
 
@@ -37,6 +46,7 @@ export type SettingsSectionInitialState = {
   agents: { executor?: string; variant?: string } | undefined;
   mcp: undefined;
   relay: { hostId?: string } | undefined;
+  account: undefined;
 };
 
 export interface SettingsSectionDefinition {
@@ -53,7 +63,25 @@ export const SETTINGS_SECTION_DEFINITIONS: SettingsSectionDefinition[] = [
   { id: 'organizations', icon: BuildingsIcon, group: 'universal' },
   { id: 'remote-projects', icon: CloudIcon, group: 'universal' },
   { id: 'relay', icon: BroadcastIcon, group: 'universal' },
+  // 只在本机团队版下出现，见 `sectionVisibility.ts`。
+  { id: 'account', icon: UserCircleIcon, group: 'universal' },
 ];
+
+/**
+ * 某一组里**当前形态下真的该出现**的 section。
+ *
+ * 导航栏与「初始 section 合不合法」都必须走这一个函数：只在导航栏过滤，
+ * 个人版下一个 `initialSection: 'account'` 就能把那块界面直接打开。
+ */
+export function visibleSettingsSections(
+  group: SettingsSectionGroup,
+  ctx: SettingsSectionVisibilityContext
+): SettingsSectionDefinition[] {
+  return filterVisibleSections(
+    SETTINGS_SECTION_DEFINITIONS.filter((section) => section.group === group),
+    ctx
+  );
+}
 
 export function isHostSpecificSettingsSection(
   type: SettingsSectionType
@@ -99,6 +127,8 @@ export function renderSettingsSection(
           onClose={onClose}
         />
       );
+    case 'account':
+      return <AccountSettingsSection />;
     default:
       return <GeneralSettingsSection />;
   }
