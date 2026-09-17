@@ -425,8 +425,8 @@ impl EventService {
 /// 关键点：`EventService::create_hook` 需要一个独立的 `DBService` 用来在钩子里按
 /// rowid 反查记录（见 :62-76），这个 DBService 必须和挂了钩子的那个池指向同一个
 /// 数据库文件，否则查不到刚写入的行。这与生产装配（`crates/local-deployment/src/lib.rs`
-/// 里先建一个临时 `DBService::new()` 传给 `create_hook`，再用
-/// `DBService::new_with_after_connect` 建真正的池）是同一个模式，这里只是把两条
+/// 里先建一个临时 `DBService::new_with_wal()` 传给 `create_hook`，再用
+/// `DBService::new_with_after_connect_and_wal` 建真正的池）是同一个模式，这里只是把两条
 /// 路径都指向测试用的临时文件路径。
 #[cfg(test)]
 mod tests {

@@ -99,6 +99,22 @@ fn journal_mode_from_env() -> SqliteJournalMode {
     journal_mode_from(std::env::var(VK_SQLITE_WAL_ENV).ok().as_deref())
 }
 
+/// 把合并后的 `sqlite_wal` 开关翻译成 journal mode。
+///
+/// 「合并后」指 `server.json` 的 `sqlite_wal` 字段与 `VK_SQLITE_WAL` 环境变量已经
+/// 在 `server_settings` 里合并过一次（环境变量优先）。生产路径必须走这里，不能再自己
+/// 读一次环境变量——否则 `server.json` 里写的 `"sqlite_wal": false` 会被静默忽略，
+/// 而配置文件里躺着一个不生效的字段是最难排查的那类问题。
+///
+/// `journal_mode_from_env` 只留给不读 `server.json` 的离线工具与测试。
+fn journal_mode_for(sqlite_wal: bool) -> SqliteJournalMode {
+    if sqlite_wal {
+        SqliteJournalMode::Wal
+    } else {
+        SqliteJournalMode::Delete
+    }
+}
+
 /// 三条生产/测试路径共用的连接参数拼装：busy_timeout、journal_mode、synchronous
 /// 都在这里一起设，免得某一条路径漏掉。
 fn configure(
@@ -147,8 +163,12 @@ pub struct DBService {
 }
 
 impl DBService {
-    pub async fn new() -> Result<DBService, Error> {
-        let pool = Self::create_pool(main_db_options(journal_mode_from_env())?, None).await?;
+    /// 打开主库。journal mode 取自合并后的 `sqlite_wal` 开关，见 [`journal_mode_for`]。
+    ///
+    /// 刻意**没有**一个不带参数的版本：主库只有这一条生产路径，多一个读环境变量的
+    /// 重载就意味着某天有人调了它，然后 `server.json` 里的 `sqlite_wal` 又悄悄失效。
+    pub async fn new_with_wal(sqlite_wal: bool) -> Result<DBService, Error> {
+        let pool = Self::create_pool(main_db_options(journal_mode_for(sqlite_wal))?, None).await?;
         Ok(DBService { pool })
     }
 
@@ -168,15 +188,19 @@ impl DBService {
         Ok(DBService { pool })
     }
 
-    pub async fn new_migration_pool() -> Result<Pool<Sqlite>, Error> {
-        let options = main_db_options(journal_mode_from_env())?.disable_statement_logging();
+    pub async fn new_migration_pool(sqlite_wal: bool) -> Result<Pool<Sqlite>, Error> {
+        let options = main_db_options(journal_mode_for(sqlite_wal))?.disable_statement_logging();
         SqlitePoolOptions::new()
             .max_connections(64)
             .connect_with(options)
             .await
     }
 
-    pub async fn new_with_after_connect<F>(after_connect: F) -> Result<DBService, Error>
+    /// 带变更钩子地打开主库。journal mode 同 [`Self::new_with_wal`]。
+    pub async fn new_with_after_connect_and_wal<F>(
+        sqlite_wal: bool,
+        after_connect: F,
+    ) -> Result<DBService, Error>
     where
         F: for<'a> Fn(
                 &'a mut SqliteConnection,
@@ -187,7 +211,7 @@ impl DBService {
             + 'static,
     {
         let pool = Self::create_pool(
-            main_db_options(journal_mode_from_env())?,
+            main_db_options(journal_mode_for(sqlite_wal))?,
             Some(Arc::new(after_connect)),
         )
         .await?;
@@ -251,7 +275,10 @@ impl DBService {
 mod tests {
     use sqlx::sqlite::SqliteJournalMode;
 
-    use super::{BUSY_TIMEOUT, DBService, MAX_CONNECTIONS, journal_mode_from, main_db_options};
+    use super::{
+        BUSY_TIMEOUT, DBService, MAX_CONNECTIONS, journal_mode_for, journal_mode_from,
+        main_db_options,
+    };
     use crate::test_support::TestDb;
 
     async fn journal_mode_of(pool: &sqlx::SqlitePool) -> String {
@@ -260,6 +287,32 @@ mod tests {
             .await
             .expect("读取 journal_mode 失败");
         pragma.0
+    }
+
+    #[test]
+    fn 合并后的_sqlite_wal_开关决定_journal_mode() {
+        // `server.json` 的 `sqlite_wal` 字段一度只被解析、没被建库路径消费，
+        // 表现是配置文件里写了 `"sqlite_wal": false` 却仍然跑在 WAL 上。
+        assert_eq!(journal_mode_for(true), SqliteJournalMode::Wal);
+        assert_eq!(
+            journal_mode_for(false),
+            SqliteJournalMode::Delete,
+            "server.json 里关掉 WAL 必须真的生效，不能只认环境变量"
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_wal_关掉后建出来的库真的是_delete() {
+        // 把上面那条纯函数断言接到真实 PRAGMA 上：光有映射不够，还要确认
+        // 这个 journal mode 确实被带进了连接参数。
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let db = DBService::new_at_path_with_journal(
+            &dir.path().join("test.sqlite"),
+            journal_mode_for(false),
+        )
+        .await
+        .expect("按 server.json 的 sqlite_wal=false 初始化应成功");
+        assert_eq!(journal_mode_of(&db.pool).await, "delete");
     }
 
     #[tokio::test]

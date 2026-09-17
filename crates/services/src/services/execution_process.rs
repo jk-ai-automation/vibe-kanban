@@ -27,8 +27,10 @@ use utils::{
 };
 use uuid::Uuid;
 
-pub async fn migrate_execution_logs_to_files() -> Result<()> {
-    let pool = DBService::new_migration_pool()
+/// `sqlite_wal` 是 `server.json` 的 `sqlite_wal` 与 `VK_SQLITE_WAL` 合并后的开关，
+/// 必须与主连接池一致：两个池用不同的 journal mode 会让库在启动时被来回转换。
+pub async fn migrate_execution_logs_to_files(sqlite_wal: bool) -> Result<()> {
+    let pool = DBService::new_migration_pool(sqlite_wal)
         .await
         .map_err(|e| anyhow::anyhow!("Migration DB pool error: {}", e))?;
 

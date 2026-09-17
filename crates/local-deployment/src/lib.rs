@@ -90,11 +90,6 @@ pub struct LocalDeployment {
 #[async_trait]
 impl Deployment for LocalDeployment {
     async fn new(shutdown: CancellationToken) -> Result<Self, DeploymentError> {
-        // Run one-time process logs migration from DB to filesystem
-        services::services::execution_process::migrate_execution_logs_to_files()
-            .await
-            .map_err(|e| DeploymentError::Other(anyhow::anyhow!("Migration failed: {}", e)))?;
-
         // 运行模式与本地认证设置。配置文件非法一律让启动失败，不静默退回
         // personal（免登录）——那是 fail-open。
         let settings_file =
@@ -107,6 +102,17 @@ impl Deployment for LocalDeployment {
             })
             .map_err(|e| DeploymentError::Other(anyhow::anyhow!("{e}")))?;
         tracing::info!(mode = server_settings.mode.as_str(), "服务端运行模式");
+        // 先取出来：`server_settings` 下面会被 move 进 LocalAuthRuntime，而建库在更后面。
+        // 这个开关是 `server.json` 的 `sqlite_wal` 与 `VK_SQLITE_WAL` 合并后的结果，
+        // 必须传进建库路径——否则 `server.json` 里写的 `"sqlite_wal": false` 不生效。
+        let sqlite_wal = server_settings.sqlite_wal;
+
+        // 一次性的「日志从 SQLite 挪到文件」迁移。**必须排在读设置之后**：它自己开一个
+        // 连接池，如果用的 journal mode 跟主池不一样，库会在启动时被来回转换一次。
+        services::services::execution_process::migrate_execution_logs_to_files(sqlite_wal)
+            .await
+            .map_err(|e| DeploymentError::Other(anyhow::anyhow!("Migration failed: {}", e)))?;
+
         // 本机令牌（X-VK-MACHINE-TOKEN）：团队模式下 MCP 等本机进程靠它免会话
         // 访问 /api/*。生成失败**不能**静默降级成空串——那会让 MCP 在团队模式下
         // 全线 401 且毫无提示；直接让启动失败，问题一眼可见。
@@ -169,9 +175,9 @@ impl Deployment for LocalDeployment {
             let hook = EventService::create_hook(
                 events_msg_store.clone(),
                 events_entry_count.clone(),
-                DBService::new().await?, // Temporary DB service for the hook
+                DBService::new_with_wal(sqlite_wal).await?, // Temporary DB service for the hook
             );
-            DBService::new_with_after_connect(hook).await?
+            DBService::new_with_after_connect_and_wal(sqlite_wal, hook).await?
         };
 
         let file = FileService::new(db.clone().pool)?;
