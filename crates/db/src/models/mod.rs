@@ -20,4 +20,5 @@ pub mod session;
 pub mod tag;
 pub mod task;
 pub mod workspace;
+pub mod workspace_delete_request;
 pub mod workspace_repo;

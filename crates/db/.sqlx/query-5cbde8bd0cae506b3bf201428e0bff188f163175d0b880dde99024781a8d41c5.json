@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE workspace_delete_requests\n                   SET status = 'withdrawn', updated_at = $3\n                   WHERE id = $1 AND requested_by_user_id = $2 AND status = 'pending'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "5cbde8bd0cae506b3bf201428e0bff188f163175d0b880dde99024781a8d41c5"
+}
