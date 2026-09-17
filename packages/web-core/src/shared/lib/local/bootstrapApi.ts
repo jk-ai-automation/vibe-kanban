@@ -5,6 +5,8 @@ import type {
   LocalAuthBootstrap,
   LocalAuthUser,
   LocalLoginRequest,
+  OAuthBindStart,
+  OAuthBindings,
   SetupAdminRequest,
   SetupStatusResponse,
 } from 'shared/types';
@@ -19,7 +21,24 @@ export const LOCAL_AUTH_PATHS = {
   password: '/api/local-auth/password',
   setup: '/api/local-auth/setup',
   inviteAccept: '/api/local-auth/invites/accept',
+  /** 只读，只返回当前用户自己的第三方绑定。 */
+  oauthBindings: '/api/local-auth/oauth/bindings',
 } as const;
+
+/**
+ * 第三方绑定这三条**永远打本机后端**。
+ *
+ * 默认的 `hostScope: 'current'` 会把 `/api/xxx` 改写成
+ * `/api/host/<id>/xxx` 转发到配对的另一台机器；而会话 Cookie 是本机这一份，
+ * 转过去必然 401，`makeLocalApiRequest` 随即广播「会话过期」，
+ * 用户就被莫名其妙踢回登录页了。
+ */
+const 本机 = { hostScope: 'none' } as const;
+
+/** 绑定 / 解绑的路径。`provider` 来自界面，进 URL 前一律编码。 */
+function oauthProviderPath(provider: string, action: 'bind' | 'binding') {
+  return `/api/local-auth/oauth/${encodeURIComponent(provider)}/${action}`;
+}
 
 /**
  * 登录失败。
@@ -235,6 +254,51 @@ export async function acceptInvite(
     LOCAL_AUTH_PATHS.inviteAccept
   );
   return envelope.data as LocalAuthUser;
+}
+
+/**
+ * 读当前用户的第三方绑定。**只返回自己的**——后端的查询条件里写死了
+ * 会话用户 id，前端既传不了也问不到别人的。
+ */
+export async function fetchOAuthBindings(): Promise<OAuthBindings> {
+  const path = LOCAL_AUTH_PATHS.oauthBindings;
+  const response = await makeLocalApiRequest(path, {
+    method: 'GET',
+    ...本机,
+  });
+  const envelope = await readEnvelope<OAuthBindings>(response, path);
+  return envelope.data as OAuthBindings;
+}
+
+/**
+ * 发起绑定，拿回授权链接。
+ *
+ * 后端**刻意不回 302**：`fetch` 会跟着重定向去提供方的域名，拿回来的是一个
+ * 不能用的跨域响应。调用方拿到链接之后自己 `window.location.assign`。
+ */
+export async function startOAuthBind(provider: string): Promise<string> {
+  const path = oauthProviderPath(provider, 'bind');
+  const response = await makeLocalApiRequest(path, {
+    method: 'POST',
+    ...本机,
+  });
+  const envelope = await readEnvelope<OAuthBindStart>(response, path);
+  return (envelope.data as OAuthBindStart).authorize_url;
+}
+
+/**
+ * 解绑。失败时把**状态码**原样抛出，由
+ * `features/local-auth/model/bindings.ts::describeBindingError` 决定文案；
+ * 这里不去读 message 文本（409「唯一登录方式」与 404「没有这条绑定」
+ * 都靠状态码就能分清）。
+ */
+export async function unbindOAuth(provider: string): Promise<void> {
+  const path = oauthProviderPath(provider, 'binding');
+  const response = await makeLocalApiRequest(path, {
+    method: 'DELETE',
+    ...本机,
+  });
+  await readEnvelope<string>(response, path);
 }
 
 export async function changePassword(
