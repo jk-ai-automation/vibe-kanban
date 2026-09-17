@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM local_user_identities\n                           WHERE user_id = $1\n                             AND provider = $2\n                             AND (EXISTS (SELECT 1 FROM local_users u\n                                          WHERE u.id = $1 AND u.password_hash IS NOT NULL)\n                                  OR EXISTS (SELECT 1 FROM local_user_identities other\n                                             WHERE other.user_id = $1\n                                               AND other.provider <> $2))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "5e2586a898b5776276930bd32cef36f10a07671f53104aad89312bcbece00b59"
+}
