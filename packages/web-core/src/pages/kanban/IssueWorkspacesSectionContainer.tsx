@@ -253,7 +253,9 @@ export function IssueWorkspacesSectionContainer({
       );
     }
     return map;
-  }, [workspacesWithStats, deleteRequests]);
+    // 只依赖 getAffordance（useCallback，身份稳定），不要整个 deleteRequests
+    // 对象——那是每次渲染都新建的，会让这张表和下游所有回调白白重算。
+  }, [workspacesWithStats, deleteRequests.getAffordance]);
 
   const getDeleteAffordance = useCallback(
     (localWorkspaceId: string) => deleteAffordanceById.get(localWorkspaceId),

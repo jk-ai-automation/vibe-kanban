@@ -23,7 +23,7 @@ function 申请(
 }
 
 const 基础 = {
-  isPersonal: false,
+  approvalEnabled: true,
   isAdmin: false,
   currentUserId: 'bob',
   isOwnedByCurrentUser: true,
@@ -31,14 +31,18 @@ const 基础 = {
 };
 
 describe('resolveDeleteAffordance（删除审批的前端权限矩阵）', () => {
-  it('个人版返回 undefined：整套审批 UI 都不出现', () => {
+  it('个人版 / 云端构建返回 undefined：整套审批 UI 都不出现', () => {
     expect(
-      resolveDeleteAffordance({ ...基础, isPersonal: true, isAdmin: true })
+      resolveDeleteAffordance({
+        ...基础,
+        approvalEnabled: false,
+        isAdmin: true,
+      })
     ).toBeUndefined();
     expect(
       resolveDeleteAffordance({
         ...基础,
-        isPersonal: true,
+        approvalEnabled: false,
         pendingRequest: 申请(),
       })
     ).toBeUndefined();

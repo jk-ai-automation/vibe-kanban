@@ -9,8 +9,11 @@ import type { WorkspaceDeleteAffordance } from '@vibe/ui/components/IssueWorkspa
  * 算错了也只会多一次注定被拒的请求，绝不会放行。
  */
 export interface DeleteAffordanceInput {
-  /** `isLocalPersonalMode()` 的结果。个人版整套审批 UI 都不存在。 */
-  isPersonal: boolean;
+  /**
+   * 审批流程在这个部署形态下存不存在，即 `isLocalTeamMode()` 的结果。
+   * 个人版与云端构建都是 `false`，整套审批 UI 连同徽标一起消失。
+   */
+  approvalEnabled: boolean;
   isAdmin: boolean;
   currentUserId: string | null;
   /** 这个工作区是不是当前用户建的。 */
@@ -22,13 +25,14 @@ export interface DeleteAffordanceInput {
 /**
  * 算出一张工作区卡片上关于删除的可见能力。
  *
- * **个人版返回 `undefined`**：卡片据此退回历史行为（只有自己的工作区能删、
- * 没有徽标、没有审批菜单），个人版界面上不会出现这套东西的任何痕迹。
+ * **审批流程不存在时返回 `undefined`**：卡片据此退回历史行为（只有自己的
+ * 工作区能删、没有徽标、没有审批菜单），个人版与云端构建的界面上不会出现
+ * 这套东西的任何痕迹。
  */
 export function resolveDeleteAffordance(
   input: DeleteAffordanceInput
 ): WorkspaceDeleteAffordance | undefined {
-  if (input.isPersonal) {
+  if (!input.approvalEnabled) {
     return undefined;
   }
 

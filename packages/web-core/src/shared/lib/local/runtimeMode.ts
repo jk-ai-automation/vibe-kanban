@@ -64,6 +64,17 @@ export function isLocalPersonalMode(): boolean {
   return isLocalMode() && !requiresLogin();
 }
 
+/**
+ * 「团队版」＝ 本地数据源 + 需要登录。
+ *
+ * 只有这种组合下才有本机账号体系（`/api/admin/*`、工作区删除审批这些接口
+ * 都只存在于本机后端）。**不能用 `!isLocalPersonalMode()` 代替**：
+ * 云端构建的个人模式（数据源 `remote`）也满足那个取反，但它连不上这些接口。
+ */
+export function isLocalTeamMode(): boolean {
+  return isLocalMode() && requiresLogin();
+}
+
 export function getBootstrapSnapshot(): LocalAuthBootstrap | null {
   return bootstrapSnapshot;
 }

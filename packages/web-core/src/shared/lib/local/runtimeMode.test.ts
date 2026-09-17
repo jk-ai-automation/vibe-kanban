@@ -11,6 +11,7 @@ import {
   getBootstrapSnapshot,
   getRuntimeMode,
   isLocalPersonalMode,
+  isLocalTeamMode,
   isPersonalMode,
   parseRuntimeMode,
   requiresLogin,
@@ -126,6 +127,33 @@ describe('isLocalPersonalMode（个人版判定）', () => {
 
   it('云端数据源 + personal 不是个人版（仍走云端 OAuth）', () => {
     applyBootstrap(bootstrap(), { hasSharedApiBase: true });
+    expect(isLocalPersonalMode()).toBe(false);
+  });
+});
+
+describe('isLocalTeamMode（本机团队版判定）', () => {
+  beforeEach(() => {
+    resetRuntimeModeForTests();
+  });
+
+  it('本地数据源 + team 才是本机团队版', () => {
+    applyBootstrap(bootstrap({ mode: 'team', require_login: true }));
+    expect(isLocalTeamMode()).toBe(true);
+  });
+
+  it('个人版不是', () => {
+    applyBootstrap(bootstrap(), { hasSharedApiBase: false });
+    expect(isLocalTeamMode()).toBe(false);
+  });
+
+  /**
+   * 这一条是 `/api/admin/*`、工作区删除审批这些本机接口的门禁依据：
+   * 云端构建的个人模式满足 `!isLocalPersonalMode()`，但它连不上本机后端，
+   * 所以那两个判定**不是互补的**，不能用取反代替。
+   */
+  it('云端构建不是本机团队版，且与个人版判定不互补', () => {
+    applyBootstrap(bootstrap(), { hasSharedApiBase: true });
+    expect(isLocalTeamMode()).toBe(false);
     expect(isLocalPersonalMode()).toBe(false);
   });
 });

@@ -540,8 +540,9 @@ export function MembersPageContainer() {
       onDismissCreatedInvite={() => setCreatedInvite(null)}
       onRevokeInvite={(inviteId) => deleteInviteMutation.mutate(inviteId)}
       deleteRequestsSection={
-        // 个人版没有这套东西：hook 里 `enabled: !isPersonal`，一个请求都不发。
-        deleteRequests.isPersonal ? undefined : (
+        // 个人版 / 云端构建没有这套东西：hook 里 `enabled: false`，
+        // 一个请求都不发，这里也整块不渲染。
+        !deleteRequests.approvalEnabled ? undefined : (
           <WorkspaceDeleteRequestsPanel
             requests={deleteRequestRows}
             isLoading={deleteRequests.isLoading}
