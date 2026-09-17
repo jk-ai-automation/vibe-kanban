@@ -14,7 +14,9 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as OnboardingSignInRouteImport } from './routes/onboarding_.sign-in'
 import { Route as AppWorkspacesRouteImport } from './routes/_app.workspaces'
+import { Route as AppTestingRouteImport } from './routes/_app.testing'
 import { Route as AppNotificationsRouteImport } from './routes/_app.notifications'
+import { Route as AppMembersRouteImport } from './routes/_app.members'
 import { Route as AppExportRouteImport } from './routes/_app.export'
 import { Route as WorkspacesWorkspaceIdVscodeRouteImport } from './routes/workspaces.$workspaceId.vscode'
 import { Route as AppWorkspacesElectricTestRouteImport } from './routes/_app.workspaces_.electric-test'
@@ -57,9 +59,19 @@ const AppWorkspacesRoute = AppWorkspacesRouteImport.update({
   path: '/workspaces',
   getParentRoute: () => AppRoute,
 } as any)
+const AppTestingRoute = AppTestingRouteImport.update({
+  id: '/testing',
+  path: '/testing',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppNotificationsRoute = AppNotificationsRouteImport.update({
   id: '/notifications',
   path: '/notifications',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppMembersRoute = AppMembersRouteImport.update({
+  id: '/members',
+  path: '/members',
   getParentRoute: () => AppRoute,
 } as any)
 const AppExportRoute = AppExportRouteImport.update({
@@ -170,7 +182,9 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
   '/export': typeof AppExportRoute
+  '/members': typeof AppMembersRoute
   '/notifications': typeof AppNotificationsRoute
+  '/testing': typeof AppTestingRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/onboarding/sign-in': typeof OnboardingSignInRoute
   '/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -194,7 +208,9 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
   '/export': typeof AppExportRoute
+  '/members': typeof AppMembersRoute
   '/notifications': typeof AppNotificationsRoute
+  '/testing': typeof AppTestingRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/onboarding/sign-in': typeof OnboardingSignInRoute
   '/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -220,7 +236,9 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/onboarding': typeof OnboardingRoute
   '/_app/export': typeof AppExportRoute
+  '/_app/members': typeof AppMembersRoute
   '/_app/notifications': typeof AppNotificationsRoute
+  '/_app/testing': typeof AppTestingRoute
   '/_app/workspaces': typeof AppWorkspacesRoute
   '/onboarding_/sign-in': typeof OnboardingSignInRoute
   '/_app/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -246,7 +264,9 @@ export interface FileRouteTypes {
     | '/'
     | '/onboarding'
     | '/export'
+    | '/members'
     | '/notifications'
+    | '/testing'
     | '/workspaces'
     | '/onboarding/sign-in'
     | '/projects/$projectId'
@@ -270,7 +290,9 @@ export interface FileRouteTypes {
     | '/'
     | '/onboarding'
     | '/export'
+    | '/members'
     | '/notifications'
+    | '/testing'
     | '/workspaces'
     | '/onboarding/sign-in'
     | '/projects/$projectId'
@@ -295,7 +317,9 @@ export interface FileRouteTypes {
     | '/_app'
     | '/onboarding'
     | '/_app/export'
+    | '/_app/members'
     | '/_app/notifications'
+    | '/_app/testing'
     | '/_app/workspaces'
     | '/onboarding_/sign-in'
     | '/_app/projects/$projectId'
@@ -362,11 +386,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppWorkspacesRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/testing': {
+      id: '/_app/testing'
+      path: '/testing'
+      fullPath: '/testing'
+      preLoaderRoute: typeof AppTestingRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/notifications': {
       id: '/_app/notifications'
       path: '/notifications'
       fullPath: '/notifications'
       preLoaderRoute: typeof AppNotificationsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/members': {
+      id: '/_app/members'
+      path: '/members'
+      fullPath: '/members'
+      preLoaderRoute: typeof AppMembersRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/export': {
@@ -493,7 +531,9 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppExportRoute: typeof AppExportRoute
+  AppMembersRoute: typeof AppMembersRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
+  AppTestingRoute: typeof AppTestingRoute
   AppWorkspacesRoute: typeof AppWorkspacesRoute
   AppProjectsProjectIdRoute: typeof AppProjectsProjectIdRoute
   AppWorkspacesWorkspaceIdRoute: typeof AppWorkspacesWorkspaceIdRoute
@@ -513,7 +553,9 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppExportRoute: AppExportRoute,
+  AppMembersRoute: AppMembersRoute,
   AppNotificationsRoute: AppNotificationsRoute,
+  AppTestingRoute: AppTestingRoute,
   AppWorkspacesRoute: AppWorkspacesRoute,
   AppProjectsProjectIdRoute: AppProjectsProjectIdRoute,
   AppWorkspacesWorkspaceIdRoute: AppWorkspacesWorkspaceIdRoute,

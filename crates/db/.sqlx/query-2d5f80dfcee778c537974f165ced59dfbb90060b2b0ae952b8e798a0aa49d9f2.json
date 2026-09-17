@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO local_sessions\n                           (id, user_id, token_hash, created_at, expires_at, last_seen_at,\n                            user_agent, ip)\n                       VALUES ($1, $2, $3, $4, $5, $4, $6, $7)\n                       RETURNING id           AS \"id!: Uuid\",\n                                 user_id      AS \"user_id!: Uuid\",\n                                 created_at   AS \"created_at!: DateTime<Utc>\",\n                                 expires_at   AS \"expires_at!: DateTime<Utc>\",\n                                 last_seen_at AS \"last_seen_at!: DateTime<Utc>\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "user_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "expires_at!: DateTime<Utc>",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "last_seen_at!: DateTime<Utc>",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2d5f80dfcee778c537974f165ced59dfbb90060b2b0ae952b8e798a0aa49d9f2"
+}

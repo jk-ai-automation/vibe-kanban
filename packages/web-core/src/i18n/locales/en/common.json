@@ -82,6 +82,112 @@
   "personal": "Personal",
   "signIn": "Sign in",
   "signOut": "Sign out",
+  "localAuth": {
+    "signInTitle": "Sign in to Vibe Kanban",
+    "signInSubtitle": "This server runs in team mode and requires an account.",
+    "username": "Username",
+    "password": "Password",
+    "signIn": "Sign in",
+    "signingIn": "Signing in…",
+    "invalidCredentials": "Incorrect username or password.",
+    "rateLimited": "Too many attempts. Please wait a moment and try again.",
+    "networkError": "Cannot reach the server. Please check your connection and try again.",
+    "loading": "Loading…",
+    "checking": "Checking…",
+    "retry": "Check again",
+    "orContinueWith": "Or continue with",
+    "setupTitle": "Set up your team",
+    "setupDescription": "Team mode is enabled but no administrator account exists yet.",
+    "errors": {
+      "usernameRequired": "Enter your username.",
+      "passwordRequired": "Enter your password.",
+      "usernameInvalid": "Usernames may only contain lowercase letters, digits, and . _ -, up to 64 characters.",
+      "passwordTooShort": "Password must be at least 8 characters.",
+      "passwordTooLong": "Password must be 1024 characters or fewer.",
+      "emailInvalid": "Enter a valid email address.",
+      "displayNameRequired": "Enter a display name.",
+      "inviteTtlInvalid": "Expiry must be a whole number of days between 1 and 30."
+    },
+    "providers": {
+      "feishu": "Feishu",
+      "lark": "Lark",
+      "google": "Google"
+    },
+    "setupNoToken": "This server needs to be initialized. Check the server console for the setup link.",
+    "setupLinkExpired": "This link has expired. Restart the server to get a new one.",
+    "setupAlreadyInitialized": "Someone already finished setting up this server.",
+    "setupGoToLogin": "Go to sign in",
+    "setupDisplayName": "Display name (optional, defaults to username)",
+    "setupEmail": "Email (optional)",
+    "setupSubmit": "Create administrator account",
+    "setupSubmitting": "Creating…",
+    "setupRoleNote": "This account will be created as an administrator.",
+    "members": {
+      "pageTitle": "Members",
+      "sectionMembers": "Members",
+      "sectionInvites": "Invite codes",
+      "addMember": "New member",
+      "cancel": "Cancel",
+      "create": "Create",
+      "creating": "Creating…",
+      "columnUser": "User",
+      "columnEmail": "Email",
+      "columnRole": "Role",
+      "columnStatus": "Status",
+      "columnLastLogin": "Last sign-in",
+      "columnActions": "Actions",
+      "roleAdmin": "Admin",
+      "roleMember": "Member",
+      "statusActive": "Active",
+      "statusDisabled": "Disabled",
+      "fixedLocalBadge": "Local",
+      "fixedLocalHint": "Fixed local account used by on-machine processes. It cannot be disabled or have its role changed.",
+      "disable": "Disable",
+      "enable": "Enable",
+      "resetPassword": "Reset password",
+      "resetPasswordSubmit": "Reset password",
+      "resetPasswordHint": "This immediately signs this user out on every device.",
+      "newPassword": "New password",
+      "never": "Never",
+      "usernamePlaceholder": "Username",
+      "displayNamePlaceholder": "Display name (optional, defaults to username)",
+      "emailPlaceholder": "Email (optional)",
+      "passwordPlaceholder": "Password",
+      "loadError": "Could not load the member list. Please try again.",
+      "retry": "Retry",
+      "forbiddenTitle": "Can't open member management",
+      "forbiddenDescription": "Only administrators can manage members. Your account permissions may have changed.",
+      "backHome": "Back to home",
+      "empty": "No other members yet."
+    },
+    "inviteAcceptBackToLogin": "Already have an account? Sign in",
+    "inviteAcceptSubmit": "Create account",
+    "inviteAcceptSubmitting": "Creating…",
+    "inviteAcceptSubtitle": "You've been invited to join this team. Create an account to get started.",
+    "inviteAcceptTitle": "Join the team",
+    "invites": {
+      "addInvite": "New invite code",
+      "role": "Role",
+      "expiresInDays": "Expires in (days)",
+      "create": "Generate",
+      "creating": "Generating…",
+      "linkReady": "The invite link was generated — copy it now. You won't be able to see it again after leaving this page.",
+      "copy": "Copy link",
+      "copied": "Copied",
+      "dismiss": "Done",
+      "columnRole": "Role",
+      "columnCreatedAt": "Created",
+      "columnExpiresAt": "Expires",
+      "columnStatus": "Status",
+      "columnActions": "Actions",
+      "statusPending": "Pending",
+      "statusUsed": "Used",
+      "statusExpired": "Expired",
+      "revoke": "Revoke",
+      "empty": "No invite codes yet.",
+      "loadError": "Could not load invite codes. Please try again."
+    }
+  },
   "oauth": {
     "title": "Sign in to Vibe Kanban",
     "description": "Sign in to join organizations and share tasks with your team",
@@ -346,7 +452,9 @@
       "toggle-wrap-lines": "Toggle line wrapping",
       "run-setup-script": "Run setup script",
       "run-cleanup-script": "Run cleanup script",
-      "run-archive-script": "Run archive script"
+      "run-archive-script": "Run archive script",
+      "editSelected": "Edit selected",
+      "openSelected": "Open selected"
     }
   },
   "typeahead": {
@@ -407,6 +515,14 @@
     "markIndependentIssue": "Mark as independent issue",
     "parentIssue": "Parent",
     "subIssueIndicator": "↳",
+    "stage": {
+      "backlog": "Backlog",
+      "todo": "To do",
+      "dev": "In development",
+      "review": "In review",
+      "test": "In testing",
+      "done": "Done"
+    },
     "viewTabs": {
       "active": "Active",
       "all": "All"
@@ -492,6 +608,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "More than {{limit}} issues in this column",
+    "boardEmptyHint": "No issues yet. Create your first issue to get started.",
+    "loadError": {
+      "title": "Could not load this board",
+      "hint": "The sync connection failed. Check your network, then retry."
+    },
+    "columnEmpty": {
+      "emptyTitle": "Nothing here yet",
+      "filteredTitle": "No issues match the current filters",
+      "createIssue": "New issue",
+      "createWorkspace": "Create workspace from issue"
+    },
+    "badge": {
+      "workspaceRunning": "Running",
+      "workspaceStopped": "Stopped",
+      "workspaceFailed": "Failed",
+      "prOpen": "PR in review",
+      "prMerged": "PR merged",
+      "prClosed": "PR closed",
+      "testNotConnected": "Tests N/A"
+    },
+    "density": {
+      "label": "Toggle density",
+      "comfortable": "Comfortable",
+      "compact": "Compact"
+    },
+    "tabs": {
+      "overview": "Overview",
+      "development": "Development",
+      "testing": "Testing"
+    },
+    "testing": {
+      "notConnectedTitle": "Tests are not connected yet",
+      "notConnectedHint": "Test results will show up here once the test runner is wired in.",
+      "passRate": "Pass rate",
+      "passRateHint": "Share of passing cases in the latest run",
+      "failures": "Failures",
+      "failuresHint": "Cases that failed in the latest run",
+      "report": "Report",
+      "reportHint": "Link to the full test report"
+    },
+    "breadcrumb": {
+      "issue": "Open linked issue",
+      "workspace": "Open workspace",
+      "pr": "Open pull request"
     }
   },
   "createMode": {

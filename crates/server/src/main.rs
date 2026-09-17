@@ -139,6 +139,29 @@ async fn main() -> Result<(), VibeKanbanError> {
         .set_preview_proxy_port(actual_proxy_port)
         .expect("client preview proxy port already set");
 
+    // 团队模式首启（库里还没有任何能登录的管理员）：发一张 30 分钟的一次性令牌，
+    // 把初始化链接打印到控制台。令牌只活在进程内存里，重启会重新打印一张新的。
+    //
+    // **必须用实际监听地址与实际端口**：`port` 为 0 时是内核分配的，
+    // 照抄配置里的端口会打印出一个连不上的链接。
+    {
+        let local_addr = main_listener.local_addr()?;
+        // 监听 0.0.0.0 时打印回环地址：链接是给本机管理员点的，
+        // `http://0.0.0.0:port` 在多数浏览器里打不开。
+        let host_for_link = if local_addr.ip().is_unspecified() {
+            "127.0.0.1".to_string()
+        } else {
+            local_addr.ip().to_string()
+        };
+        let base_url = format!("http://{host_for_link}:{actual_main_port}");
+        routes::local_auth::setup::announce_setup_link_if_needed(
+            &deployment.db().pool,
+            deployment.local_auth(),
+            &base_url,
+        )
+        .await;
+    }
+
     let app_router = routes::router(deployment.clone());
 
     // Production only: open browser

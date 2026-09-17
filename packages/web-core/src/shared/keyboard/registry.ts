@@ -31,6 +31,16 @@ export enum Action {
   SUBMIT_TASK_ALT = 'submit_task_alt',
   SUBMIT_COMMENT = 'submit_comment',
   CYCLE_VIEW_BACKWARD = 'cycle_view_backward',
+  /** 编辑当前需求（设计文档 §7.5 的 `e`）。 */
+  EDIT = 'edit',
+  /**
+   * 打开当前需求（设计文档 §7.5 的 `Enter`）。
+   *
+   * 刻意**不复用** `OPEN_DETAILS`：那条已经绑在 `meta+enter` 上，并且兼任
+   * 「打开后循环切换视图」。裸 `Enter` 只做「打开选中的需求」，语义不同，
+   * 所以是独立的 action，两条绑定并存、互不影响。
+   */
+  OPEN_ISSUE = 'open_issue',
 }
 
 export interface KeyBinding {
@@ -371,8 +381,18 @@ export const keyBindings: KeyBinding[] = [
 
   // Creation actions
   {
+    // 设计文档 §7.5 要的是 `n`。这里**两个键都注册**而不是替换 `c`：
+    // 改键位会打断老用户的肌肉记忆，`getKeysFor` 会把同一 action 的多条绑定
+    // 合成一个数组，所以 `c` 和 `n` 会同时生效。
     action: Action.CREATE,
     keys: 'c',
+    scopes: [Scope.KANBAN],
+    description: 'Create new task',
+    group: 'Kanban',
+  },
+  {
+    action: Action.CREATE,
+    keys: 'n',
     scopes: [Scope.KANBAN],
     description: 'Create new task',
     group: 'Kanban',
@@ -444,6 +464,22 @@ export const keyBindings: KeyBinding[] = [
     scopes: [Scope.KANBAN],
     description: 'Cycle views backward (diffs → preview → attempt)',
     group: 'Navigation',
+  },
+  {
+    // 裸 Enter 打开选中的需求。scope 是 KANBAN，和 DIALOG scope 的
+    // `SUBMIT`=`enter`（上面）不冲突——两者 scope 不同，不会同时激活。
+    action: Action.OPEN_ISSUE,
+    keys: 'enter',
+    scopes: [Scope.KANBAN],
+    description: 'Open selected issue',
+    group: 'Navigation',
+  },
+  {
+    action: Action.EDIT,
+    keys: 'e',
+    scopes: [Scope.KANBAN],
+    description: 'Edit selected issue',
+    group: 'Kanban',
   },
 
   // Global actions

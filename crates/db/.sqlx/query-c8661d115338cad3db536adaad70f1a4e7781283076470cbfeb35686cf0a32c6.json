@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) AS \"count!: i64\"\n               FROM local_users u\n               WHERE u.role = 'admin'\n                 AND u.status = 'active'\n                 AND u.id <> $1\n                 AND (u.password_hash IS NOT NULL\n                      OR EXISTS (SELECT 1 FROM local_user_identities i WHERE i.user_id = u.id))",
+  "describe": {
+    "columns": [
+      {
+        "name": "count!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c8661d115338cad3db536adaad70f1a4e7781283076470cbfeb35686cf0a32c6"
+}

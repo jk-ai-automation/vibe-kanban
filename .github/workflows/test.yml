@@ -178,7 +178,7 @@ jobs:
         run: |
           npx concurrently \
             --kill-others-on-fail \
-            --names "local:lint,local:fmt,local:build,remote:fmt,remote:build,ui:check,ui:lint,ui:fmt,core:check,core:fmt,i18n,i18n:unused,legacy" \
+            --names "local:lint,local:fmt,local:build,remote:fmt,remote:build,ui:check,ui:lint,ui:fmt,core:check,core:fmt,core:test,i18n,i18n:unused,legacy" \
             --timings \
             "cd packages/local-web && npm run lint" \
             "cd packages/local-web && npm run format:check" \
@@ -190,9 +190,30 @@ jobs:
             "cd packages/ui && npm run format:check" \
             "cd packages/web-core && npm run check" \
             "cd packages/web-core && npm run format:check" \
+            "cd packages/web-core && npm run test" \
             "GITHUB_BASE_REF=${{ github.base_ref || 'main' }} ./scripts/check-i18n.sh" \
             "node scripts/check-unused-i18n-keys.mjs" \
             "./scripts/check-legacy-frontend-paths.sh"
+
+  # 部署脚本没有编译期，语法错误（例如变量名里混进全角字符）只有真的跑起来才暴露。
+  # 这个 job 很便宜（几秒），所以不挂 paths-filter，任何改动都跑一遍。
+  shell-checks:
+    runs-on: *runner_label
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Bash syntax
+        run: |
+          set -euo pipefail
+          mapfile -t scripts < <(git ls-files '*.sh')
+          printf '%s\n' "${scripts[@]}"
+          bash -n "${scripts[@]}"
+
+      - name: ShellCheck
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          shellcheck --severity=warning deploy/*.sh local-build.sh
 
   backend-schema-checks:
     needs: changes

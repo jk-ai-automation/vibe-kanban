@@ -1,0 +1,141 @@
+---
+title: "Backup, Restore and Upgrades"
+description: "Take consistent SQLite backups of a self-hosted Vibe Kanban, restore them safely, and move an existing personal install to team mode"
+---
+
+A self-hosted Vibe Kanban keeps everything in one data directory:
+
+| Platform | Path                                               |
+| -------- | -------------------------------------------------- |
+| macOS    | `~/Library/Application Support/ai.bloop.vibe-kanban` |
+| Linux    | `${XDG_DATA_HOME:-~/.local/share}/vibe-kanban`      |
+
+```
+db.v2.sqlite        all application data (WAL mode)
+db.v2.sqlite-wal    ┐ companions of the main file; all three together are the database
+db.v2.sqlite-shm    ┘
+server.json         mode, sessions, OAuth credentials (optional)
+config.json         application configuration
+profiles.json       coding-agent profiles
+credentials.json    cloud sign-in state        ← machine credential, excluded from backups
+machine_token       local token used by MCP    ← same, mode 0600
+logs/               stdout and stderr once installed as a service
+backups/            default output of backup.sh
+```
+
+## Never copy the database file
+
+<Warning>
+Copying `db.v2.sqlite` on its own produces a corrupt backup that looks healthy.
+
+The database runs in WAL mode, so recent writes sit in `db.v2.sqlite-wal` and have not been checkpointed into the main file yet. A lone `cp` of the main file yields a snapshot that is missing everything written since the last checkpoint — and that snapshot opens without complaint and passes `PRAGMA integrity_check`. You discover the loss on the day you need the backup.
+
+`deploy/backup_test.sh` pins this down with a test: against one database, copying the main file reads back 3 rows where `sqlite3 .backup` reads back all 23.
+</Warning>
+
+`deploy/backup.sh` always uses SQLite's online backup API (`.backup`), which handles WAL and concurrent writers itself. **The service does not need to be stopped to take a backup.**
+
+## Taking a backup
+
+```bash
+./deploy/backup.sh                              # writes to <data-dir>/backups
+./deploy/backup.sh --out /mnt/nas/vk-backup --keep 30
+```
+
+| Option            | Meaning                                                        |
+| ----------------- | -------------------------------------------------------------- |
+| `--data-dir PATH` | Data directory; otherwise `$VK_DATA_DIR`, otherwise per platform |
+| `--out PATH`      | Output directory (default `<data-dir>/backups`)                 |
+| `--keep N`        | Keep the most recent N archives (default 7, or `VK_BACKUP_KEEP`) |
+
+Each run produces `vibe-kanban-<YYYYmmdd-HHMMSS>.tar.gz` containing a consistent `db.v2.sqlite` snapshot, `server.json`, `config.json`, `profiles.json` and a `MANIFEST.txt` recording the time, host, source path and file list. The finished archive is verified in place — `integrity_check` on the snapshot and a `tar -tzf` read-back — and discarded if either fails, so a backup that exists is a backup that works.
+
+### What is deliberately excluded
+
+`credentials.json`, `machine_token`, `server_ed25519_signing_key`, `trusted_ed25519_public_keys.json` and `relay_host_credentials.json` are **not** in the archive. They are this machine's identity; including them would widen the blast radius of a leak from one machine to every backup and every drive that holds one.
+
+The price is that after restoring onto a different machine you sign in to the cloud account again and re-pair MCP.
+
+### Scheduling
+
+Use launchd on macOS, or a systemd timer or cron on Linux:
+
+```cron
+# every day at 03:00
+0 3 * * * /path/to/deploy/backup.sh --out /mnt/nas/vk-backup --keep 30 >> /tmp/vk-backup.log 2>&1
+```
+
+## Restoring
+
+<Warning>
+Stop the service first. This step cannot be skipped.
+
+A running server holds open connections to `db.v2.sqlite` and its `-wal` and `-shm` companions. Swap the main file underneath it and the process keeps using its stale WAL against the new database; the page numbers no longer line up and the restored database is corrupted on the spot.
+
+`restore.sh` refuses to run when it detects a live service and prints the stop commands. `--force` skips that check, but use it only when you are certain the detection is wrong.
+</Warning>
+
+<Steps>
+<Step title="Stop the service">
+```bash
+launchctl bootout gui/$(id -u)/ai.bloop.vibe-kanban    # macOS
+systemctl --user stop vibe-kanban                       # Linux
+```
+</Step>
+<Step title="Restore the archive">
+```bash
+./deploy/restore.sh /mnt/nas/vk-backup/vibe-kanban-20260917-030000.tar.gz
+```
+
+Add `--db-only` to restore the database alone and leave `server.json`, `config.json` and `profiles.json` untouched.
+</Step>
+<Step title="Start the service again">
+```bash
+launchctl kickstart -k gui/$(id -u)/ai.bloop.vibe-kanban    # macOS
+systemctl --user start vibe-kanban                           # Linux
+```
+</Step>
+</Steps>
+
+The restore itself is conservative:
+
+- The archive is checked before anything is touched: it must unpack, it must contain `db.v2.sqlite`, and that file must pass `integrity_check`. Any failure aborts with your existing data untouched.
+- The current `db.v2.sqlite` and its `-wal`/`-shm` companions are renamed to `.bak.<timestamp>` and left in place rather than deleted. Remove them yourself once the restored database looks right.
+- The copy is verified again afterwards, and a failure at that point rolls the saved originals back.
+
+## Verifying the scripts
+
+```bash
+bash deploy/backup_test.sh
+```
+
+The suite works entirely in temporary directories and never touches a real data directory. Its 21 checks cover a basic round trip, the un-checkpointed WAL case (including the "plain `cp` loses data" control), a restore round trip, the overwrite-and-keep-originals behaviour, retention pruning, and seven failure paths: missing data directory, missing database, missing `sqlite3`, corrupt archive, missing archive, corrupt database inside the archive, and an archive that is not a Vibe Kanban backup.
+
+## Upgrading a personal install to team mode
+
+The upgrade is purely additive. Four new tables and one fixed user row are created, and the creator already recorded on existing issues and comments is never rewritten — not even when it points at a user id that does not exist after the migration. Workspaces gain a creator column they did not have before, backfilled to the built-in `local` user and re-runnable without disturbing rows already filled in. Tests pin all of that.
+
+<Steps>
+<Step title="Take a backup">
+```bash
+./deploy/backup.sh
+```
+</Step>
+<Step title="Switch the mode and restart">
+Set `VK_MODE=team` (or `"mode": "team"` in `server.json`) and restart the server. See [Team Mode](/self-hosting/team-mode) for the full configuration reference.
+</Step>
+<Step title="Create the first administrator">
+Take the one-time setup link from the log and open it within 30 minutes.
+</Step>
+</Steps>
+
+### Rolling back
+
+Switching back to `personal` loses nothing: the mode affects authentication only, never data. Existing accounts, sessions and invitations stay in the database and become relevant again the next time you run in team mode.
+
+If the WAL journal mode causes trouble — the file-locking behaviour on Windows has not been verified — set `VK_SQLITE_WAL=0`, or `"sqlite_wal": false` in `server.json`, to fall back to the previous `DELETE` journal mode. The setting applies at startup and converts the database in place, in either direction.
+
+## Related
+
+- [Team Mode](/self-hosting/team-mode)
+- [`deploy/README.md`](https://github.com/jk-ai-automation/vibe-kanban/blob/main/deploy/README.md) — the same material as a Chinese quick reference shipped inside the deployment bundle

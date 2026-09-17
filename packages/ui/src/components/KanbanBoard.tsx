@@ -259,18 +259,39 @@ export type KanbanProviderProps = {
   children: ReactNode;
   onDragEnd: (result: DropResult) => void;
   className?: string;
+  /**
+   * 列数。传了就把网格改成「撑满宽度、每列 minmax(180px, 400px)」，
+   * 这样 1280px 窄屏下 6 列也能自适应变窄而不是撑出横向滚动条
+   * （设计文档 §11.7 验收项）。不传时沿用原来的 `inline-grid` 行为。
+   */
+  columnCount?: number;
 };
+
+const KANBAN_COLUMN_MIN_WIDTH_PX = 180;
+const KANBAN_COLUMN_MAX_WIDTH_PX = 400;
 
 export const KanbanProvider = ({
   children,
   onDragEnd,
   className,
+  columnCount,
 }: KanbanProviderProps) => {
+  const fitsToWidth = typeof columnCount === 'number' && columnCount > 0;
+
   return (
     <DragDropContext onDragEnd={onDragEnd}>
       <div
+        style={
+          fitsToWidth
+            ? {
+                gridTemplateColumns: `repeat(${columnCount}, minmax(${KANBAN_COLUMN_MIN_WIDTH_PX}px, ${KANBAN_COLUMN_MAX_WIDTH_PX}px))`,
+              }
+            : undefined
+        }
         className={cn(
-          'inline-grid grid-flow-col auto-cols-[minmax(200px,400px)] divide-x border-x items-stretch min-h-full',
+          fitsToWidth
+            ? 'grid w-full divide-x border-x items-stretch min-h-full'
+            : 'inline-grid grid-flow-col auto-cols-[minmax(200px,400px)] divide-x border-x items-stretch min-h-full',
           className
         )}
       >

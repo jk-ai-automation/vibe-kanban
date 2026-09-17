@@ -713,6 +713,7 @@ async fn cleanup_failed_pr_workspace(pool: &sqlx::SqlitePool, workspace: &Worksp
 #[axum::debug_handler]
 pub async fn create_workspace_from_pr(
     State(deployment): State<DeploymentImpl>,
+    current_user: crate::middleware::local_session::CurrentUser,
     Json(payload): Json<CreateWorkspaceFromPrBody>,
 ) -> Result<ResponseJson<ApiResponse<CreateWorkspaceFromPrResponse, CreateFromPrError>>, ApiError> {
     let pool = &deployment.db().pool;
@@ -741,6 +742,7 @@ pub async fn create_workspace_from_pr(
             name: Some(payload.pr_title.clone()),
         },
         workspace_id,
+        current_user.id,
     )
     .await?;
 

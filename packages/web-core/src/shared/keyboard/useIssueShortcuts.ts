@@ -12,6 +12,8 @@ import { isProjectDestination } from '@/shared/lib/routes/appNavigation';
 import { useCurrentAppDestination } from '@/shared/hooks/useCurrentAppDestination';
 import { useCurrentKanbanRouteState } from '@/shared/hooks/useCurrentKanbanRouteState';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
+import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { isShortcutSuppressed } from '@/shared/keyboard/shortcutGuards';
 
 const SEQUENCE_TIMEOUT_MS = 1500;
 
@@ -37,7 +39,17 @@ export function useIssueShortcuts() {
   const toggleIssue = useIssueSelectionStore((s) => s.toggleIssue);
   const selectAdjacent = useIssueSelectionStore((s) => s.selectAdjacent);
 
+  // 关闭右侧需求面板 = 回到项目看板路由（面板状态由 URL 驱动）。
+  const appNavigation = useAppNavigation();
+  const closeIssuePanel = useCallback(
+    (currentProjectId: string) => {
+      appNavigation.goToProject(currentProjectId);
+    },
+    [appNavigation]
+  );
+
   const executeActionRef = useRef(executeAction);
+  const closeIssuePanelRef = useRef(closeIssuePanel);
   const projectIdRef = useRef(projectId);
   const issueIdRef = useRef(issueId);
   const isKanbanRef = useRef(isKanban);
@@ -50,6 +62,7 @@ export function useIssueShortcuts() {
 
   useEffect(() => {
     executeActionRef.current = executeAction;
+    closeIssuePanelRef.current = closeIssuePanel;
     projectIdRef.current = projectId;
     issueIdRef.current = issueId;
     isKanbanRef.current = isKanban;
@@ -195,7 +208,8 @@ export function useIssueShortcuts() {
     { scopes: [Scope.KANBAN], enabled }
   );
 
-  // Clear selection on Escape
+  // Escape 分级处理（设计文档 §7.5）：先清多选，没有多选再关右侧需求面板。
+  // **刻意只有这一条 escape 绑定**——再加一条会和这里抢事件。
   useHotkeys(
     'escape',
     (e) => {
@@ -204,7 +218,20 @@ export function useIssueShortcuts() {
         e.preventDefault();
         e.stopPropagation();
         clearSelectionRef.current();
+        return;
       }
+
+      // 弹窗自己会处理 Escape（Radix / 命令面板），这时候不能顺手把需求面板也关了。
+      if (isShortcutSuppressed()) return;
+
+      const currentProjectId = projectIdRef.current;
+      const currentIssueId = issueIdRef.current;
+      if (!currentProjectId || !currentIssueId) return;
+      if (isCreatingIssueRef.current) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      closeIssuePanelRef.current(currentProjectId);
     },
     { scopes: [Scope.KANBAN], enabled }
   );

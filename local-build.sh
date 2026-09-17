@@ -42,9 +42,31 @@ fi
 echo "🔍 Detected platform: $PLATFORM"
 echo "🔧 Using target directory: $CARGO_TARGET_DIR"
 
-# Set API base URL for remote features
-export VK_SHARED_API_BASE="https://api.vibekanban.com"
-export VITE_VK_SHARED_API_BASE="https://api.vibekanban.com"
+# Cloud API base for remote features.
+#
+# Default is EMPTY = purely local build that talks to no cloud service at all.
+# Self-hosted builds want this; see deploy/build-selfhost.sh.
+#
+# Official release artefacts are NOT built by this script: .github/workflows/
+# pre-release.yml drives `cargo build --release` directly and injects
+# VK_SHARED_API_BASE from repository secrets. publish.yml only downloads the
+# .tgz that pre-release.yml produced and runs `npm publish` on it. So flipping
+# this default does not change what ships to npm.
+#
+# To reproduce a cloud-connected build locally:
+#   VK_SHARED_API_BASE=https://api.vibekanban.com ./local-build.sh
+if [ -n "${VK_SHARED_API_BASE:-}" ]; then
+  export VK_SHARED_API_BASE
+  export VITE_VK_SHARED_API_BASE="${VITE_VK_SHARED_API_BASE:-$VK_SHARED_API_BASE}"
+  echo "☁️  Cloud API base: $VK_SHARED_API_BASE"
+else
+  # Unset rather than export as "": crates/local-deployment/build.rs forwards
+  # whatever it finds to option_env!(), and an empty string would make the
+  # server try to build a RemoteClient from "" and log a startup error.
+  unset VK_SHARED_API_BASE
+  export VITE_VK_SHARED_API_BASE="${VITE_VK_SHARED_API_BASE:-}"
+  echo "🏠 Cloud API base: (unset) — local-only build, no cloud connection"
+fi
 
 echo "🧹 Cleaning previous builds..."
 rm -rf npx-cli/dist

@@ -49,7 +49,7 @@
     "subagent": {
       "defaultType": "Sous-agent"
     },
-    "loadingEarlierMessages": "Chargement des messages pr\u00e9c\u00e9dents"
+    "loadingEarlierMessages": "Chargement des messages précédents"
   },
   "folderPicker": {
     "legend": "Cliquez sur les noms de dossiers pour naviguer • Utilisez les boutons d'action pour sélectionner",
@@ -78,6 +78,112 @@
   "error": "Erreur",
   "signIn": "Se connecter",
   "signOut": "Se déconnecter",
+  "localAuth": {
+    "signInTitle": "Connexion à Vibe Kanban",
+    "signInSubtitle": "Ce serveur fonctionne en mode équipe et nécessite un compte.",
+    "username": "Nom d'utilisateur",
+    "password": "Mot de passe",
+    "signIn": "Se connecter",
+    "signingIn": "Connexion…",
+    "invalidCredentials": "Nom d'utilisateur ou mot de passe incorrect.",
+    "rateLimited": "Trop de tentatives. Patientez un instant puis réessayez.",
+    "networkError": "Impossible de joindre le serveur. Vérifiez votre connexion et réessayez.",
+    "loading": "Chargement…",
+    "checking": "Vérification…",
+    "retry": "Vérifier à nouveau",
+    "orContinueWith": "Ou continuer avec",
+    "setupTitle": "Configurer votre équipe",
+    "setupDescription": "Le mode équipe est activé mais aucun compte administrateur n'existe encore.",
+    "errors": {
+      "usernameRequired": "Saisissez votre nom d'utilisateur.",
+      "passwordRequired": "Saisissez votre mot de passe.",
+      "usernameInvalid": "Le nom d'utilisateur ne peut contenir que des minuscules, des chiffres et . _ -, jusqu'à 64 caractères.",
+      "passwordTooShort": "Le mot de passe doit contenir au moins 8 caractères.",
+      "passwordTooLong": "Le mot de passe ne peut pas dépasser 1024 caractères.",
+      "emailInvalid": "Saisissez une adresse e-mail valide.",
+      "displayNameRequired": "Saisissez un nom affiché.",
+      "inviteTtlInvalid": "La durée de validité doit être un nombre entier de jours entre 1 et 30."
+    },
+    "providers": {
+      "feishu": "Feishu",
+      "lark": "Lark",
+      "google": "Google"
+    },
+    "setupNoToken": "Ce serveur doit être initialisé. Consultez la console du serveur pour obtenir le lien de configuration.",
+    "setupLinkExpired": "Ce lien a expiré. Redémarrez le serveur pour en obtenir un nouveau.",
+    "setupAlreadyInitialized": "La configuration de ce serveur a déjà été terminée par quelqu'un.",
+    "setupGoToLogin": "Aller à la connexion",
+    "setupDisplayName": "Nom affiché (facultatif, utilise le nom d'utilisateur si vide)",
+    "setupEmail": "E-mail (facultatif)",
+    "setupSubmit": "Créer le compte administrateur",
+    "setupSubmitting": "Création…",
+    "setupRoleNote": "Ce compte sera créé en tant qu'administrateur.",
+    "members": {
+      "pageTitle": "Membres",
+      "sectionMembers": "Membres",
+      "sectionInvites": "Codes d'invitation",
+      "addMember": "Nouveau membre",
+      "cancel": "Annuler",
+      "create": "Créer",
+      "creating": "Création…",
+      "columnUser": "Utilisateur",
+      "columnEmail": "E-mail",
+      "columnRole": "Rôle",
+      "columnStatus": "Statut",
+      "columnLastLogin": "Dernière connexion",
+      "columnActions": "Actions",
+      "roleAdmin": "Administrateur",
+      "roleMember": "Membre",
+      "statusActive": "Actif",
+      "statusDisabled": "Désactivé",
+      "fixedLocalBadge": "Local",
+      "fixedLocalHint": "Compte local fixe utilisé par les processus de cette machine. Il ne peut pas être désactivé ni changer de rôle.",
+      "disable": "Désactiver",
+      "enable": "Activer",
+      "resetPassword": "Réinitialiser le mot de passe",
+      "resetPasswordSubmit": "Confirmer la réinitialisation",
+      "resetPasswordHint": "Cela déconnecte immédiatement cet utilisateur de tous ses appareils.",
+      "newPassword": "Nouveau mot de passe",
+      "never": "Jamais",
+      "usernamePlaceholder": "Nom d'utilisateur",
+      "displayNamePlaceholder": "Nom affiché (facultatif, utilise le nom d'utilisateur si vide)",
+      "emailPlaceholder": "E-mail (facultatif)",
+      "passwordPlaceholder": "Mot de passe",
+      "loadError": "Impossible de charger la liste des membres. Réessayez.",
+      "retry": "Réessayer",
+      "forbiddenTitle": "Impossible d'ouvrir la gestion des membres",
+      "forbiddenDescription": "Seuls les administrateurs peuvent gérer les membres. Vos autorisations ont peut-être changé.",
+      "backHome": "Retour à l'accueil",
+      "empty": "Il n'y a pas encore d'autre membre."
+    },
+    "inviteAcceptBackToLogin": "Vous avez déjà un compte ? Connectez-vous",
+    "inviteAcceptSubmit": "Créer le compte",
+    "inviteAcceptSubmitting": "Création…",
+    "inviteAcceptSubtitle": "Vous avez été invité(e) à rejoindre cette équipe. Créez un compte pour commencer.",
+    "inviteAcceptTitle": "Rejoindre l'équipe",
+    "invites": {
+      "addInvite": "Générer un code d'invitation",
+      "role": "Rôle",
+      "expiresInDays": "Expire dans (jours)",
+      "create": "Générer",
+      "creating": "Génération…",
+      "linkReady": "Le lien d'invitation a été généré, copiez-le maintenant : vous ne pourrez plus le revoir après avoir quitté cette page.",
+      "copy": "Copier le lien",
+      "copied": "Copié",
+      "dismiss": "Terminé",
+      "columnRole": "Rôle",
+      "columnCreatedAt": "Créé le",
+      "columnExpiresAt": "Expire le",
+      "columnStatus": "Statut",
+      "columnActions": "Actions",
+      "statusPending": "En attente",
+      "statusUsed": "Utilisé",
+      "statusExpired": "Expiré",
+      "revoke": "Révoquer",
+      "empty": "Il n'y a pas encore de code d'invitation.",
+      "loadError": "Impossible de charger les codes d'invitation. Réessayez."
+    }
+  },
   "oauth": {
     "title": "Se connecter à Vibe Kanban",
     "description": "Connectez-vous pour rejoindre des organisations et partager des tâches avec votre équipe",
@@ -332,7 +438,9 @@
       "toggle-wrap-lines": "Basculer le retour à la ligne",
       "run-setup-script": "Exécuter le script de configuration",
       "run-cleanup-script": "Exécuter le script de nettoyage",
-      "run-archive-script": "Exécuter le script d'archivage"
+      "run-archive-script": "Exécuter le script d'archivage",
+      "editSelected": "Modifier la sélection",
+      "openSelected": "Ouvrir la sélection"
     }
   },
   "typeahead": {
@@ -393,6 +501,14 @@
     "markIndependentIssue": "Marquer comme problème indépendant",
     "parentIssue": "Parent",
     "subIssueIndicator": "↳",
+    "stage": {
+      "backlog": "À planifier",
+      "todo": "À faire",
+      "dev": "En développement",
+      "review": "En revue",
+      "test": "En test",
+      "done": "Terminé"
+    },
     "viewTabs": {
       "active": "Actif",
       "all": "Tout"
@@ -478,6 +594,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "Plus de {{limit}} tickets dans cette colonne",
+    "boardEmptyHint": "Aucun ticket pour l’instant. Créez le premier pour démarrer.",
+    "loadError": {
+      "title": "Impossible de charger ce tableau",
+      "hint": "La connexion de synchronisation a échoué. Vérifiez votre réseau, puis réessayez."
+    },
+    "columnEmpty": {
+      "emptyTitle": "Rien ici pour l’instant",
+      "filteredTitle": "Aucun ticket ne correspond aux filtres actuels",
+      "createIssue": "Nouveau ticket",
+      "createWorkspace": "Créer un espace de travail depuis le ticket"
+    },
+    "badge": {
+      "workspaceRunning": "En cours",
+      "workspaceStopped": "Arrêté",
+      "workspaceFailed": "En échec",
+      "prOpen": "PR en revue",
+      "prMerged": "PR fusionnée",
+      "prClosed": "PR fermée",
+      "testNotConnected": "Tests indisponibles"
+    },
+    "density": {
+      "label": "Changer la densité",
+      "comfortable": "Confortable",
+      "compact": "Compacte"
+    },
+    "tabs": {
+      "overview": "Aperçu",
+      "development": "Développement",
+      "testing": "Tests"
+    },
+    "testing": {
+      "notConnectedTitle": "Les tests ne sont pas encore connectés",
+      "notConnectedHint": "Les résultats s’afficheront ici une fois l’exécuteur de tests branché.",
+      "passRate": "Taux de réussite",
+      "passRateHint": "Part des cas réussis lors de la dernière exécution",
+      "failures": "Échecs",
+      "failuresHint": "Cas en échec lors de la dernière exécution",
+      "report": "Rapport",
+      "reportHint": "Lien vers le rapport de tests complet"
+    },
+    "breadcrumb": {
+      "issue": "Ouvrir le ticket lié",
+      "workspace": "Ouvrir l’espace de travail",
+      "pr": "Ouvrir la pull request"
     }
   },
   "createMode": {

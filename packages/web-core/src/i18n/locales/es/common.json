@@ -78,6 +78,112 @@
   "error": "Error",
   "signIn": "Iniciar sesión",
   "signOut": "Cerrar sesión",
+  "localAuth": {
+    "signInTitle": "Inicia sesión en Vibe Kanban",
+    "signInSubtitle": "Este servidor funciona en modo equipo y requiere una cuenta.",
+    "username": "Usuario",
+    "password": "Contraseña",
+    "signIn": "Iniciar sesión",
+    "signingIn": "Iniciando sesión…",
+    "invalidCredentials": "Usuario o contraseña incorrectos.",
+    "rateLimited": "Demasiados intentos. Espera un momento y vuelve a intentarlo.",
+    "networkError": "No se puede conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo.",
+    "loading": "Cargando…",
+    "checking": "Comprobando…",
+    "retry": "Comprobar de nuevo",
+    "orContinueWith": "O continúa con",
+    "setupTitle": "Configura tu equipo",
+    "setupDescription": "El modo equipo está activado, pero aún no existe ninguna cuenta de administrador.",
+    "errors": {
+      "usernameRequired": "Introduce tu usuario.",
+      "passwordRequired": "Introduce tu contraseña.",
+      "usernameInvalid": "El usuario solo puede contener minúsculas, dígitos y . _ -, hasta 64 caracteres.",
+      "passwordTooShort": "La contraseña debe tener al menos 8 caracteres.",
+      "passwordTooLong": "La contraseña no puede superar los 1024 caracteres.",
+      "emailInvalid": "Introduce una dirección de correo válida.",
+      "displayNameRequired": "Introduce un nombre visible.",
+      "inviteTtlInvalid": "La vigencia debe ser un número entero de días entre 1 y 30."
+    },
+    "providers": {
+      "feishu": "Feishu",
+      "lark": "Lark",
+      "google": "Google"
+    },
+    "setupNoToken": "Este servidor necesita inicializarse. Consulta la consola del servidor para obtener el enlace de configuración.",
+    "setupLinkExpired": "Este enlace ha caducado. Reinicia el servidor para obtener uno nuevo.",
+    "setupAlreadyInitialized": "Alguien ya completó la configuración de este servidor.",
+    "setupGoToLogin": "Ir a iniciar sesión",
+    "setupDisplayName": "Nombre visible (opcional, usa el usuario si se deja vacío)",
+    "setupEmail": "Correo electrónico (opcional)",
+    "setupSubmit": "Crear cuenta de administrador",
+    "setupSubmitting": "Creando…",
+    "setupRoleNote": "Esta cuenta se creará como administradora.",
+    "members": {
+      "pageTitle": "Miembros",
+      "sectionMembers": "Miembros",
+      "sectionInvites": "Códigos de invitación",
+      "addMember": "Nuevo miembro",
+      "cancel": "Cancelar",
+      "create": "Crear",
+      "creating": "Creando…",
+      "columnUser": "Usuario",
+      "columnEmail": "Correo",
+      "columnRole": "Rol",
+      "columnStatus": "Estado",
+      "columnLastLogin": "Último acceso",
+      "columnActions": "Acciones",
+      "roleAdmin": "Administrador",
+      "roleMember": "Miembro",
+      "statusActive": "Activo",
+      "statusDisabled": "Deshabilitado",
+      "fixedLocalBadge": "Local",
+      "fixedLocalHint": "Cuenta local fija usada por procesos de esta máquina. No se puede deshabilitar ni cambiar su rol.",
+      "disable": "Deshabilitar",
+      "enable": "Habilitar",
+      "resetPassword": "Restablecer contraseña",
+      "resetPasswordSubmit": "Confirmar restablecimiento",
+      "resetPasswordHint": "Esto cierra la sesión de este usuario en todos los dispositivos de inmediato.",
+      "newPassword": "Nueva contraseña",
+      "never": "Nunca",
+      "usernamePlaceholder": "Usuario",
+      "displayNamePlaceholder": "Nombre visible (opcional, usa el usuario si se deja vacío)",
+      "emailPlaceholder": "Correo electrónico (opcional)",
+      "passwordPlaceholder": "Contraseña",
+      "loadError": "No se pudo cargar la lista de miembros. Inténtalo de nuevo.",
+      "retry": "Reintentar",
+      "forbiddenTitle": "No se puede abrir la gestión de miembros",
+      "forbiddenDescription": "Solo los administradores pueden gestionar miembros. Puede que tus permisos hayan cambiado.",
+      "backHome": "Volver al inicio",
+      "empty": "Todavía no hay más miembros."
+    },
+    "inviteAcceptBackToLogin": "¿Ya tienes una cuenta? Inicia sesión",
+    "inviteAcceptSubmit": "Crear cuenta",
+    "inviteAcceptSubmitting": "Creando…",
+    "inviteAcceptSubtitle": "Te han invitado a unirte a este equipo. Crea una cuenta para empezar.",
+    "inviteAcceptTitle": "Únete al equipo",
+    "invites": {
+      "addInvite": "Generar código de invitación",
+      "role": "Rol",
+      "expiresInDays": "Caduca en (días)",
+      "create": "Generar",
+      "creating": "Generando…",
+      "linkReady": "Se generó el enlace de invitación: cópialo ahora. No podrás volver a verlo después de salir de esta página.",
+      "copy": "Copiar enlace",
+      "copied": "Copiado",
+      "dismiss": "Listo",
+      "columnRole": "Rol",
+      "columnCreatedAt": "Creado",
+      "columnExpiresAt": "Caduca",
+      "columnStatus": "Estado",
+      "columnActions": "Acciones",
+      "statusPending": "Pendiente",
+      "statusUsed": "Usado",
+      "statusExpired": "Caducado",
+      "revoke": "Revocar",
+      "empty": "Todavía no hay códigos de invitación.",
+      "loadError": "No se pudieron cargar los códigos de invitación. Inténtalo de nuevo."
+    }
+  },
   "oauth": {
     "title": "Iniciar sesión en Vibe Kanban",
     "description": "Inicia sesión para unirte a organizaciones y compartir tareas con tu equipo",
@@ -332,7 +438,9 @@
       "toggle-wrap-lines": "Alternar ajuste de línea",
       "run-setup-script": "Ejecutar script de configuración",
       "run-cleanup-script": "Ejecutar script de limpieza",
-      "run-archive-script": "Ejecutar script de archivado"
+      "run-archive-script": "Ejecutar script de archivado",
+      "editSelected": "Editar selección",
+      "openSelected": "Abrir selección"
     }
   },
   "typeahead": {
@@ -393,6 +501,14 @@
     "markIndependentIssue": "Marcar como problema independiente",
     "parentIssue": "Padre",
     "subIssueIndicator": "↳",
+    "stage": {
+      "backlog": "Pendiente de planificar",
+      "todo": "Por hacer",
+      "dev": "En desarrollo",
+      "review": "En revisión",
+      "test": "En pruebas",
+      "done": "Completado"
+    },
     "viewTabs": {
       "active": "Activo",
       "all": "Todo"
@@ -478,6 +594,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "Más de {{limit}} incidencias en esta columna",
+    "boardEmptyHint": "Aún no hay incidencias. Crea la primera para empezar.",
+    "loadError": {
+      "title": "No se pudo cargar este tablero",
+      "hint": "Falló la conexión de sincronización. Revisa tu red y reinténtalo."
+    },
+    "columnEmpty": {
+      "emptyTitle": "Todavía no hay nada aquí",
+      "filteredTitle": "Ninguna incidencia coincide con los filtros actuales",
+      "createIssue": "Nueva incidencia",
+      "createWorkspace": "Crear espacio de trabajo desde la incidencia"
+    },
+    "badge": {
+      "workspaceRunning": "En ejecución",
+      "workspaceStopped": "Detenido",
+      "workspaceFailed": "Con errores",
+      "prOpen": "PR en revisión",
+      "prMerged": "PR fusionada",
+      "prClosed": "PR cerrada",
+      "testNotConnected": "Pruebas no disponibles"
+    },
+    "density": {
+      "label": "Cambiar densidad",
+      "comfortable": "Cómoda",
+      "compact": "Compacta"
+    },
+    "tabs": {
+      "overview": "Resumen",
+      "development": "Desarrollo",
+      "testing": "Pruebas"
+    },
+    "testing": {
+      "notConnectedTitle": "Las pruebas aún no están conectadas",
+      "notConnectedHint": "Los resultados aparecerán aquí cuando se conecte el ejecutor de pruebas.",
+      "passRate": "Tasa de aciertos",
+      "passRateHint": "Proporción de casos superados en la última ejecución",
+      "failures": "Fallos",
+      "failuresHint": "Casos que fallaron en la última ejecución",
+      "report": "Informe",
+      "reportHint": "Enlace al informe completo de pruebas"
+    },
+    "breadcrumb": {
+      "issue": "Abrir incidencia vinculada",
+      "workspace": "Abrir espacio de trabajo",
+      "pr": "Abrir pull request"
     }
   },
   "createMode": {

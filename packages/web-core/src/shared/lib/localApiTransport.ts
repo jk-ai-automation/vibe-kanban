@@ -1,4 +1,14 @@
 import { getCurrentHostId } from '@/shared/providers/HostIdProvider';
+import {
+  CSRF_HEADER_NAME,
+  methodNeedsCsrf,
+  readCsrfToken,
+} from '@/shared/lib/local/csrf';
+import { requiresLogin } from '@/shared/lib/local/runtimeMode';
+import {
+  notifySessionExpired,
+  shouldTreatAsSessionExpired,
+} from '@/shared/lib/local/sessionExpiry';
 
 export type LocalApiHostScope = 'current' | 'explicit' | 'none';
 
@@ -108,11 +118,45 @@ export function setLocalApiTransport(nextTransport: LocalApiTransport | null) {
   transport = nextTransport ?? defaultTransport;
 }
 
+/**
+ * 本地 `/api/*` 请求的唯一收口。
+ *
+ * 这里做两件跟认证有关的事：
+ * 1. **写方法自动带上 `X-VK-CSRF` 头**（值取自非 HttpOnly 的 `vk_csrf` Cookie）。
+ *    Cookie 本身是同源 fetch 默认就会带的（`credentials: 'same-origin'`），
+ *    **不需要** `credentials: 'include'`——加了反而会触发跨域预检。
+ * 2. **识别会话过期**（团队模式下的 401）并广播一次，由会话上下文决定跳登录页。
+ *    403（CSRF 校验失败）**不**走这条路，见 `sessionExpiry.ts`。
+ */
 export async function makeLocalApiRequest(
   pathOrUrl: string,
   init: LocalApiRequestOptions = {}
 ): Promise<Response> {
-  return transport.request(resolveScopedPath(pathOrUrl, init), init);
+  const scopedPath = resolveScopedPath(pathOrUrl, init);
+
+  let requestInit = init;
+  if (methodNeedsCsrf(init.method)) {
+    const token = readCsrfToken();
+    if (token) {
+      const headers = new Headers(init.headers ?? {});
+      headers.set(CSRF_HEADER_NAME, token);
+      requestInit = { ...init, headers };
+    }
+  }
+
+  const response = await transport.request(scopedPath, requestInit);
+
+  if (
+    shouldTreatAsSessionExpired({
+      status: response.status,
+      requiresLogin: requiresLogin(),
+      path: scopedPath,
+    })
+  ) {
+    notifySessionExpired();
+  }
+
+  return response;
 }
 
 export async function openLocalApiWebSocket(

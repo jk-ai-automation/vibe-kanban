@@ -25,6 +25,8 @@ export interface IssueListSectionProps {
   issueIds: string[];
   issueMap: Record<string, IssueListRowIssue>;
   issueAssigneesMap: Record<string, KanbanAssigneeUser[]>;
+  /** 负责人头像只在团队版出现；个人版传 false。 */
+  showAssignees?: boolean;
   getTagObjectsForIssue: (issueId: string) => IssueListRowTag[];
   getResolvedRelationshipsForIssue?: (
     issueId: string
@@ -42,6 +44,7 @@ export function IssueListSection({
   issueIds,
   issueMap,
   issueAssigneesMap,
+  showAssignees,
   getTagObjectsForIssue,
   getResolvedRelationshipsForIssue,
   onIssueClick,
@@ -117,6 +120,7 @@ export function IssueListSection({
                     tags={getTagObjectsForIssue(issue.id)}
                     relationships={getResolvedRelationshipsForIssue?.(issue.id)}
                     assignees={issueAssigneesMap[issue.id] ?? []}
+                    showAssignees={showAssignees}
                     onClick={(e) => onIssueClick(issue.id, e)}
                     isSelected={selectedIssueId === issue.id}
                     isMultiSelectActive={isMultiSelectActive}

@@ -178,7 +178,7 @@ mod tests {
         let body = handle_list(test_db.pool(), a).await.unwrap().0;
         let rows = body["project_statuses"].as_array().unwrap();
 
-        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.len(), 6);
         assert!(rows.iter().all(|r| r["project_id"] == a.to_string()));
         assert_ne!(a, b);
     }
@@ -253,6 +253,7 @@ mod tests {
         use api_types::issue::CreateIssueRequest;
         use db::models::{
             issue::Issues,
+            local_project::DEFAULT_USER_ID,
             local_project_status::{ProjectStatuses, StageType},
         };
 
@@ -280,6 +281,7 @@ mod tests {
                 parent_issue_sort_order: None,
                 extension_metadata: serde_json::json!({}),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();

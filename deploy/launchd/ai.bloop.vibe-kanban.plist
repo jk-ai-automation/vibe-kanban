@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd 模板。占位符由 deploy/install-macos.sh 替换，不要手工改这里的
+  __XXX__ 再 load，替换是安装脚本的职责（它还会做二进制存在性与端口检查）。
+
+  占位符：
+    __BIN_PATH__         可执行文件绝对路径
+    __DATA_DIR__         数据目录绝对路径（日志写到 __DATA_DIR__/logs/）
+    __MODE__             personal / team
+    __HOST__             监听地址（team 通常 0.0.0.0，personal 只能 127.0.0.1）
+    __PORT__             监听端口
+    __ALLOWED_ORIGINS__  VK_ALLOWED_ORIGINS，逗号分隔
+    __PATH__             PATH。launchd 默认只给 /usr/bin:/bin:/usr/sbin:/sbin，
+                         而 vibe-kanban 要拉起 git 和各家编码代理 CLI，
+                         不显式给 PATH 会在运行时报「command not found」。
+
+  KeepAlive=true 就是设计文档里 Restart=always 的等价物。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.bloop.vibe-kanban</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__BIN_PATH__</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>VK_MODE</key>
+    <string>__MODE__</string>
+    <key>HOST</key>
+    <string>__HOST__</string>
+    <key>BACKEND_PORT</key>
+    <string>__PORT__</string>
+    <key>VK_ALLOWED_ORIGINS</key>
+    <string>__ALLOWED_ORIGINS__</string>
+    <key>PATH</key>
+    <string>__PATH__</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- 崩溃循环时别把 CPU 跑满：launchd 最小重启间隔 10 秒。 -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <!-- 交互式后台服务，别被降到 Background QoS（会拖慢子进程）。 -->
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
+  <key>WorkingDirectory</key>
+  <string>__DATA_DIR__</string>
+  <key>StandardOutPath</key>
+  <string>__DATA_DIR__/logs/stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__DATA_DIR__/logs/stderr.log</string>
+</dict>
+</plist>

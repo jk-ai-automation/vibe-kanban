@@ -144,11 +144,12 @@ pub(crate) async fn handle_comment_list(
 pub(crate) async fn handle_comment_create(
     pool: &SqlitePool,
     payload: CreateIssueCommentRequest,
+    current_user_id: Uuid,
 ) -> Result<Json<TxidResponse>, ApiError> {
     if Issues::find_by_id(pool, payload.issue_id).await?.is_none() {
         return Err(ApiError::BadRequest("需求不存在".to_string()));
     }
-    IssueComments::create(pool, &payload)
+    IssueComments::create(pool, &payload, current_user_id)
         .await
         .map_err(map_issue_error)?;
     Ok(txid())
@@ -276,8 +277,9 @@ pub fn router() -> Router<DeploymentImpl> {
             )
             .post(
                 |State(d): State<DeploymentImpl>,
+                 current_user: crate::middleware::local_session::CurrentUser,
                  Json(p): Json<CreateIssueCommentRequest>| async move {
-                    handle_comment_create(&d.db().pool, p).await
+                    handle_comment_create(&d.db().pool, p, current_user.id).await
                 },
             ),
         )
@@ -316,7 +318,7 @@ mod tests {
     use db::{
         models::{
             issue::Issues,
-            local_project::{DEFAULT_ORGANIZATION_ID, LocalProjects},
+            local_project::{DEFAULT_ORGANIZATION_ID, DEFAULT_USER_ID, LocalProjects},
             local_project_status::{ProjectStatuses, StageType},
         },
         test_support::TestDb,
@@ -380,10 +382,40 @@ mod tests {
                 parent_issue_sort_order: None,
                 extension_metadata: serde_json::json!({}),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
         (project.id, issue.id)
+    }
+
+    #[tokio::test]
+    async fn 建评论时落的是传入的当前用户() {
+        let test_db = TestDb::new().await;
+        let (_, issue_id) = 准备(&test_db).await;
+        let current_user_id = Uuid::from_u128(7);
+
+        let _ = handle_comment_create(
+            test_db.pool(),
+            CreateIssueCommentRequest {
+                id: None,
+                issue_id,
+                message: "指定当前用户".to_string(),
+                parent_id: None,
+            },
+            current_user_id,
+        )
+        .await
+        .unwrap();
+
+        let body = handle_comment_list(test_db.pool(), issue_id)
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            body["issue_comments"][0]["author_id"],
+            current_user_id.to_string()
+        );
     }
 
     #[tokio::test]
@@ -488,6 +520,7 @@ mod tests {
                 message: "第一条评论".to_string(),
                 parent_id: None,
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -517,6 +550,7 @@ mod tests {
                 message: "   ".to_string(),
                 parent_id: None,
             },
+            DEFAULT_USER_ID,
         )
         .await;
         assert!(result.is_err());
@@ -718,6 +752,7 @@ mod tests {
                 parent_issue_sort_order: None,
                 extension_metadata: serde_json::json!({}),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -730,6 +765,7 @@ mod tests {
                 message: "甲".to_string(),
                 parent_id: None,
             },
+            DEFAULT_USER_ID,
         )
         .await
         .unwrap();
@@ -750,6 +786,7 @@ mod tests {
                 message: "串台".to_string(),
                 parent_id: Some(parent_id),
             },
+            DEFAULT_USER_ID,
         )
         .await
         .expect_err("跨需求的父评论必须拒绝");

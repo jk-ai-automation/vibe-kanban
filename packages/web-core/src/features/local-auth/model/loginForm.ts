@@ -1,0 +1,67 @@
+/** 登录表单的纯逻辑：校验与登录后跳转目标。 */
+
+export interface LoginFormValues {
+  username: string;
+  password: string;
+}
+
+export interface LoginFormErrors {
+  username?: string;
+  password?: string;
+}
+
+/** 返回的是 i18n key（相对 `common` 命名空间的 `localAuth.` 前缀）。 */
+export function validateLoginForm(values: LoginFormValues): LoginFormErrors {
+  const errors: LoginFormErrors = {};
+  if (values.username.trim().length === 0) {
+    errors.username = 'errors.usernameRequired';
+  }
+  if (values.password.length === 0) {
+    errors.password = 'errors.passwordRequired';
+  }
+  return errors;
+}
+
+export function isLoginFormValid(errors: LoginFormErrors): boolean {
+  return errors.username === undefined && errors.password === undefined;
+}
+
+/**
+ * 开放重定向防护：登录后只允许跳到**同源的相对路径**。
+ *
+ * 拒掉协议相对地址（`//evil.example`）、绝对 URL、反斜杠变体
+ * （某些浏览器把 `\` 当 `/` 解析）以及控制字符。
+ */
+export function safeRedirect(target: string | null | undefined): string {
+  if (!target) return '/';
+
+  const value = target.trim();
+  if (value.length === 0) return '/';
+  // 控制字符（含换行、制表、NUL）一律拒绝：
+  // 写成码点比较而不是带转义的正则，免得转义被折叠成裸控制字符，
+  // 让 git 把这个源文件当成二进制。
+  for (const char of value) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return '/';
+  }
+  if (!value.startsWith('/')) return '/';
+  // `//host` 和 `/\host` 都会被当成协议相对地址。
+  if (value.startsWith('//') || value.startsWith('/\\')) return '/';
+
+  return value;
+}
+
+/**
+ * 登录成功后要回到哪里。
+ *
+ * 会话过期时界面是**就地**换成登录页的（URL 没有变），所以默认回到当前
+ * 路径；只有显式带了 `?redirect=` 时才用它（为将来独立 `/login` 路由留口）。
+ */
+export function resolvePostLoginTarget(
+  search: string,
+  currentPathWithQuery: string
+): string {
+  const redirect = new URLSearchParams(search).get('redirect');
+  if (redirect) return safeRedirect(redirect);
+  return safeRedirect(currentPathWithQuery);
+}

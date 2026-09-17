@@ -7,6 +7,7 @@ import {
   type MouseEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useLocation, useNavigate } from '@tanstack/react-router';
 import { useProjectContext } from '@/shared/hooks/useProjectContext';
 import { useOrgContext } from '@/shared/hooks/useOrgContext';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
@@ -24,15 +25,56 @@ import {
   type KanbanFilterState,
   type KanbanSortField,
 } from '@/shared/stores/useUiPreferencesStore';
+import { useKanbanFilters } from '../model/hooks/useKanbanFilters';
 import {
-  useKanbanFilters,
-  PRIORITY_ORDER,
-} from '../model/hooks/useKanbanFilters';
+  buildBoardColumns,
+  groupIssueIdsByStatus,
+  selectVisibleStatuses,
+  sortStatusesByOrder,
+} from '../model/boardModel';
+import { DEFAULT_WIP_LIMIT } from '../model/columnState';
+import {
+  shouldShowAssignees,
+  shouldShowStageBadges,
+} from '../model/cardBadges';
+import { nextIssueId, siblingColumnIssueId } from '../model/cardNavigation';
+import {
+  densityClasses,
+  densityLabelKey,
+  toggleDensity,
+} from '../model/density';
+import { isLocalPersonalMode } from '@/shared/lib/local/runtimeMode';
+import { useSyncErrorContext } from '@/shared/hooks/useSyncErrorContext';
+import { isShortcutSuppressed } from '@/shared/keyboard/shortcutGuards';
+import { KanbanBoardSkeleton } from '@vibe/ui/components/KanbanBoardSkeleton';
+import { ErrorAlert } from '@vibe/ui/components/ErrorAlert';
+import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
+import {
+  Scope,
+  useSequenceTracker,
+  useKeyCreate,
+  useKeyEdit,
+  useKeyFocusSearch,
+  useKeyNavDown,
+  useKeyNavLeft,
+  useKeyNavRight,
+  useKeyNavUp,
+  useKeyOpenIssue,
+} from '@/shared/keyboard';
+import {
+  filtersToSearch,
+  hasKanbanUrlFilters,
+  isSameKanbanSearch,
+  mergeKanbanSearch,
+  searchToFilters,
+  type KanbanUrlSearch,
+} from '../model/kanbanUrlState';
+import { KanbanBoardView } from './KanbanBoardView';
 import {
   bulkUpdateIssues,
   type BulkUpdateIssueItem,
 } from '@/shared/lib/remoteApi';
-import { PlusIcon, DotsThreeIcon } from '@phosphor-icons/react';
+import { DotsThreeIcon } from '@phosphor-icons/react';
 import { Actions } from '@/shared/actions';
 import {
   buildKanbanIssueComposerKey,
@@ -44,17 +86,11 @@ import {
 import type { OrganizationMemberWithProfile } from 'shared/types';
 import {
   KanbanProvider,
-  KanbanBoard,
-  KanbanCard,
-  KanbanCards,
-  KanbanHeader,
   type DropResult,
 } from '@vibe/ui/components/KanbanBoard';
-import { KanbanCardContent } from '@vibe/ui/components/KanbanCardContent';
-import {
-  IssueWorkspaceCard,
-  type WorkspaceWithStats,
-  type WorkspacePr,
+import type {
+  WorkspaceWithStats,
+  WorkspacePr,
 } from '@vibe/ui/components/IssueWorkspaceCard';
 import { resolveRelationshipsForIssue } from '@/shared/lib/resolveRelationships';
 import { KanbanFilterBar } from '@vibe/ui/components/KanbanFilterBar';
@@ -68,7 +104,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@vibe/ui/components/Dropdown';
-import { SearchableTagDropdownContainer } from '@/shared/components/SearchableTagDropdownContainer';
 import type { IssuePriority } from 'shared/remote-types';
 import { useIssueMultiSelect } from '@/shared/hooks/useIssueMultiSelect';
 import { useIssueSelectionStore } from '@/shared/stores/useIssueSelectionStore';
@@ -109,11 +144,36 @@ const areKanbanFiltersEqual = (
   );
 };
 
-function LoadingState() {
+/**
+ * 只改 search、不改 path 的导航。
+ *
+ * web-core 是 local-web 与 remote-web 共用的库，没有注册具体的路由树，
+ * `useNavigate()` 在这里拿到的是 `AnyRouter` 版本，search 的 reducer 被推导成
+ * `never`，无法直接用。这里收窄成一个最小签名。
+ * （`useAppNavigation` 的 goTo* 方法全都不接受 search 参数；
+ * 用当前路由的点号写法做 to 又被 scripts/check-legacy-frontend-paths.sh 禁用，
+ * 所以这里只传 search，不传 to。）
+ */
+type SearchOnlyNavigate = (options: {
+  search: (previous: Record<string, unknown>) => Record<string, unknown>;
+  replace?: boolean;
+}) => void;
+
+function BoardErrorState({ onRetry }: { onRetry: () => void }) {
   const { t } = useTranslation('common');
   return (
-    <div className="flex items-center justify-center h-full">
-      <p className="text-low">{t('states.loading')}</p>
+    <div className="flex flex-1 items-center justify-center px-double">
+      <div className="flex w-full max-w-md flex-col items-center gap-base">
+        <ErrorAlert message={t('kanban.loadError.title')} />
+        <p className="m-0 text-center text-sm text-low">
+          {t('kanban.loadError.hint')}
+        </p>
+        <PrimaryButton
+          variant="secondary"
+          value={t('buttons.retry')}
+          onClick={onRetry}
+        />
+      </div>
     </div>
   );
 }
@@ -148,7 +208,9 @@ export function KanbanContainer() {
     insertTag,
     pullRequests,
     isLoading: projectLoading,
+    error: projectError,
   } = useProjectContext();
+  const syncErrorContext = useSyncErrorContext();
 
   const {
     projects,
@@ -374,8 +436,70 @@ export function KanbanContainer() {
     clearKanbanProjectViewPreferences(projectId, activeViewId);
   }, [activeViewId, clearKanbanProjectViewPreferences, projectId]);
 
+  // ---- 筛选与 URL 的双向同步 ----
+  // 优先级：URL > store（zustand + 服务端 scratch）。
+  // 首次进入某个「项目 + 视图」时，URL 带了筛选参数就以 URL 为准（链接可分享、可刷新）；
+  // URL 干净则把 store 里记住的筛选写回 URL。之后界面上改筛选一律 store -> URL（replace，
+  // 不往历史里灌记录）；URL 被外部改动（前进/后退/改地址栏）则反向拉回 store。
+  const location = useLocation();
+  const navigate = useNavigate() as unknown as SearchOnlyNavigate;
+  const urlSearch = location.search as KanbanUrlSearch;
+  const urlSyncKey = `${projectId}::${activeViewId}`;
+  const urlSyncedKeyRef = useRef<string | null>(null);
+  const lastPushedSearchRef = useRef<KanbanUrlSearch | null>(null);
+
+  useEffect(() => {
+    const fromStore = filtersToSearch(kanbanFilters, defaultKanbanFilters);
+
+    // 两边已经一致：这是打断双向回环的唯一出口。
+    if (isSameKanbanSearch(fromStore, urlSearch)) {
+      urlSyncedKeyRef.current = urlSyncKey;
+      lastPushedSearchRef.current = fromStore;
+      return;
+    }
+
+    const isFirstPass = urlSyncedKeyRef.current !== urlSyncKey;
+    const urlChangedElsewhere =
+      lastPushedSearchRef.current !== null &&
+      !isSameKanbanSearch(lastPushedSearchRef.current, urlSearch);
+
+    if (
+      (isFirstPass && hasKanbanUrlFilters(urlSearch)) ||
+      urlChangedElsewhere
+    ) {
+      urlSyncedKeyRef.current = urlSyncKey;
+      lastPushedSearchRef.current = urlSearch;
+      setKanbanProjectViewFilters(
+        projectId,
+        activeViewId,
+        searchToFilters(urlSearch, defaultKanbanFilters)
+      );
+      return;
+    }
+
+    urlSyncedKeyRef.current = urlSyncKey;
+    lastPushedSearchRef.current = fromStore;
+    navigate({
+      search: (prev: Record<string, unknown>) =>
+        mergeKanbanSearch(prev, fromStore),
+      replace: true,
+    });
+  }, [
+    urlSyncKey,
+    urlSearch,
+    kanbanFilters,
+    defaultKanbanFilters,
+    projectId,
+    activeViewId,
+    setKanbanProjectViewFilters,
+    navigate,
+  ]);
+
   const handleKanbanProjectViewChange = useCallback(
     (viewId: string) => {
+      // 视图切换由界面发起：先把同步标记推到新视图，避免上一视图残留在 URL 里的
+      // 筛选参数被当成「首次进入」而倒灌进新视图。
+      urlSyncedKeyRef.current = `${projectId}::${viewId}`;
       setKanbanProjectView(projectId, viewId);
     },
     [projectId, setKanbanProjectView]
@@ -408,14 +532,14 @@ export function KanbanContainer() {
 
   // Sort all statuses for display settings
   const sortedStatuses = useMemo(
-    () => [...statuses].sort((a, b) => a.sort_order - b.sort_order),
+    () => sortStatusesByOrder(statuses),
     [statuses]
   );
 
   // Filter statuses: visible (non-hidden) for kanban, hidden for tabs
   const visibleStatuses = useMemo(
-    () => sortedStatuses.filter((s) => !s.hidden),
-    [sortedStatuses]
+    () => selectVisibleStatuses(statuses),
+    [statuses]
   );
 
   // Map status ID to 1-based column index for sort_order calculation
@@ -488,47 +612,44 @@ export function KanbanContainer() {
     }
 
     const { sortField, sortDirection } = kanbanFilters;
-    const grouped: Record<string, string[]> = {};
-
-    for (const status of statuses) {
-      // Filter issues for this status
-      let statusIssues = filteredIssues.filter(
-        (i) => i.status_id === status.id
-      );
-
-      // Sort within column based on user preference
-      statusIssues = [...statusIssues].sort((a, b) => {
-        let comparison = 0;
-        switch (sortField) {
-          case 'priority':
-            comparison =
-              (a.priority ? PRIORITY_ORDER[a.priority] : Infinity) -
-              (b.priority ? PRIORITY_ORDER[b.priority] : Infinity);
-            break;
-          case 'created_at':
-            comparison =
-              new Date(a.created_at).getTime() -
-              new Date(b.created_at).getTime();
-            break;
-          case 'updated_at':
-            comparison =
-              new Date(a.updated_at).getTime() -
-              new Date(b.updated_at).getTime();
-            break;
-          case 'title':
-            comparison = a.title.localeCompare(b.title);
-            break;
-          case 'sort_order':
-          default:
-            comparison = a.sort_order - b.sort_order;
-        }
-        return sortDirection === 'desc' ? -comparison : comparison;
-      });
-
-      grouped[status.id] = statusIssues.map((i) => i.id);
-    }
-    setItems(grouped);
+    setItems(
+      groupIssueIdsByStatus(statuses, filteredIssues, sortField, sortDirection)
+    );
   }, [filteredIssues, statuses, kanbanFilters]);
+
+  // 看板要渲染的列（含流程阶段）。列表视图仍然直接用 items。
+  const boardColumns = useMemo(
+    () => buildBoardColumns(visibleStatuses, items),
+    [visibleStatuses, items]
+  );
+
+  // 泳道阶段徽标：团队版（remote 数据源）拿不到 stage_type，所有列都会回落成
+  // 'todo'，这时候显示出来就是一排一模一样的徽标。统一由纯函数判断「阶段全相同
+  // 就不显示」。
+  const showStageBadge = useMemo(
+    () => shouldShowStageBadges(boardColumns.map((column) => column.stage)),
+    [boardColumns]
+  );
+
+  // 键盘左右换列用：按渲染顺序排好的每列 issue id。
+  const columnIssueIds = useMemo(
+    () => boardColumns.map((column) => column.issueIds),
+    [boardColumns]
+  );
+
+  // 个人版隐藏负责人头像（设计文档 §7.5：团队版才有的元素不留空占位）。
+  const showAssignees = shouldShowAssignees(isLocalPersonalMode());
+
+  // 密度（localStorage 持久化，见 `model/density.ts`）。
+  const kanbanDensity = useUiPreferencesStore((s) => s.kanbanDensity);
+  const setKanbanDensity = useUiPreferencesStore((s) => s.setKanbanDensity);
+  const density = useMemo(() => densityClasses(kanbanDensity), [kanbanDensity]);
+  const handleDensityToggle = useCallback(() => {
+    setKanbanDensity(toggleDensity(kanbanDensity));
+  }, [kanbanDensity, setKanbanDensity]);
+
+  // `/` 聚焦搜索框。
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Create a lookup map for issue data
   const issueMap = useMemo(() => {
@@ -887,10 +1008,134 @@ export function KanbanContainer() {
     [insertTag, projectId]
   );
 
+  // ---- 快捷键（设计文档 §7.5）----
+  // 全部走 registry 的语义 hook，**不直接 useHotkeys('j', ...)**：绕开 registry
+  // 会让帮助弹窗漏项，也会和既有绑定打架。
+  const isBoardMode = kanbanViewMode === 'kanban';
+
+  // 连击序列进行中时不响应单键。
+  // `c` / `n` / `h` / `l` 同时是既有连击的第二个键（`v>c`、`i>c`、`g>n`、`v>h`、
+  // `y>l`），不挡的话按 `g` 再按 `n` 会同时触发「新建工作区」和「新建需求」。
+  // 沿用 `useIssueShortcuts` 里给 `x` 做的那套思路，只是改成读 SequenceTracker。
+  const sequence = useSequenceTracker();
+  const isShortcutBlocked = () => isShortcutSuppressed() || sequence.isActive;
+
+  useKeyFocusSearch(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    },
+    { scope: Scope.KANBAN, enabled: !isIssueComposerOpen }
+  );
+
+  useKeyCreate(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      handleAddTask();
+    },
+    { scope: Scope.KANBAN, enabled: !isIssueComposerOpen }
+  );
+
+  // j/k 上下、h/l 左右。移动即打开右侧详情面板（`selectedIssueId === issue.id`
+  // 会把卡片标成 isOpen，所以移动是有视觉反馈的）。
+  const moveSelection = useCallback(
+    (nextId: string | null) => {
+      if (!nextId || nextId === selectedKanbanIssueId) return;
+      setAnchor(nextId);
+      openIssue(nextId);
+    },
+    [openIssue, selectedKanbanIssueId, setAnchor]
+  );
+
+  const navEnabled = isBoardMode && !isIssueComposerOpen;
+
+  useKeyNavDown(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      moveSelection(
+        nextIssueId(orderedIssueIds, selectedKanbanIssueId, 'down')
+      );
+    },
+    { scope: Scope.KANBAN, enabled: navEnabled }
+  );
+
+  useKeyNavUp(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      moveSelection(nextIssueId(orderedIssueIds, selectedKanbanIssueId, 'up'));
+    },
+    { scope: Scope.KANBAN, enabled: navEnabled }
+  );
+
+  useKeyNavLeft(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      moveSelection(
+        siblingColumnIssueId(columnIssueIds, selectedKanbanIssueId, 'left')
+      );
+    },
+    { scope: Scope.KANBAN, enabled: navEnabled }
+  );
+
+  useKeyNavRight(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      event?.preventDefault();
+      moveSelection(
+        siblingColumnIssueId(columnIssueIds, selectedKanbanIssueId, 'right')
+      );
+    },
+    { scope: Scope.KANBAN, enabled: navEnabled }
+  );
+
+  // 裸 Enter：打开当前定位到的需求。没有定位时打开第一张卡片。
+  useKeyOpenIssue(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      const target =
+        selectedKanbanIssueId ?? nextIssueId(orderedIssueIds, null, 'down');
+      if (!target) return;
+      event?.preventDefault();
+      setAnchor(target);
+      openIssue(target);
+    },
+    { scope: Scope.KANBAN, enabled: !isIssueComposerOpen }
+  );
+
+  // `e` 编辑：打开「需求操作」命令面板（改状态 / 优先级 / 负责人等）。
+  // 仓库里没有独立的行内编辑态，这是现有机制里最接近「编辑」的入口。
+  useKeyEdit(
+    (event) => {
+      if (isShortcutBlocked()) return;
+      if (!selectedKanbanIssueId) return;
+      event?.preventDefault();
+      handleCardMoreActionsClick(selectedKanbanIssueId);
+    },
+    { scope: Scope.KANBAN, enabled: !isIssueComposerOpen }
+  );
+
+  // 错误态：同步流挂了且一条需求都没拿到，给具体文案与「重试」（设计文档 §7.5）。
+  // 有数据时不挡界面——顶栏的同步错误提示已经会报，这里不重复打断。
+  const hasBoardError = projectError !== null && issues.length === 0;
+  const handleRetrySync = useCallback(() => {
+    if (syncErrorContext) {
+      syncErrorContext.retryAll();
+      return;
+    }
+    window.location.reload();
+  }, [syncErrorContext]);
+
   const isLoading = projectLoading || orgLoading;
 
   if (isLoading) {
-    return <LoadingState />;
+    // 设计文档 §7.5：加载态一律骨架屏，不用整页 spinner。
+    return <KanbanBoardSkeleton className="py-double" />;
   }
 
   return (
@@ -970,160 +1215,57 @@ export function KanbanContainer() {
             shouldAnimateCreateButton={shouldAnimateCreateButton}
             renderFiltersDialog={(props) => <KanbanFiltersDialog {...props} />}
             isMobile={isMobile}
+            searchInputRef={searchInputRef}
+            density={kanbanDensity}
+            onDensityToggle={handleDensityToggle}
+            densityLabel={t(densityLabelKey(kanbanDensity))}
           />
         </div>
+
+        {/* 整板为空时的引导（设计文档 §7.2） */}
+        {shouldAnimateCreateButton && !hasBoardError && (
+          <p className="m-0 text-sm text-low">{t('kanban.boardEmptyHint')}</p>
+        )}
       </div>
 
-      {kanbanViewMode === 'kanban' ? (
+      {hasBoardError ? (
+        <BoardErrorState onRetry={handleRetrySync} />
+      ) : kanbanViewMode === 'kanban' ? (
         visibleStatuses.length === 0 ? (
           <div className="flex-1 flex items-center justify-center">
             <p className="text-low">{t('kanban.noVisibleStatuses')}</p>
           </div>
         ) : (
-          <div className="flex-1 overflow-x-auto px-double">
-            <KanbanProvider onDragEnd={handleDragEnd}>
-              {visibleStatuses.map((status) => {
-                const issueIds = items[status.id] ?? [];
-
-                return (
-                  <KanbanBoard key={status.id}>
-                    <KanbanHeader>
-                      <div className="border-t sticky border-b top-0 z-20 flex shrink-0 items-center justify-between gap-2 p-base bg-secondary">
-                        <div className="flex items-center gap-2">
-                          <div
-                            className="h-2 w-2 rounded-full shrink-0"
-                            style={{ backgroundColor: `hsl(${status.color})` }}
-                          />
-                          <p className="m-0 text-sm">{status.name}</p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleAddTask(status.id)}
-                          className="p-half rounded-sm text-low hover:text-normal hover:bg-secondary transition-colors"
-                          aria-label="Add task"
-                        >
-                          <PlusIcon className="size-icon-xs" weight="bold" />
-                        </button>
-                      </div>
-                    </KanbanHeader>
-                    <KanbanCards id={status.id}>
-                      {issueIds.map((issueId, index) => {
-                        const issue = issueMap[issueId];
-                        if (!issue) return null;
-                        const issueWorkspaces =
-                          workspacesByIssueId.get(issue.id) ?? [];
-                        const workspaceIdsShownOnCard = new Set(
-                          issueWorkspaces.map((workspace) => workspace.id)
-                        );
-                        const issueCardPullRequests = getPullRequestsForIssue(
-                          issue.id
-                        ).filter((pr) => {
-                          if (!pr.workspace_id) {
-                            return true;
-                          }
-
-                          // If this PR is already visible under a workspace card,
-                          // do not render it again at the issue level.
-                          return !workspaceIdsShownOnCard.has(pr.workspace_id);
-                        });
-
-                        return (
-                          <KanbanCard
-                            key={issue.id}
-                            id={issue.id}
-                            name={issue.title}
-                            index={index}
-                            className="group"
-                            onClick={(e) => handleCardClick(issue.id, e)}
-                            isOpen={selectedKanbanIssueId === issue.id}
-                            isMobile={isMobile}
-                            isSelected={selectedIssueIds.has(issue.id)}
-                            dragDisabled={isMultiSelectActive}
-                          >
-                            <KanbanCardContent
-                              displayId={issue.simple_id}
-                              title={issue.title}
-                              description={issue.description}
-                              priority={issue.priority}
-                              tags={getTagObjectsForIssue(issue.id)}
-                              assignees={issueAssigneesMap[issue.id] ?? []}
-                              pullRequests={issueCardPullRequests}
-                              relationships={resolveRelationshipsForIssue(
-                                issue.id,
-                                getRelationshipsForIssue(issue.id),
-                                issuesById
-                              )}
-                              isSubIssue={!!issue.parent_issue_id}
-                              isMobile={isMobile}
-                              onPriorityClick={(e) => {
-                                e.stopPropagation();
-                                handleCardPriorityClick(issue.id);
-                              }}
-                              onAssigneeClick={(e) => {
-                                e.stopPropagation();
-                                handleCardAssigneeClick(issue.id);
-                              }}
-                              onMoreActionsClick={() =>
-                                handleCardMoreActionsClick(issue.id)
-                              }
-                              tagEditProps={{
-                                allTags: tags,
-                                selectedTagIds: getTagsForIssue(issue.id).map(
-                                  (it) => it.tag_id
-                                ),
-                                onTagToggle: (tagId) =>
-                                  handleCardTagToggle(issue.id, tagId),
-                                onCreateTag: handleCreateTag,
-                                renderTagEditor: ({
-                                  allTags,
-                                  selectedTagIds,
-                                  onTagToggle,
-                                  onCreateTag,
-                                  trigger,
-                                }) => (
-                                  <SearchableTagDropdownContainer
-                                    tags={allTags}
-                                    selectedTagIds={selectedTagIds}
-                                    onTagToggle={onTagToggle}
-                                    onCreateTag={onCreateTag}
-                                    disabled={false}
-                                    contentClassName=""
-                                    trigger={trigger}
-                                  />
-                                ),
-                              }}
-                            />
-                            {issueWorkspaces.length > 0 && (
-                              <div className="mt-base flex flex-col gap-half">
-                                {issueWorkspaces.map((workspace) => (
-                                  <IssueWorkspaceCard
-                                    key={workspace.id}
-                                    workspace={workspace}
-                                    onClick={
-                                      workspace.localWorkspaceId
-                                        ? () =>
-                                            openIssueWorkspace(
-                                              issue.id,
-                                              workspace.localWorkspaceId!
-                                            )
-                                        : undefined
-                                    }
-                                    showOwner={false}
-                                    showStatusBadge={false}
-                                    showNoPrText={false}
-                                  />
-                                ))}
-                              </div>
-                            )}
-                          </KanbanCard>
-                        );
-                      })}
-                    </KanbanCards>
-                  </KanbanBoard>
-                );
-              })}
-            </KanbanProvider>
-          </div>
+          <KanbanBoardView
+            columns={boardColumns}
+            onDragEnd={handleDragEnd}
+            issueMap={issueMap}
+            issueAssigneesMap={issueAssigneesMap}
+            workspacesByIssueId={workspacesByIssueId}
+            tags={tags}
+            selectedIssueId={selectedKanbanIssueId}
+            selectedIssueIds={selectedIssueIds}
+            isMultiSelectActive={isMultiSelectActive}
+            isMobile={isMobile}
+            wipLimit={DEFAULT_WIP_LIMIT}
+            hasActiveFilters={hasActiveFilters}
+            showStageBadge={showStageBadge}
+            showAssignees={showAssignees}
+            density={density}
+            getPullRequestsForIssue={getPullRequestsForIssue}
+            getTagObjectsForIssue={getTagObjectsForIssue}
+            getTagsForIssue={getTagsForIssue}
+            getResolvedRelationshipsForIssue={getResolvedRelationshipsForIssue}
+            onAddIssue={handleAddTask}
+            onClearFilters={clearKanbanFilters}
+            onCardClick={handleCardClick}
+            onCardPriorityClick={handleCardPriorityClick}
+            onCardAssigneeClick={handleCardAssigneeClick}
+            onCardMoreActionsClick={handleCardMoreActionsClick}
+            onCardTagToggle={handleCardTagToggle}
+            onCreateTag={handleCreateTag}
+            onOpenIssueWorkspace={openIssueWorkspace}
+          />
         )
       ) : (
         <div className="flex-1 overflow-y-auto px-double">
@@ -1133,6 +1275,7 @@ export function KanbanContainer() {
               items={items}
               issueMap={issueMap}
               issueAssigneesMap={issueAssigneesMap}
+              showAssignees={showAssignees}
               getTagObjectsForIssue={getTagObjectsForIssue}
               getResolvedRelationshipsForIssue={
                 getResolvedRelationshipsForIssue

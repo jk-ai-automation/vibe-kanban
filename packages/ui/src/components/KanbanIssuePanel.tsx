@@ -38,8 +38,15 @@ import {
   TooltipTrigger,
 } from './RadixTooltip';
 import { ErrorAlert } from './ErrorAlert';
+import {
+  IssuePanelTabBar,
+  type IssuePanelTabBarItem,
+} from './IssuePanelTabBar';
 
 export type IssuePanelMode = 'create' | 'edit';
+
+/** 与 `@/pages/kanban/issuePanelTabs` 的 `IssuePanelTab` 逐字对应。 */
+export type IssuePanelTabId = 'overview' | 'development' | 'testing';
 type IssuePriority = IssuePropertyRowProps['priority'];
 type IssueStatus = IssuePropertyRowProps['statuses'][number];
 type IssueAssignee = NonNullable<
@@ -154,6 +161,17 @@ export interface KanbanIssuePanelProps {
   renderRelationshipsSection?: (issueId: string) => ReactNode;
   renderSubIssuesSection?: (issueId: string) => ReactNode;
   renderCommentsSection?: (issueId: string) => ReactNode;
+
+  // 三段式标签页（设计文档 §7.3）：概况 / 开发 / 测试。
+  // 全部可选：不传 `tabs`（或只有一项）时**不渲染标签条**，各 section 照旧堆叠，
+  // 行为与改造前一致，其它调用方不受影响。
+  tabs?: IssuePanelTabBarItem<IssuePanelTabId>[];
+  activeTab?: IssuePanelTabId;
+  onTabChange?: (tab: IssuePanelTabId) => void;
+  /** 「测试」页内容。本期是占位面板。 */
+  renderTestingSection?: () => ReactNode;
+  /** 指派入口只在团队版出现；个人版传 false，不留空占位。 */
+  showAssignees?: boolean;
 }
 
 export function KanbanIssuePanel({
@@ -194,9 +212,22 @@ export function KanbanIssuePanel({
   renderRelationshipsSection,
   renderSubIssuesSection,
   renderCommentsSection,
+  tabs,
+  activeTab,
+  onTabChange,
+  renderTestingSection,
+  showAssignees = true,
 }: KanbanIssuePanelProps) {
   const { t } = useTranslation('common');
   const isCreateMode = mode === 'create';
+
+  // 标签页可见性。没有标签条时三段全都视为「在当前页」，渲染结果与改造前一致。
+  const hasTabs = (tabs?.length ?? 0) > 1;
+  const currentTab: IssuePanelTabId | null =
+    hasTabs && tabs ? (activeTab ?? tabs[0].id) : null;
+  const showOverview = !hasTabs || currentTab === 'overview';
+  const showDevelopment = !hasTabs || currentTab === 'development';
+  const showTesting = hasTabs && currentTab === 'testing';
   const breadcrumbTextClass =
     'min-w-0 text-sm text-normal truncate rounded-sm px-1 py-0.5 hover:bg-panel hover:text-high transition-colors';
   const creatorName =
@@ -295,253 +326,277 @@ export function KanbanIssuePanel({
         </div>
       </div>
 
+      {/* Tab bar（三段式；只有一项时不渲染） */}
+      {hasTabs && tabs && currentTab && (
+        <IssuePanelTabBar
+          tabs={tabs}
+          activeTab={currentTab}
+          onTabChange={(tab) => onTabChange?.(tab)}
+        />
+      )}
+
       {/* Scrollable Content */}
       <div className="flex-1 overflow-y-auto">
-        {/* Property Row */}
-        <div className="px-base py-base border-b">
-          <IssuePropertyRow
-            statusId={formData.statusId}
-            priority={formData.priority}
-            assigneeIds={formData.assigneeIds}
-            assigneeUsers={assigneeUsers}
-            statuses={statuses}
-            creatorUser={showCreator ? creatorUser : undefined}
-            parentIssue={parentIssue}
-            onParentIssueClick={onParentIssueClick}
-            onRemoveParentIssue={onRemoveParentIssue}
-            onStatusClick={() => onFormChange('statusId', formData.statusId)}
-            onPriorityClick={() => onFormChange('priority', formData.priority)}
-            onAssigneeClick={() =>
-              onFormChange('assigneeIds', formData.assigneeIds)
-            }
-            disabled={isSubmitting}
-          />
-        </div>
-
-        {/* Tags Row */}
-        <div className="px-base py-base border-b">
-          <IssueTagsRow
-            selectedTagIds={formData.tagIds}
-            availableTags={tags}
-            linkedPrs={isCreateMode ? [] : linkedPrs}
-            onTagsChange={(tagIds) => onFormChange('tagIds', tagIds)}
-            onCreateTag={onCreateTag}
-            renderAddTagControl={renderAddTagControl}
-            onLinkPr={!isCreateMode ? onLinkPr : undefined}
-            disabled={isSubmitting}
-          />
-        </div>
-
-        {/* Title and Description */}
-        <div className="rounded-sm">
-          {/* Title Input */}
-          <div className="w-full mt-base">
-            <AutoResizeTextarea
-              ref={titleInputRef}
-              value={formData.title}
-              onChange={(value) => onFormChange('title', value)}
-              onKeyDown={handleTitleKeyDown}
-              placeholder="Issue Title..."
-              autoFocus={isCreateMode}
-              aria-label="Issue title"
+        {/* ---- 概况页 ----
+            用 `hidden` 而不是卸载：描述编辑器与评论框有未提交的本地状态，
+            切页再切回来不能丢。 */}
+        <div className={cn(!showOverview && 'hidden')}>
+          {/* Property Row */}
+          <div className="px-base py-base border-b">
+            <IssuePropertyRow
+              showAssignees={showAssignees}
+              statusId={formData.statusId}
+              priority={formData.priority}
+              assigneeIds={formData.assigneeIds}
+              assigneeUsers={assigneeUsers}
+              statuses={statuses}
+              creatorUser={showCreator ? creatorUser : undefined}
+              parentIssue={parentIssue}
+              onParentIssueClick={onParentIssueClick}
+              onRemoveParentIssue={onRemoveParentIssue}
+              onStatusClick={() => onFormChange('statusId', formData.statusId)}
+              onPriorityClick={() =>
+                onFormChange('priority', formData.priority)
+              }
+              onAssigneeClick={() =>
+                onFormChange('assigneeIds', formData.assigneeIds)
+              }
               disabled={isSubmitting}
-              className={cn(
-                'px-base text-lg font-medium text-high',
-                'placeholder:text-high/50',
-                isSubmitting && 'opacity-50 pointer-events-none'
-              )}
             />
+          </div>
 
+          {/* Tags Row */}
+          <div className="px-base py-base border-b">
+            <IssueTagsRow
+              selectedTagIds={formData.tagIds}
+              availableTags={tags}
+              linkedPrs={isCreateMode ? [] : linkedPrs}
+              onTagsChange={(tagIds) => onFormChange('tagIds', tagIds)}
+              onCreateTag={onCreateTag}
+              renderAddTagControl={renderAddTagControl}
+              onLinkPr={!isCreateMode ? onLinkPr : undefined}
+              disabled={isSubmitting}
+            />
+          </div>
+
+          {/* Title and Description */}
+          <div className="rounded-sm">
+            {/* Title Input */}
+            <div className="w-full mt-base">
+              <AutoResizeTextarea
+                ref={titleInputRef}
+                value={formData.title}
+                onChange={(value) => onFormChange('title', value)}
+                onKeyDown={handleTitleKeyDown}
+                placeholder="Issue Title..."
+                autoFocus={isCreateMode}
+                aria-label="Issue title"
+                disabled={isSubmitting}
+                className={cn(
+                  'px-base text-lg font-medium text-high',
+                  'placeholder:text-high/50',
+                  isSubmitting && 'opacity-50 pointer-events-none'
+                )}
+              />
+
+              <div
+                className={cn(
+                  'pointer-events-none absolute inset-0 px-base',
+                  'text-high/50 font-medium text-lg',
+                  'hidden',
+                  "[[data-empty='true']_+_&]:block" // show placeholder when previous sibling data-empty=true
+                )}
+              >
+                {t('kanban.issueTitlePlaceholder')}
+              </div>
+            </div>
+
+            {/* Description WYSIWYG Editor with image dropzone */}
             <div
+              ref={descriptionContainerRef}
+              {...(isDescriptionEditing ? dropzoneProps?.getRootProps() : {})}
               className={cn(
-                'pointer-events-none absolute inset-0 px-base',
-                'text-high/50 font-medium text-lg',
-                'hidden',
-                "[[data-empty='true']_+_&]:block" // show placeholder when previous sibling data-empty=true
+                'relative mt-base',
+                !isDescriptionEditing && !isCreateMode && 'cursor-text'
               )}
+              onClick={() => {
+                if (!isDescriptionEditing && !isCreateMode && !isSubmitting) {
+                  // Don't enter edit mode if the user was selecting text
+                  const selection = window.getSelection();
+                  if (selection && selection.toString().length > 0) return;
+                  setIsDescriptionEditing(true);
+                }
+              }}
+              onBlur={(e) => {
+                // Exit edit mode when focus leaves the description container
+                if (
+                  descriptionContainerRef.current &&
+                  !descriptionContainerRef.current.contains(
+                    e.relatedTarget as Node
+                  )
+                ) {
+                  handleDescriptionBlur();
+                }
+              }}
             >
-              {t('kanban.issueTitlePlaceholder')}
+              {isDescriptionEditing && (
+                <input
+                  {...(dropzoneProps?.getInputProps() as React.InputHTMLAttributes<HTMLInputElement>)}
+                  data-dropzone-input
+                />
+              )}
+              {renderDescriptionEditor({
+                placeholder: isDescriptionEditing
+                  ? t('kanban.issueDescriptionPlaceholder')
+                  : formData.description
+                    ? ''
+                    : t('kanban.issueDescriptionPlaceholder'),
+                value: formData.description ?? '',
+                onChange: (value) => onFormChange('description', value || null),
+                onCmdEnter: onCmdEnterSubmit,
+                onPasteFiles: isDescriptionEditing ? onPasteFiles : undefined,
+                disabled: !isDescriptionEditing || isSubmitting,
+                autoFocus: false,
+                className: cn(
+                  'px-base',
+                  isDescriptionEditing ? 'min-h-[100px]' : 'min-h-[2rem]',
+                  !isDescriptionEditing && !formData.description && 'text-low'
+                ),
+                localAttachments,
+                showStaticToolbar: !isCreateMode || isDescriptionEditing,
+                hideActions: true,
+                saveStatus: descriptionSaveStatus,
+                onRequestEdit: !isCreateMode
+                  ? () => setIsDescriptionEditing(true)
+                  : undefined,
+                staticToolbarActions: (
+                  <>
+                    {isDescriptionEditing && onBrowseAttachment && (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                if (!isSubmitting && !isUploading) {
+                                  onBrowseAttachment();
+                                }
+                              }}
+                              disabled={isSubmitting || isUploading}
+                              className={cn(
+                                'p-half rounded-sm transition-colors',
+                                'text-low hover:text-normal hover:bg-panel/50',
+                                'disabled:opacity-50 disabled:cursor-not-allowed'
+                              )}
+                              title={t('kanban.attachFile')}
+                              aria-label={t('kanban.attachFile')}
+                            >
+                              <PaperclipIcon className="size-icon-sm" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            {t('kanban.attachFileHint')}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
+                  </>
+                ),
+              })}
+              {attachmentError && (
+                <div className="px-base">
+                  <ErrorAlert
+                    message={attachmentError}
+                    className="mt-half mb-half"
+                    onDismiss={onDismissAttachmentError}
+                    dismissLabel={t('buttons.close')}
+                  />
+                </div>
+              )}
+              {dropzoneProps?.isDragActive && (
+                <div className="absolute inset-0 z-50 bg-primary/80 backdrop-blur-sm border-2 border-dashed border-brand rounded flex items-center justify-center pointer-events-none animate-in fade-in-0 duration-150">
+                  <div className="text-center">
+                    <div className="mx-auto mb-2 w-10 h-10 rounded-full bg-brand/10 flex items-center justify-center">
+                      <ImageIcon className="h-5 w-5 text-brand" />
+                    </div>
+                    <p className="text-sm font-medium text-high">
+                      {t('kanban.dropFilesHere')}
+                    </p>
+                    <p className="text-xs text-low mt-0.5">
+                      {t('kanban.fileDropHint')}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Description WYSIWYG Editor with image dropzone */}
-          <div
-            ref={descriptionContainerRef}
-            {...(isDescriptionEditing ? dropzoneProps?.getRootProps() : {})}
-            className={cn(
-              'relative mt-base',
-              !isDescriptionEditing && !isCreateMode && 'cursor-text'
-            )}
-            onClick={() => {
-              if (!isDescriptionEditing && !isCreateMode && !isSubmitting) {
-                // Don't enter edit mode if the user was selecting text
-                const selection = window.getSelection();
-                if (selection && selection.toString().length > 0) return;
-                setIsDescriptionEditing(true);
-              }
-            }}
-            onBlur={(e) => {
-              // Exit edit mode when focus leaves the description container
-              if (
-                descriptionContainerRef.current &&
-                !descriptionContainerRef.current.contains(
-                  e.relatedTarget as Node
-                )
-              ) {
-                handleDescriptionBlur();
-              }
-            }}
-          >
-            {isDescriptionEditing && (
-              <input
-                {...(dropzoneProps?.getInputProps() as React.InputHTMLAttributes<HTMLInputElement>)}
-                data-dropzone-input
+          {/* Create Draft Workspace Toggle (Create mode only) */}
+          {isCreateMode && (
+            <div className="p-base border-t">
+              <Toggle
+                checked={formData.createDraftWorkspace}
+                onCheckedChange={(checked) =>
+                  onFormChange('createDraftWorkspace', checked)
+                }
+                label={t('kanban.createDraftWorkspaceImmediately')}
+                description={t('kanban.createDraftWorkspaceDescription')}
+                disabled={isSubmitting}
               />
-            )}
-            {renderDescriptionEditor({
-              placeholder: isDescriptionEditing
-                ? t('kanban.issueDescriptionPlaceholder')
-                : formData.description
-                  ? ''
-                  : t('kanban.issueDescriptionPlaceholder'),
-              value: formData.description ?? '',
-              onChange: (value) => onFormChange('description', value || null),
-              onCmdEnter: onCmdEnterSubmit,
-              onPasteFiles: isDescriptionEditing ? onPasteFiles : undefined,
-              disabled: !isDescriptionEditing || isSubmitting,
-              autoFocus: false,
-              className: cn(
-                'px-base',
-                isDescriptionEditing ? 'min-h-[100px]' : 'min-h-[2rem]',
-                !isDescriptionEditing && !formData.description && 'text-low'
-              ),
-              localAttachments,
-              showStaticToolbar: !isCreateMode || isDescriptionEditing,
-              hideActions: true,
-              saveStatus: descriptionSaveStatus,
-              onRequestEdit: !isCreateMode
-                ? () => setIsDescriptionEditing(true)
-                : undefined,
-              staticToolbarActions: (
-                <>
-                  {isDescriptionEditing && onBrowseAttachment && (
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              if (!isSubmitting && !isUploading) {
-                                onBrowseAttachment();
-                              }
-                            }}
-                            disabled={isSubmitting || isUploading}
-                            className={cn(
-                              'p-half rounded-sm transition-colors',
-                              'text-low hover:text-normal hover:bg-panel/50',
-                              'disabled:opacity-50 disabled:cursor-not-allowed'
-                            )}
-                            title={t('kanban.attachFile')}
-                            aria-label={t('kanban.attachFile')}
-                          >
-                            <PaperclipIcon className="size-icon-sm" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          {t('kanban.attachFileHint')}
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  )}
-                </>
-              ),
-            })}
-            {attachmentError && (
-              <div className="px-base">
-                <ErrorAlert
-                  message={attachmentError}
-                  className="mt-half mb-half"
-                  onDismiss={onDismissAttachmentError}
-                  dismissLabel={t('buttons.close')}
+            </div>
+          )}
+
+          {/* Create Issue Button (Create mode only) */}
+          {isCreateMode && (
+            <div className="px-base pb-base flex items-center gap-half">
+              <PrimaryButton
+                value={t('kanban.createIssue')}
+                onClick={onSubmit}
+                disabled={isSubmitting || isUploading || !formData.title.trim()}
+                actionIcon={isSubmitting ? 'spinner' : undefined}
+                variant="default"
+              />
+              {onDeleteDraft && (
+                <IconButton
+                  icon={TrashIcon}
+                  onClick={onDeleteDraft}
+                  disabled={isSubmitting}
+                  aria-label="Delete draft"
+                  title="Delete draft"
+                  className="hover:text-error hover:bg-error/10"
                 />
-              </div>
-            )}
-            {dropzoneProps?.isDragActive && (
-              <div className="absolute inset-0 z-50 bg-primary/80 backdrop-blur-sm border-2 border-dashed border-brand rounded flex items-center justify-center pointer-events-none animate-in fade-in-0 duration-150">
-                <div className="text-center">
-                  <div className="mx-auto mb-2 w-10 h-10 rounded-full bg-brand/10 flex items-center justify-center">
-                    <ImageIcon className="h-5 w-5 text-brand" />
-                  </div>
-                  <p className="text-sm font-medium text-high">
-                    {t('kanban.dropFilesHere')}
-                  </p>
-                  <p className="text-xs text-low mt-0.5">
-                    {t('kanban.fileDropHint')}
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
+
+          {/* Relationships Section (Edit mode only) */}
+          {!isCreateMode && issueId && renderRelationshipsSection && (
+            <div className="border-t">
+              {renderRelationshipsSection(issueId)}
+            </div>
+          )}
+
+          {/* Sub-Issues Section (Edit mode only) */}
+          {!isCreateMode && issueId && renderSubIssuesSection && (
+            <div className="border-t">{renderSubIssuesSection(issueId)}</div>
+          )}
+
+          {/* Comments Section (Edit mode only) */}
+          {!isCreateMode && issueId && renderCommentsSection && (
+            <div className="border-t">{renderCommentsSection(issueId)}</div>
+          )}
         </div>
 
-        {/* Create Draft Workspace Toggle (Create mode only) */}
-        {isCreateMode && (
-          <div className="p-base border-t">
-            <Toggle
-              checked={formData.createDraftWorkspace}
-              onCheckedChange={(checked) =>
-                onFormChange('createDraftWorkspace', checked)
-              }
-              label={t('kanban.createDraftWorkspaceImmediately')}
-              description={t('kanban.createDraftWorkspaceDescription')}
-              disabled={isSubmitting}
-            />
-          </div>
-        )}
+        {/* ---- 开发页：关联工作区（工作区卡片里已带 PR 徽标与链接） ---- */}
+        <div className={cn(!showDevelopment && 'hidden')}>
+          {!isCreateMode && issueId && renderWorkspacesSection && (
+            <div className="border-t">{renderWorkspacesSection(issueId)}</div>
+          )}
+        </div>
 
-        {/* Create Issue Button (Create mode only) */}
-        {isCreateMode && (
-          <div className="px-base pb-base flex items-center gap-half">
-            <PrimaryButton
-              value={t('kanban.createIssue')}
-              onClick={onSubmit}
-              disabled={isSubmitting || isUploading || !formData.title.trim()}
-              actionIcon={isSubmitting ? 'spinner' : undefined}
-              variant="default"
-            />
-            {onDeleteDraft && (
-              <IconButton
-                icon={TrashIcon}
-                onClick={onDeleteDraft}
-                disabled={isSubmitting}
-                aria-label="Delete draft"
-                title="Delete draft"
-                className="hover:text-error hover:bg-error/10"
-              />
-            )}
-          </div>
-        )}
-
-        {/* Workspaces Section (Edit mode only) */}
-        {!isCreateMode && issueId && renderWorkspacesSection && (
-          <div className="border-t">{renderWorkspacesSection(issueId)}</div>
-        )}
-
-        {/* Relationships Section (Edit mode only) */}
-        {!isCreateMode && issueId && renderRelationshipsSection && (
-          <div className="border-t">{renderRelationshipsSection(issueId)}</div>
-        )}
-
-        {/* Sub-Issues Section (Edit mode only) */}
-        {!isCreateMode && issueId && renderSubIssuesSection && (
-          <div className="border-t">{renderSubIssuesSection(issueId)}</div>
-        )}
-
-        {/* Comments Section (Edit mode only) */}
-        {!isCreateMode && issueId && renderCommentsSection && (
-          <div className="border-t">{renderCommentsSection(issueId)}</div>
-        )}
+        {/* ---- 测试页：本期占位面板 ---- */}
+        {showTesting && renderTestingSection?.()}
       </div>
     </div>
   );

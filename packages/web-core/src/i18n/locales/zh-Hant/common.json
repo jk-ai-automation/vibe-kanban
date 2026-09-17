@@ -78,6 +78,112 @@
   "error": "錯誤",
   "signIn": "登入",
   "signOut": "登出",
+  "localAuth": {
+    "signInTitle": "登入 Vibe Kanban",
+    "signInSubtitle": "此伺服器執行於團隊模式，需要帳號登入。",
+    "username": "使用者名稱",
+    "password": "密碼",
+    "signIn": "登入",
+    "signingIn": "登入中…",
+    "invalidCredentials": "使用者名稱或密碼錯誤。",
+    "rateLimited": "嘗試次數過多，請稍後再試。",
+    "networkError": "無法連線伺服器，請檢查網路後重試。",
+    "loading": "載入中…",
+    "checking": "檢查中…",
+    "retry": "重新檢查",
+    "orContinueWith": "或使用以下方式登入",
+    "setupTitle": "初始化團隊",
+    "setupDescription": "已啟用團隊模式，但尚無管理員帳號。",
+    "errors": {
+      "usernameRequired": "請輸入使用者名稱。",
+      "passwordRequired": "請輸入密碼。",
+      "usernameInvalid": "使用者名稱只能包含小寫字母、數字與 . _ -，且不超過 64 個字元。",
+      "passwordTooShort": "密碼至少需要 8 個字元。",
+      "passwordTooLong": "密碼不能超過 1024 個字元。",
+      "emailInvalid": "請輸入正確的電子郵件地址。",
+      "displayNameRequired": "請輸入顯示名稱。",
+      "inviteTtlInvalid": "有效期必須是 1～30 之間的整數天數。"
+    },
+    "providers": {
+      "feishu": "飛書",
+      "lark": "Lark",
+      "google": "Google"
+    },
+    "setupNoToken": "此伺服器需要初始化，請在伺服器主控台查看初始化連結。",
+    "setupLinkExpired": "連結已失效，請重新啟動伺服器以取得新連結。",
+    "setupAlreadyInitialized": "已經有人完成了初始化。",
+    "setupGoToLogin": "前往登入",
+    "setupDisplayName": "顯示名稱（可選，留空則使用使用者名稱）",
+    "setupEmail": "電子郵件（可選）",
+    "setupSubmit": "建立管理員帳號",
+    "setupSubmitting": "建立中…",
+    "setupRoleNote": "將建立為管理員帳號。",
+    "members": {
+      "pageTitle": "成員管理",
+      "sectionMembers": "成員",
+      "sectionInvites": "邀請碼",
+      "addMember": "新增成員",
+      "cancel": "取消",
+      "create": "建立",
+      "creating": "建立中…",
+      "columnUser": "使用者",
+      "columnEmail": "電子郵件",
+      "columnRole": "角色",
+      "columnStatus": "狀態",
+      "columnLastLogin": "最後登入",
+      "columnActions": "操作",
+      "roleAdmin": "管理員",
+      "roleMember": "成員",
+      "statusActive": "啟用",
+      "statusDisabled": "已停用",
+      "fixedLocalBadge": "本機",
+      "fixedLocalHint": "本機固定帳號，供本機處理程序使用，無法停用或修改角色。",
+      "disable": "停用",
+      "enable": "啟用",
+      "resetPassword": "重設密碼",
+      "resetPasswordSubmit": "確認重設",
+      "resetPasswordHint": "重設後將立即讓該使用者在所有裝置上重新登入。",
+      "newPassword": "新密碼",
+      "never": "從未登入",
+      "usernamePlaceholder": "使用者名稱",
+      "displayNamePlaceholder": "顯示名稱（可選，留空則使用使用者名稱）",
+      "emailPlaceholder": "電子郵件（可選）",
+      "passwordPlaceholder": "密碼",
+      "loadError": "載入成員清單失敗，請重試。",
+      "retry": "重試",
+      "forbiddenTitle": "無法開啟成員管理",
+      "forbiddenDescription": "只有管理員才能管理成員，你的帳號權限可能已經變更。",
+      "backHome": "返回首頁",
+      "empty": "還沒有其他成員。"
+    },
+    "inviteAcceptBackToLogin": "已有帳號？前往登入",
+    "inviteAcceptSubmit": "建立帳號",
+    "inviteAcceptSubmitting": "建立中…",
+    "inviteAcceptSubtitle": "你收到了加入這個團隊的邀請，建立一個帳號即可開始使用。",
+    "inviteAcceptTitle": "加入團隊",
+    "invites": {
+      "addInvite": "產生邀請碼",
+      "role": "角色",
+      "expiresInDays": "有效期（天）",
+      "create": "產生",
+      "creating": "產生中…",
+      "linkReady": "邀請連結已產生，請立即複製——離開本頁後將無法再次查看。",
+      "copy": "複製連結",
+      "copied": "已複製",
+      "dismiss": "知道了",
+      "columnRole": "角色",
+      "columnCreatedAt": "建立時間",
+      "columnExpiresAt": "過期時間",
+      "columnStatus": "狀態",
+      "columnActions": "操作",
+      "statusPending": "待使用",
+      "statusUsed": "已使用",
+      "statusExpired": "已過期",
+      "revoke": "作廢",
+      "empty": "還沒有邀請碼。",
+      "loadError": "載入邀請碼清單失敗，請重試。"
+    }
+  },
   "oauth": {
     "title": "登入 Vibe Kanban",
     "description": "登入以加入組織並與團隊共享任務",
@@ -332,7 +438,9 @@
       "toggle-wrap-lines": "切換自動換行",
       "run-setup-script": "執行設定腳本",
       "run-cleanup-script": "執行清理腳本",
-      "run-archive-script": "執行封存腳本"
+      "run-archive-script": "執行封存腳本",
+      "editSelected": "編輯選取項目",
+      "openSelected": "開啟選取項目"
     }
   },
   "typeahead": {
@@ -393,6 +501,14 @@
     "markIndependentIssue": "標記為獨立問題",
     "parentIssue": "父級",
     "subIssueIndicator": "↳",
+    "stage": {
+      "backlog": "待規劃",
+      "todo": "待開發",
+      "dev": "開發中",
+      "review": "待評審",
+      "test": "測試中",
+      "done": "已完成"
+    },
     "viewTabs": {
       "active": "活動",
       "all": "全部"
@@ -478,6 +594,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "本欄超過 {{limit}} 張需求",
+    "boardEmptyHint": "還沒有需求。先建立一條需求開始吧。",
+    "loadError": {
+      "title": "看板載入失敗",
+      "hint": "同步連線中斷。請檢查網路後重試。"
+    },
+    "columnEmpty": {
+      "emptyTitle": "這一欄還是空的",
+      "filteredTitle": "沒有符合目前篩選的需求",
+      "createIssue": "新增需求",
+      "createWorkspace": "從需求建立工作區"
+    },
+    "badge": {
+      "workspaceRunning": "執行中",
+      "workspaceStopped": "已停止",
+      "workspaceFailed": "失敗",
+      "prOpen": "PR 待審查",
+      "prMerged": "PR 已合併",
+      "prClosed": "PR 已關閉",
+      "testNotConnected": "測試未接入"
+    },
+    "density": {
+      "label": "切換密度",
+      "comfortable": "舒適",
+      "compact": "緊湊"
+    },
+    "tabs": {
+      "overview": "概況",
+      "development": "開發",
+      "testing": "測試"
+    },
+    "testing": {
+      "notConnectedTitle": "測試尚未接入",
+      "notConnectedHint": "接入測試框架後，這裡會顯示測試結果。",
+      "passRate": "通過率",
+      "passRateHint": "最近一次執行的案例通過比例",
+      "failures": "失敗清單",
+      "failuresHint": "最近一次執行中失敗的案例",
+      "report": "報告連結",
+      "reportHint": "完整測試報告的位址"
+    },
+    "breadcrumb": {
+      "issue": "開啟關聯需求",
+      "workspace": "開啟工作區",
+      "pr": "開啟 PR"
     }
   },
   "createMode": {

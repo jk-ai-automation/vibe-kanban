@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO local_user_identities (id, user_id, provider, subject, email, created_at)\n               VALUES ($1, $2, $3, $4, $5, $6)\n               RETURNING id         AS \"id!: Uuid\",\n                         user_id    AS \"user_id!: Uuid\",\n                         provider   AS \"provider!\",\n                         subject    AS \"subject!\",\n                         email      AS \"email?\",\n                         created_at AS \"created_at!: DateTime<Utc>\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "user_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "provider!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "subject!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "email?",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "553d05a836764b678f3c7c4afe9be4230a59a620baba188754c4161129fa0da3"
+}

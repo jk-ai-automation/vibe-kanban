@@ -1,0 +1,49 @@
+# systemd **用户** unit 模板（装到 ~/.config/systemd/user/）。
+# 占位符由 deploy/install-linux.sh 替换：
+#   __BIN_PATH__  __DATA_DIR__  __MODE__  __HOST__  __PORT__
+#   __ALLOWED_ORIGINS__  __PATH__
+#
+# 用用户 unit 而不是系统 unit，是因为 vibe-kanban 要读写 ~/.ssh、~/.gitconfig
+# 和各家编码代理 CLI 的登录态，跑在 root 或独立系统账号下这些全都失效。
+# 代价是注销后服务会停，安装脚本会提示跑 `loginctl enable-linger $USER`。
+
+[Unit]
+Description=Vibe Kanban
+Documentation=https://github.com/BloopAI/vibe-kanban
+After=network-online.target
+Wants=network-online.target
+# 崩溃循环保护：5 分钟内重启超过 10 次就停下来，等人去看日志，而不是无限
+# 重启把磁盘刷爆。清除用 `systemctl --user reset-failed vibe-kanban`。
+# 这两项自 systemd 229 起属于 [Unit]，写在 [Service] 里会被警告。
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStart=__BIN_PATH__
+WorkingDirectory=__DATA_DIR__
+
+Environment=VK_MODE=__MODE__
+Environment=HOST=__HOST__
+Environment=BACKEND_PORT=__PORT__
+Environment=VK_ALLOWED_ORIGINS=__ALLOWED_ORIGINS__
+# systemd 用户会话的 PATH 常常不含 ~/.local/bin、homebrew、nvm 等路径，
+# 而 vibe-kanban 要拉起 git 与各家编码代理 CLI。安装脚本把当前 PATH 写进来。
+Environment=PATH=__PATH__
+
+Restart=always
+RestartSec=3
+
+# StandardOutput=append: 需要 systemd >= 240。更老的发行版把下面两行删掉，
+# 日志会进 journal，用 `journalctl --user -u vibe-kanban` 看。
+StandardOutput=append:__DATA_DIR__/logs/stdout.log
+StandardError=append:__DATA_DIR__/logs/stderr.log
+
+NoNewPrivileges=true
+# **PrivateTmp 必须是 false**：MCP 客户端靠 $TMPDIR/vibe-kanban/vibe-kanban.port
+# 找服务端口（crates/utils/src/port_file.rs）。开了 PrivateTmp，服务写的端口文件
+# 落在私有 /tmp 命名空间里，宿主上的 MCP 永远读不到，表现是「MCP 连不上但服务活着」。
+PrivateTmp=false
+
+[Install]
+WantedBy=default.target

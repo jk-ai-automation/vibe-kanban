@@ -75,6 +75,10 @@ import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateWorkspaceFromPrDialog } from '@/shared/dialogs/command-bar/CreateWorkspaceFromPrDialog';
 import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateState';
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
+import {
+  isLocalPersonalMode,
+  requiresLogin,
+} from '@/shared/lib/local/runtimeMode';
 
 // Mirrored sidebar icon for right sidebar toggle
 const RightSidebarIcon: Icon = forwardRef<SVGSVGElement, IconProps>(
@@ -445,7 +449,8 @@ export const Actions = {
     label: 'Sign In',
     icon: SignInIcon,
     requiresTarget: ActionTargetType.NONE,
-    isVisible: (ctx) => !ctx.isSignedIn,
+    // 个人版没有登录概念，命令面板里也不该出现这两条。
+    isVisible: (ctx) => !isLocalPersonalMode() && !ctx.isSignedIn,
     execute: async () => {
       const { OAuthDialog } = await import(
         '@/shared/dialogs/global/OAuthDialog'
@@ -459,8 +464,17 @@ export const Actions = {
     label: 'Sign Out',
     icon: SignOutIcon,
     requiresTarget: ActionTargetType.NONE,
-    isVisible: (ctx) => ctx.isSignedIn,
+    isVisible: (ctx) => !isLocalPersonalMode() && ctx.isSignedIn,
     execute: async (ctx) => {
+      // 团队模式登出的是**本地**会话，不是云端 OAuth。
+      if (requiresLogin()) {
+        const { logout } = await import('@/shared/lib/local/bootstrapApi');
+        await logout();
+        ctx.queryClient.clear();
+        window.location.assign('/');
+        return;
+      }
+
       const { oauthApi } = await import('@/shared/lib/api');
       const { useOrganizationStore } = await import(
         '@/shared/stores/useOrganizationStore'

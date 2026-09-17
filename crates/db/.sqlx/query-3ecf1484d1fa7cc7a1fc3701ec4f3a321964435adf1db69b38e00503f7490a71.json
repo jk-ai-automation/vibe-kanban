@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE local_users SET last_login_at = $2 WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3ecf1484d1fa7cc7a1fc3701ec4f3a321964435adf1db69b38e00503f7490a71"
+}

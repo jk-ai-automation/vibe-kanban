@@ -25,7 +25,9 @@ use services::services::{
     file::FileService,
     file_search::FileSearchCache,
     filesystem::FilesystemService,
+    local_auth::runtime::LocalAuthRuntime,
     oauth_credentials::OAuthCredentials,
+    oauth_handoff::{HandoffRejection, HandoffStore, NonceBinding, PendingHandoff},
     pr_monitor::PrMonitorService,
     queued_message::QueuedMessageService,
     remote_client::{RemoteClient, RemoteClientError},
@@ -35,7 +37,10 @@ use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 use trusted_key_auth::runtime::TrustedKeyAuthRuntime;
 use utils::{
-    assets::{config_path, credentials_path, server_signing_key_path, trusted_keys_path},
+    assets::{
+        config_path, credentials_path, machine_token_path, server_settings_path,
+        server_signing_key_path, trusted_keys_path,
+    },
     msg_store::MsgStore,
 };
 use uuid::Uuid;
@@ -66,7 +71,8 @@ pub struct LocalDeployment {
     queued_message_service: QueuedMessageService,
     remote_client: Result<RemoteClient, RemoteClientNotConfigured>,
     auth_context: AuthContext,
-    oauth_handoffs: Arc<RwLock<HashMap<Uuid, PendingHandoff>>>,
+    local_auth: LocalAuthRuntime,
+    oauth_handoffs: Arc<HandoffStore>,
     trusted_key_auth: TrustedKeyAuthRuntime,
     relay_signing: RelaySigningService,
     relay_control: Arc<RelayControl>,
@@ -81,19 +87,47 @@ pub struct LocalDeployment {
     pr_sync_notify: Arc<Notify>,
 }
 
-#[derive(Debug, Clone)]
-struct PendingHandoff {
-    provider: String,
-    app_verifier: String,
-}
-
 #[async_trait]
 impl Deployment for LocalDeployment {
     async fn new(shutdown: CancellationToken) -> Result<Self, DeploymentError> {
-        // Run one-time process logs migration from DB to filesystem
-        services::services::execution_process::migrate_execution_logs_to_files()
+        // 运行模式与本地认证设置。配置文件非法一律让启动失败，不静默退回
+        // personal（免登录）——那是 fail-open。
+        let settings_file =
+            services::services::server_settings::read_server_settings_file(&server_settings_path())
+                .await
+                .map_err(|e| DeploymentError::Other(anyhow::anyhow!("{e}")))?;
+        let server_settings =
+            services::services::server_settings::load_server_settings(settings_file, &|key| {
+                std::env::var(key).ok()
+            })
+            .map_err(|e| DeploymentError::Other(anyhow::anyhow!("{e}")))?;
+        tracing::info!(mode = server_settings.mode.as_str(), "服务端运行模式");
+        // 先取出来：`server_settings` 下面会被 move 进 LocalAuthRuntime，而建库在更后面。
+        // 这个开关是 `server.json` 的 `sqlite_wal` 与 `VK_SQLITE_WAL` 合并后的结果，
+        // 必须传进建库路径——否则 `server.json` 里写的 `"sqlite_wal": false` 不生效。
+        let sqlite_wal = server_settings.sqlite_wal;
+
+        // 一次性的「日志从 SQLite 挪到文件」迁移。**必须排在读设置之后**：它自己开一个
+        // 连接池，如果用的 journal mode 跟主池不一样，库会在启动时被来回转换一次。
+        services::services::execution_process::migrate_execution_logs_to_files(sqlite_wal)
             .await
             .map_err(|e| DeploymentError::Other(anyhow::anyhow!("Migration failed: {}", e)))?;
+
+        // 本机令牌（X-VK-MACHINE-TOKEN）：团队模式下 MCP 等本机进程靠它免会话
+        // 访问 /api/*。生成失败**不能**静默降级成空串——那会让 MCP 在团队模式下
+        // 全线 401 且毫无提示；直接让启动失败，问题一眼可见。
+        let machine_token =
+            services::services::local_auth::machine_token::load_or_create_machine_token_at(
+                &machine_token_path(),
+            )
+            .await
+            .map_err(|e| {
+                DeploymentError::Other(anyhow::anyhow!(
+                    "本机令牌读写失败（{}）：{e}",
+                    machine_token_path().display()
+                ))
+            })?;
+        let local_auth = LocalAuthRuntime::new(server_settings, machine_token);
 
         let mut raw_config = load_config_from_file(&config_path()).await;
 
@@ -141,9 +175,9 @@ impl Deployment for LocalDeployment {
             let hook = EventService::create_hook(
                 events_msg_store.clone(),
                 events_entry_count.clone(),
-                DBService::new().await?, // Temporary DB service for the hook
+                DBService::new_with_wal(sqlite_wal).await?, // Temporary DB service for the hook
             );
-            DBService::new_with_after_connect(hook).await?
+            DBService::new_with_after_connect_and_wal(sqlite_wal, hook).await?
         };
 
         let file = FileService::new(db.clone().pool)?;
@@ -154,6 +188,32 @@ impl Deployment for LocalDeployment {
                 if let Err(e) = file_service.delete_orphaned_files().await {
                     tracing::error!("Failed to clean up orphaned files: {}", e);
                 }
+            });
+        }
+
+        // 过期会话清理：启动时先清一次，之后每六小时一次。
+        //
+        // **必须监听 shutdown**：否则这个 loop 会把进程退出拖到下一次
+        // `sleep` 醒来（最坏六小时）。`select!` 放在清理之后，
+        // 保证「启动时立刻清一次」这条语义即使刚启动就收到取消也已经跑过。
+        {
+            let pool = db.pool.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                use db::models::local_auth::{LocalSessions, SESSION_CLEANUP_INTERVAL};
+                loop {
+                    match LocalSessions::delete_expired_now(&pool).await {
+                        Ok(n) if n > 0 => tracing::info!("清理过期会话 {n} 条"),
+                        Ok(_) => {}
+                        // 清理失败不影响服务，下一轮再试。
+                        Err(e) => tracing::warn!("清理过期会话失败: {e}"),
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(SESSION_CLEANUP_INTERVAL) => {}
+                        _ = shutdown.cancelled() => break,
+                    }
+                }
+                tracing::debug!("过期会话清理任务已退出");
             });
         }
 
@@ -203,7 +263,7 @@ impl Deployment for LocalDeployment {
             }
         };
 
-        let oauth_handoffs = Arc::new(RwLock::new(HashMap::new()));
+        let oauth_handoffs = Arc::new(HandoffStore::new());
         let trusted_key_auth = TrustedKeyAuthRuntime::new(trusted_keys_path());
         let relay_signing = RelaySigningService::load_or_generate(&server_signing_key_path())
             .expect("Failed to load or generate server signing key");
@@ -280,6 +340,7 @@ impl Deployment for LocalDeployment {
             queued_message_service,
             remote_client,
             auth_context,
+            local_auth,
             oauth_handoffs,
             trusted_key_auth,
             relay_signing,
@@ -352,6 +413,10 @@ impl Deployment for LocalDeployment {
 
     fn auth_context(&self) -> &AuthContext {
         &self.auth_context
+    }
+
+    fn local_auth(&self) -> &LocalAuthRuntime {
+        &self.local_auth
     }
 
     fn relay_control(&self) -> &Arc<RelayControl> {
@@ -451,27 +516,31 @@ impl LocalDeployment {
         }
     }
 
+    /// 记下一条待完成的云端 OAuth handoff。
+    ///
+    /// `binding` 决定回调要不要出示 nonce，**只能由 init 这一侧决定**，
+    /// 细节见 [`NonceBinding`]。
     pub async fn store_oauth_handoff(
         &self,
         handoff_id: Uuid,
         provider: String,
         app_verifier: String,
+        binding: &NonceBinding,
     ) {
-        self.oauth_handoffs.write().await.insert(
-            handoff_id,
-            PendingHandoff {
-                provider,
-                app_verifier,
-            },
-        );
+        self.oauth_handoffs
+            .insert_now(handoff_id, provider, app_verifier, binding)
+            .await;
     }
 
-    pub async fn take_oauth_handoff(&self, handoff_id: &Uuid) -> Option<(String, String)> {
+    /// 消费一条待完成的 handoff。`presented_nonce` 来自请求的 `vk_handoff` Cookie。
+    pub async fn take_oauth_handoff(
+        &self,
+        handoff_id: &Uuid,
+        presented_nonce: Option<&str>,
+    ) -> Result<PendingHandoff, HandoffRejection> {
         self.oauth_handoffs
-            .write()
+            .take_now(handoff_id, presented_nonce)
             .await
-            .remove(handoff_id)
-            .map(|state| (state.provider, state.app_verifier))
     }
 
     pub fn pty(&self) -> &PtyService {

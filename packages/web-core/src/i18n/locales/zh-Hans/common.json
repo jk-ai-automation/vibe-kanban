@@ -78,6 +78,112 @@
   "error": "错误",
   "signIn": "登录",
   "signOut": "退出登录",
+  "localAuth": {
+    "signInTitle": "登录 Vibe Kanban",
+    "signInSubtitle": "此服务器运行在团队模式，需要账号登录。",
+    "username": "用户名",
+    "password": "密码",
+    "signIn": "登录",
+    "signingIn": "登录中…",
+    "invalidCredentials": "用户名或密码错误。",
+    "rateLimited": "尝试次数过多，请稍后再试。",
+    "networkError": "无法连接服务器，请检查网络后重试。",
+    "loading": "加载中…",
+    "checking": "检测中…",
+    "retry": "重新检测",
+    "orContinueWith": "或使用以下方式登录",
+    "setupTitle": "初始化团队",
+    "setupDescription": "已开启团队模式，但还没有管理员账号。",
+    "errors": {
+      "usernameRequired": "请输入用户名。",
+      "passwordRequired": "请输入密码。",
+      "usernameInvalid": "用户名只能包含小写字母、数字与 . _ -，且不超过 64 个字符。",
+      "passwordTooShort": "密码至少需要 8 个字符。",
+      "passwordTooLong": "密码不能超过 1024 个字符。",
+      "emailInvalid": "请输入正确的邮箱地址。",
+      "displayNameRequired": "请输入显示名。",
+      "inviteTtlInvalid": "有效期必须是 1～30 之间的整数天数。"
+    },
+    "providers": {
+      "feishu": "飞书",
+      "lark": "Lark",
+      "google": "Google"
+    },
+    "setupNoToken": "此服务器需要初始化，请在服务器控制台查看初始化链接。",
+    "setupLinkExpired": "链接已失效，请重启服务器获取新链接。",
+    "setupAlreadyInitialized": "已经有人完成了初始化。",
+    "setupGoToLogin": "前往登录",
+    "setupDisplayName": "显示名（可选，留空则使用用户名）",
+    "setupEmail": "邮箱（可选）",
+    "setupSubmit": "创建管理员账号",
+    "setupSubmitting": "创建中…",
+    "setupRoleNote": "将创建为管理员账号。",
+    "members": {
+      "pageTitle": "成员管理",
+      "sectionMembers": "成员",
+      "sectionInvites": "邀请码",
+      "addMember": "新建成员",
+      "cancel": "取消",
+      "create": "创建",
+      "creating": "创建中…",
+      "columnUser": "用户",
+      "columnEmail": "邮箱",
+      "columnRole": "角色",
+      "columnStatus": "状态",
+      "columnLastLogin": "最后登录",
+      "columnActions": "操作",
+      "roleAdmin": "管理员",
+      "roleMember": "成员",
+      "statusActive": "启用",
+      "statusDisabled": "已停用",
+      "fixedLocalBadge": "本机",
+      "fixedLocalHint": "本机固定账号，供本地进程使用，不能停用或修改角色。",
+      "disable": "停用",
+      "enable": "启用",
+      "resetPassword": "重置密码",
+      "resetPasswordSubmit": "确认重置",
+      "resetPasswordHint": "重置后将立即让该用户在所有设备上重新登录。",
+      "newPassword": "新密码",
+      "never": "从未登录",
+      "usernamePlaceholder": "用户名",
+      "displayNamePlaceholder": "显示名（可选，留空则使用用户名）",
+      "emailPlaceholder": "邮箱（可选）",
+      "passwordPlaceholder": "密码",
+      "loadError": "加载成员列表失败，请重试。",
+      "retry": "重试",
+      "forbiddenTitle": "无法打开成员管理",
+      "forbiddenDescription": "只有管理员才能管理成员，你的账号权限可能已发生变化。",
+      "backHome": "返回首页",
+      "empty": "还没有其他成员。"
+    },
+    "inviteAcceptBackToLogin": "已有账号？去登录",
+    "inviteAcceptSubmit": "创建账号",
+    "inviteAcceptSubmitting": "创建中…",
+    "inviteAcceptSubtitle": "你收到了加入这个团队的邀请，创建一个账号即可开始使用。",
+    "inviteAcceptTitle": "加入团队",
+    "invites": {
+      "addInvite": "生成邀请码",
+      "role": "角色",
+      "expiresInDays": "有效期（天）",
+      "create": "生成",
+      "creating": "生成中…",
+      "linkReady": "邀请链接已生成，请立即复制——离开本页后将无法再次查看。",
+      "copy": "复制链接",
+      "copied": "已复制",
+      "dismiss": "知道了",
+      "columnRole": "角色",
+      "columnCreatedAt": "创建时间",
+      "columnExpiresAt": "过期时间",
+      "columnStatus": "状态",
+      "columnActions": "操作",
+      "statusPending": "待使用",
+      "statusUsed": "已使用",
+      "statusExpired": "已过期",
+      "revoke": "作废",
+      "empty": "还没有邀请码。",
+      "loadError": "加载邀请码列表失败，请重试。"
+    }
+  },
   "oauth": {
     "title": "登录 Vibe Kanban",
     "description": "登录以加入组织并与团队共享任务",
@@ -332,7 +438,9 @@
       "toggle-wrap-lines": "切换自动换行",
       "run-setup-script": "运行设置脚本",
       "run-cleanup-script": "运行清理脚本",
-      "run-archive-script": "运行归档脚本"
+      "run-archive-script": "运行归档脚本",
+      "editSelected": "编辑选中项",
+      "openSelected": "打开选中项"
     }
   },
   "typeahead": {
@@ -393,6 +501,14 @@
     "markIndependentIssue": "标记为独立问题",
     "parentIssue": "父级",
     "subIssueIndicator": "↳",
+    "stage": {
+      "backlog": "待规划",
+      "todo": "待开发",
+      "dev": "开发中",
+      "review": "待评审",
+      "test": "测试中",
+      "done": "已完成"
+    },
     "viewTabs": {
       "active": "活动",
       "all": "全部"
@@ -478,6 +594,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "本列超过 {{limit}} 张需求",
+    "boardEmptyHint": "还没有需求。先建一条需求开始吧。",
+    "loadError": {
+      "title": "看板加载失败",
+      "hint": "同步连接中断。请检查网络后重试。"
+    },
+    "columnEmpty": {
+      "emptyTitle": "这一列还是空的",
+      "filteredTitle": "没有符合当前筛选的需求",
+      "createIssue": "新建需求",
+      "createWorkspace": "从需求创建工作区"
+    },
+    "badge": {
+      "workspaceRunning": "运行中",
+      "workspaceStopped": "已停止",
+      "workspaceFailed": "失败",
+      "prOpen": "PR 待评审",
+      "prMerged": "PR 已合并",
+      "prClosed": "PR 已关闭",
+      "testNotConnected": "测试未接入"
+    },
+    "density": {
+      "label": "切换密度",
+      "comfortable": "舒适",
+      "compact": "紧凑"
+    },
+    "tabs": {
+      "overview": "概况",
+      "development": "开发",
+      "testing": "测试"
+    },
+    "testing": {
+      "notConnectedTitle": "测试尚未接入",
+      "notConnectedHint": "接入测试框架后，这里会显示测试结果。",
+      "passRate": "通过率",
+      "passRateHint": "最近一次运行的用例通过比例",
+      "failures": "失败清单",
+      "failuresHint": "最近一次运行中失败的用例",
+      "report": "报告链接",
+      "reportHint": "完整测试报告的地址"
+    },
+    "breadcrumb": {
+      "issue": "打开关联需求",
+      "workspace": "打开工作区",
+      "pr": "打开 PR"
     }
   },
   "createMode": {

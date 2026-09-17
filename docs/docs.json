@@ -104,7 +104,9 @@
         "group": "Self-Hosting",
         "pages": [
           "self-hosting/local-development",
-          "self-hosting/deploy-docker"
+          "self-hosting/deploy-docker",
+          "self-hosting/team-mode",
+          "self-hosting/backup-restore"
         ]
       },
       {

@@ -8,6 +8,7 @@ import type { ReactNode } from 'react';
 import {
   LayoutIcon,
   DownloadSimpleIcon,
+  FlaskIcon,
   LinkIcon,
   PlusIcon,
   KanbanIcon,
@@ -53,6 +54,12 @@ interface AppBarProps {
   onWorkspacesClick: () => void;
   onHostClick?: (hostId: string, status: AppBarHostStatus) => void;
   showWorkspacesButton?: boolean;
+  /**
+   * 「测试」导航项（设计文档 §7.1，本期是占位页）。
+   * 可选：不传就不渲染，其它调用方不受影响。
+   */
+  onTestingClick?: () => void;
+  isTestingActive?: boolean;
   onProjectClick: (projectId: string) => void;
   onProjectsDragEnd: (result: DropResult) => void;
   isSavingProjectOrder?: boolean;
@@ -205,6 +212,8 @@ export function AppBar({
   onWorkspacesClick,
   onHostClick,
   showWorkspacesButton = true,
+  onTestingClick,
+  isTestingActive = false,
   onProjectClick,
   onProjectsDragEnd,
   isSavingProjectOrder,
@@ -229,21 +238,32 @@ export function AppBar({
   const { t } = useTranslation('common');
   const sections: AppBarSection[] = [];
 
-  if (showWorkspacesButton) {
-    sections.push({
-      key: 'local',
-      label: 'Local',
-      items: [
-        {
-          key: 'local-workspaces',
-          kind: 'icon-button',
-          label: 'Local workspaces',
-          icon: LayoutIcon,
-          isActive: isWorkspacesActive,
-          onClick: onWorkspacesClick,
-        },
-      ],
-    });
+  if (showWorkspacesButton || onTestingClick) {
+    const localItems: AppBarSectionItem[] = [];
+
+    if (showWorkspacesButton) {
+      localItems.push({
+        key: 'local-workspaces',
+        kind: 'icon-button',
+        label: 'Local workspaces',
+        icon: LayoutIcon,
+        isActive: isWorkspacesActive,
+        onClick: onWorkspacesClick,
+      });
+    }
+
+    if (onTestingClick) {
+      localItems.push({
+        key: 'local-testing',
+        kind: 'icon-button',
+        label: t('kanban.tabs.testing'),
+        icon: FlaskIcon,
+        isActive: isTestingActive,
+        onClick: onTestingClick,
+      });
+    }
+
+    sections.push({ key: 'local', label: 'Local', items: localItems });
   }
 
   if (hosts.length > 0 || onPairHostClick) {

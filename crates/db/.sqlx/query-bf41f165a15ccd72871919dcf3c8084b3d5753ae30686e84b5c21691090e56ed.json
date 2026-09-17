@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id         AS \"id!: Uuid\",\n                      role       AS \"role!: LocalUserRole\",\n                      created_by AS \"created_by?: Uuid\",\n                      expires_at AS \"expires_at!: DateTime<Utc>\",\n                      used_by    AS \"used_by?: Uuid\",\n                      used_at    AS \"used_at?: DateTime<Utc>\",\n                      created_at AS \"created_at!: DateTime<Utc>\"\n               FROM local_invites\n               ORDER BY created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "role!: LocalUserRole",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_by?: Uuid",
+        "ordinal": 2,
+        "type_info": "Blob"
+      },
+      {
+        "name": "expires_at!: DateTime<Utc>",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "used_by?: Uuid",
+        "ordinal": 4,
+        "type_info": "Blob"
+      },
+      {
+        "name": "used_at?: DateTime<Utc>",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "bf41f165a15ccd72871919dcf3c8084b3d5753ae30686e84b5c21691090e56ed"
+}

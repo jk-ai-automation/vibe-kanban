@@ -24,6 +24,7 @@ use services::services::{
     file_search::FileSearchCache,
     filesystem::{FilesystemError, FilesystemService},
     filesystem_watcher::FilesystemWatcherError,
+    local_auth::runtime::LocalAuthRuntime,
     queued_message::QueuedMessageService,
     remote_client::RemoteClient,
     repo::RepoService,
@@ -107,6 +108,10 @@ pub trait Deployment: Clone + Send + Sync + 'static {
     fn queued_message_service(&self) -> &QueuedMessageService;
 
     fn auth_context(&self) -> &AuthContext;
+
+    /// 本地账号体系的运行时（运行模式、会话有效期、OAuth 提供方、本机令牌）。
+    /// 与云端的 [`AuthContext`] 无关，见 `services::services::local_auth`。
+    fn local_auth(&self) -> &LocalAuthRuntime;
 
     fn relay_control(&self) -> &Arc<RelayControl>;
 

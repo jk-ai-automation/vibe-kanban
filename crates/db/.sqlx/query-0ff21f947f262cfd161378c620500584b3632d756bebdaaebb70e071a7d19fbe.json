@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.id           AS \"id!: Uuid\",\n                      s.user_id      AS \"user_id!: Uuid\",\n                      s.created_at   AS \"created_at!: DateTime<Utc>\",\n                      s.expires_at   AS \"expires_at!: DateTime<Utc>\",\n                      s.last_seen_at AS \"last_seen_at!: DateTime<Utc>\"\n               FROM local_sessions s\n               JOIN local_users u ON u.id = s.user_id\n               WHERE s.token_hash = $1\n                 AND s.revoked_at IS NULL\n                 AND s.expires_at > $2\n                 AND u.status = 'active'",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "user_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "expires_at!: DateTime<Utc>",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "last_seen_at!: DateTime<Utc>",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0ff21f947f262cfd161378c620500584b3632d756bebdaaebb70e071a7d19fbe"
+}

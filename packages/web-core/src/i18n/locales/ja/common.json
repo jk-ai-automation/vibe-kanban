@@ -78,6 +78,112 @@
   "error": "エラー",
   "signIn": "サインイン",
   "signOut": "サインアウト",
+  "localAuth": {
+    "signInTitle": "Vibe Kanban にサインイン",
+    "signInSubtitle": "このサーバーはチームモードで動作しており、アカウントが必要です。",
+    "username": "ユーザー名",
+    "password": "パスワード",
+    "signIn": "サインイン",
+    "signingIn": "サインインしています…",
+    "invalidCredentials": "ユーザー名またはパスワードが正しくありません。",
+    "rateLimited": "試行回数が多すぎます。しばらくしてからもう一度お試しください。",
+    "networkError": "サーバーに接続できません。接続を確認してもう一度お試しください。",
+    "loading": "読み込み中…",
+    "checking": "確認中…",
+    "retry": "再確認",
+    "orContinueWith": "または次の方法で続行",
+    "setupTitle": "チームの初期設定",
+    "setupDescription": "チームモードが有効ですが、管理者アカウントがまだありません。",
+    "errors": {
+      "usernameRequired": "ユーザー名を入力してください。",
+      "passwordRequired": "パスワードを入力してください。",
+      "usernameInvalid": "ユーザー名は半角小文字・数字・. _ - のみ、64文字以内で入力してください。",
+      "passwordTooShort": "パスワードは8文字以上で入力してください。",
+      "passwordTooLong": "パスワードは1024文字以内で入力してください。",
+      "emailInvalid": "正しいメールアドレスを入力してください。",
+      "displayNameRequired": "表示名を入力してください。",
+      "inviteTtlInvalid": "有効期限は1〜30の整数（日数）で入力してください。"
+    },
+    "providers": {
+      "feishu": "Feishu",
+      "lark": "Lark",
+      "google": "Google"
+    },
+    "setupNoToken": "このサーバーは初期化が必要です。サーバーのコンソールで初期化リンクを確認してください。",
+    "setupLinkExpired": "このリンクは期限切れです。サーバーを再起動して新しいリンクを取得してください。",
+    "setupAlreadyInitialized": "このサーバーの初期設定はすでに完了しています。",
+    "setupGoToLogin": "サインインへ",
+    "setupDisplayName": "表示名（任意、空欄の場合はユーザー名を使用）",
+    "setupEmail": "メールアドレス（任意）",
+    "setupSubmit": "管理者アカウントを作成",
+    "setupSubmitting": "作成中…",
+    "setupRoleNote": "このアカウントは管理者として作成されます。",
+    "members": {
+      "pageTitle": "メンバー管理",
+      "sectionMembers": "メンバー",
+      "sectionInvites": "招待コード",
+      "addMember": "新しいメンバー",
+      "cancel": "キャンセル",
+      "create": "作成",
+      "creating": "作成中…",
+      "columnUser": "ユーザー",
+      "columnEmail": "メール",
+      "columnRole": "役割",
+      "columnStatus": "ステータス",
+      "columnLastLogin": "最終ログイン",
+      "columnActions": "操作",
+      "roleAdmin": "管理者",
+      "roleMember": "メンバー",
+      "statusActive": "有効",
+      "statusDisabled": "無効",
+      "fixedLocalBadge": "ローカル",
+      "fixedLocalHint": "ローカルプロセスが使用する固定アカウントです。無効化や役割の変更はできません。",
+      "disable": "無効化",
+      "enable": "有効化",
+      "resetPassword": "パスワードをリセット",
+      "resetPasswordSubmit": "リセットを確定",
+      "resetPasswordHint": "リセットするとこのユーザーはすべての端末で即座にサインアウトされます。",
+      "newPassword": "新しいパスワード",
+      "never": "ログイン履歴なし",
+      "usernamePlaceholder": "ユーザー名",
+      "displayNamePlaceholder": "表示名（任意、空欄の場合はユーザー名を使用）",
+      "emailPlaceholder": "メールアドレス（任意）",
+      "passwordPlaceholder": "パスワード",
+      "loadError": "メンバー一覧を読み込めませんでした。もう一度お試しください。",
+      "retry": "再試行",
+      "forbiddenTitle": "メンバー管理を開けません",
+      "forbiddenDescription": "管理者のみがメンバーを管理できます。アカウントの権限が変更された可能性があります。",
+      "backHome": "ホームへ戻る",
+      "empty": "他のメンバーはまだいません。"
+    },
+    "inviteAcceptBackToLogin": "すでにアカウントをお持ちですか？サインイン",
+    "inviteAcceptSubmit": "アカウントを作成",
+    "inviteAcceptSubmitting": "作成中…",
+    "inviteAcceptSubtitle": "このチームへの招待を受け取りました。アカウントを作成して始めましょう。",
+    "inviteAcceptTitle": "チームに参加",
+    "invites": {
+      "addInvite": "招待コードを生成",
+      "role": "役割",
+      "expiresInDays": "有効期限（日数）",
+      "create": "生成",
+      "creating": "生成中…",
+      "linkReady": "招待リンクを生成しました。今すぐコピーしてください。このページを離れると二度と表示できません。",
+      "copy": "リンクをコピー",
+      "copied": "コピーしました",
+      "dismiss": "閉じる",
+      "columnRole": "役割",
+      "columnCreatedAt": "作成日時",
+      "columnExpiresAt": "有効期限",
+      "columnStatus": "ステータス",
+      "columnActions": "操作",
+      "statusPending": "未使用",
+      "statusUsed": "使用済み",
+      "statusExpired": "期限切れ",
+      "revoke": "無効化",
+      "empty": "まだ招待コードがありません。",
+      "loadError": "招待コード一覧を読み込めませんでした。もう一度お試しください。"
+    }
+  },
   "oauth": {
     "title": "Vibe Kanbanにサインイン",
     "description": "サインインして組織に参加し、チームとタスクを共有します",
@@ -332,7 +438,9 @@
       "toggle-wrap-lines": "行折り返しの切り替え",
       "run-setup-script": "セットアップスクリプトを実行",
       "run-cleanup-script": "クリーンアップスクリプトを実行",
-      "run-archive-script": "アーカイブスクリプトを実行"
+      "run-archive-script": "アーカイブスクリプトを実行",
+      "editSelected": "選択中の項目を編集",
+      "openSelected": "選択中の項目を開く"
     }
   },
   "typeahead": {
@@ -393,6 +501,14 @@
     "markIndependentIssue": "独立した課題としてマーク",
     "parentIssue": "親",
     "subIssueIndicator": "↳",
+    "stage": {
+      "backlog": "バックログ",
+      "todo": "未着手",
+      "dev": "開発中",
+      "review": "レビュー中",
+      "test": "テスト中",
+      "done": "完了"
+    },
     "viewTabs": {
       "active": "アクティブ",
       "all": "すべて"
@@ -478,6 +594,52 @@
         "title": "Invite your team",
         "content": "We've automatically created a personal organization and initial project so you can get started with Vibe Kanban. Export your cloud data before shutdown."
       }
+    },
+    "wipHint": "この列のイシューが {{limit}} 件を超えています",
+    "boardEmptyHint": "まだイシューがありません。最初のイシューを作成しましょう。",
+    "loadError": {
+      "title": "ボードを読み込めませんでした",
+      "hint": "同期接続に失敗しました。ネットワークを確認して再試行してください。"
+    },
+    "columnEmpty": {
+      "emptyTitle": "まだ何もありません",
+      "filteredTitle": "現在のフィルターに一致するイシューはありません",
+      "createIssue": "新規イシュー",
+      "createWorkspace": "イシューからワークスペースを作成"
+    },
+    "badge": {
+      "workspaceRunning": "実行中",
+      "workspaceStopped": "停止中",
+      "workspaceFailed": "失敗",
+      "prOpen": "PR レビュー待ち",
+      "prMerged": "PR マージ済み",
+      "prClosed": "PR クローズ済み",
+      "testNotConnected": "テスト未接続"
+    },
+    "density": {
+      "label": "表示密度を切り替え",
+      "comfortable": "ゆったり",
+      "compact": "コンパクト"
+    },
+    "tabs": {
+      "overview": "概要",
+      "development": "開発",
+      "testing": "テスト"
+    },
+    "testing": {
+      "notConnectedTitle": "テストはまだ接続されていません",
+      "notConnectedHint": "テストランナーを接続すると、ここに結果が表示されます。",
+      "passRate": "合格率",
+      "passRateHint": "直近の実行で合格したケースの割合",
+      "failures": "失敗一覧",
+      "failuresHint": "直近の実行で失敗したケース",
+      "report": "レポート",
+      "reportHint": "完全なテストレポートへのリンク"
+    },
+    "breadcrumb": {
+      "issue": "関連イシューを開く",
+      "workspace": "ワークスペースを開く",
+      "pr": "プルリクエストを開く"
     }
   },
   "createMode": {

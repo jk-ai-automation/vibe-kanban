@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DropResult } from '@hello-pangea/dnd';
-import { Outlet, useNavigate, useParams } from '@tanstack/react-router';
+import {
+  Outlet,
+  useLocation,
+  useNavigate,
+  useParams,
+} from '@tanstack/react-router';
 import { siDiscord, siGithub } from 'simple-icons';
 import {
   XIcon,
@@ -75,6 +80,7 @@ export function SharedAppLayout() {
   const { hosts: remoteCloudHosts } = useRemoteCloudHostsAppBarModel();
   const { hostId: routeHostId } = useParams({ strict: false });
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Register CMD+K shortcut globally for all routes under SharedAppLayout
   useCommandBarShortcut(() => CommandBarDialog.show());
@@ -173,6 +179,9 @@ export function SharedAppLayout() {
   );
   const isWorkspacesActive = isLocalWorkspacesDestination(currentDestination);
   const isExportActive = currentDestination?.kind === 'export';
+  // 占位页不在 AppDestination 体系里（它不属于工作区 / 项目那几类目的地），
+  // 所以激活态直接看路径，不去改导航模块的类型。
+  const isTestingActive = location.pathname.startsWith('/testing');
   const showCloudShutdownBanner =
     isExportActive || (isSignedIn && isProjectDestination(currentDestination));
   const isWorkspaceSidebarPreviewEnabled =
@@ -197,6 +206,11 @@ export function SharedAppLayout() {
 
   const handleWorkspacesClick = useCallback(() => {
     void navigate({ to: '/workspaces' });
+  }, [navigate]);
+
+  // 「测试」导航项（设计文档 §7.1）。本期是占位页，下一期接 atp。
+  const handleTestingClick = useCallback(() => {
+    void navigate({ to: '/testing' });
   }, [navigate]);
 
   const handleExportClick = useCallback(() => {
@@ -337,6 +351,8 @@ export function SharedAppLayout() {
               onCreateProject={handleCreateProject}
               onExportClick={handleExportClick}
               onWorkspacesClick={handleWorkspacesClick}
+              onTestingClick={handleTestingClick}
+              isTestingActive={isTestingActive}
               onHostClick={handleHostClick}
               onPairHostClick={handlePairHostClick}
               onProjectClick={handleProjectClick}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE local_sessions SET revoked_at = $2\n                   WHERE id = $1 AND revoked_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "c1e95ee9d9a0db9c23835b6d87896d5ecfb1ba3023683ae8ce1d36f062c84ccf"
+}

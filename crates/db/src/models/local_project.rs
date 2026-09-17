@@ -11,11 +11,12 @@ pub const DEFAULT_ORGANIZATION_ID: Uuid = Uuid::from_u128(1);
 pub const DEFAULT_USER_ID: Uuid = Uuid::from_u128(2);
 
 /// 新建项目时自动创建的状态列：(名称, 颜色, stage_type)
-pub const DEFAULT_STATUSES: [(&str, &str, &str); 5] = [
+pub const DEFAULT_STATUSES: [(&str, &str, &str); 6] = [
     ("待规划", "#94a3b8", "backlog"),
     ("待开发", "#64748b", "todo"),
     ("开发中", "#3b82f6", "dev"),
     ("待评审", "#a855f7", "review"),
+    ("测试中", "#06b6d4", "test"),
     ("已完成", "#22c55e", "done"),
 ];
 
@@ -77,7 +78,7 @@ impl LocalProjects {
         .await
     }
 
-    /// 建项目 + 5 个默认状态列，同一事务内完成。
+    /// 建项目 + 6 个默认状态列，同一事务内完成。
     /// simple_id 前缀在此刻按项目名定下并持久化，之后改名不会影响已有与新建需求。
     pub async fn create(
         pool: &SqlitePool,
@@ -251,7 +252,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 新建项目自动创建五个默认状态列() {
+    async fn 新建项目自动创建六个默认状态列() {
         let test_db = TestDb::new().await;
         let project = LocalProjects::create(test_db.pool(), &建项目请求("Vibe Kanban"))
             .await
@@ -273,7 +274,8 @@ mod tests {
                 ("待开发".to_string(), "todo".to_string(), 1),
                 ("开发中".to_string(), "dev".to_string(), 2),
                 ("待评审".to_string(), "review".to_string(), 3),
-                ("已完成".to_string(), "done".to_string(), 4),
+                ("测试中".to_string(), "test".to_string(), 4),
+                ("已完成".to_string(), "done".to_string(), 5),
             ]
         );
     }
@@ -295,7 +297,7 @@ mod tests {
             .fetch_one(test_db.pool())
             .await
             .expect("统计失败");
-        assert_eq!(count.0, 5, "第二次失败必须整体回滚，不得追加状态列");
+        assert_eq!(count.0, 6, "第二次失败必须整体回滚，不得追加状态列");
     }
 
     #[tokio::test]
