@@ -258,7 +258,34 @@
       "cannotDeleteOpenPr": "PRがオープン中はブランチを削除できません",
       "unlinkFromIssueLabel": "イシューからもリンク解除する"
     },
-    "linkError": "Failed to link workspace"
+    "linkError": "Failed to link workspace",
+    "requestDelete": "削除を申請",
+    "requestDeleteConfirmMessage": "ワークスペースの削除は管理者のみが実行できます。管理者の承認を求める削除申請を送信しますか？",
+    "requestDeleteError": "削除申請の送信に失敗しました",
+    "withdrawDeleteRequest": "削除申請を取り下げる",
+    "withdrawDeleteError": "削除申請の取り下げに失敗しました",
+    "approveDelete": "承認して削除",
+    "approveDeleteConfirmMessage": "承認するとこのワークスペースは直ちに削除されます。取り消せません。",
+    "approveDeleteError": "削除申請の承認に失敗しました",
+    "rejectDelete": "削除申請を却下",
+    "rejectDeleteError": "削除申請の却下に失敗しました",
+    "deletePending": "削除承認待ち",
+    "deletePendingTitle": "管理者による削除申請の承認を待っています"
+  },
+  "deleteRequests": {
+    "title": "ワークスペース削除申請",
+    "loading": "読み込み中…",
+    "loadError": "削除申請の読み込みに失敗しました",
+    "empty": "保留中の削除申請はありません",
+    "columnWorkspace": "ワークスペース",
+    "columnBranch": "ブランチ",
+    "columnRequester": "申請者",
+    "columnReason": "理由",
+    "columnCreatedAt": "申請日時",
+    "approve": "承認して削除",
+    "reject": "却下",
+    "unknownRequester": "不明",
+    "noReason": "—"
   },
   "fileTree": {
     "searchPlaceholder": "ファイルを検索...",

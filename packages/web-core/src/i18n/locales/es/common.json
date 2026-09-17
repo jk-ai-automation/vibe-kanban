@@ -258,7 +258,34 @@
       "cannotDeleteOpenPr": "No se puede eliminar la rama mientras el PR está abierto",
       "unlinkFromIssueLabel": "También desvincular del issue"
     },
-    "linkError": "Failed to link workspace"
+    "linkError": "Failed to link workspace",
+    "requestDelete": "Solicitar eliminación",
+    "requestDeleteConfirmMessage": "Solo un administrador puede eliminar un espacio de trabajo. ¿Enviar una solicitud de eliminación para que la revise un administrador?",
+    "requestDeleteError": "No se pudo enviar la solicitud de eliminación",
+    "withdrawDeleteRequest": "Retirar solicitud de eliminación",
+    "withdrawDeleteError": "No se pudo retirar la solicitud de eliminación",
+    "approveDelete": "Aprobar y eliminar",
+    "approveDeleteConfirmMessage": "Al aprobar se elimina este espacio de trabajo de inmediato. No se puede deshacer.",
+    "approveDeleteError": "No se pudo aprobar la solicitud de eliminación",
+    "rejectDelete": "Rechazar solicitud de eliminación",
+    "rejectDeleteError": "No se pudo rechazar la solicitud de eliminación",
+    "deletePending": "Eliminación pendiente",
+    "deletePendingTitle": "Esperando que un administrador revise la solicitud de eliminación"
+  },
+  "deleteRequests": {
+    "title": "Solicitudes de eliminación de espacios de trabajo",
+    "loading": "Cargando...",
+    "loadError": "No se pudieron cargar las solicitudes de eliminación",
+    "empty": "No hay solicitudes de eliminación pendientes",
+    "columnWorkspace": "Espacio de trabajo",
+    "columnBranch": "Rama",
+    "columnRequester": "Solicitado por",
+    "columnReason": "Motivo",
+    "columnCreatedAt": "Enviada",
+    "approve": "Aprobar y eliminar",
+    "reject": "Rechazar",
+    "unknownRequester": "Desconocido",
+    "noReason": "—"
   },
   "fileTree": {
     "searchPlaceholder": "Buscar archivos...",

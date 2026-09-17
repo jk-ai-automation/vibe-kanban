@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
@@ -48,7 +48,12 @@ import {
   validateResetPasswordForm,
   type MemberLike,
 } from '@/features/local-auth/model/members';
+import {
+  WorkspaceDeleteRequestsPanel,
+  type WorkspaceDeleteRequestRow,
+} from '@vibe/ui/components/WorkspaceDeleteRequestsPanel';
 import { useLocalSession } from '@/shared/hooks/auth/useLocalSession';
+import { useWorkspaceDeleteRequests } from '@/shared/hooks/useWorkspaceDeleteRequests';
 
 const MEMBERS_QUERY_KEY = ['admin', 'users'] as const;
 const INVITES_QUERY_KEY = ['admin', 'invites'] as const;
@@ -135,6 +140,7 @@ export function MembersPageContainer() {
   const queryClient = useQueryClient();
   const localSession = useLocalSession();
   const isAdmin = localSession?.user.role === 'admin';
+  const deleteRequests = useWorkspaceDeleteRequests();
 
   const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [newMember, setNewMember] = useState(EMPTY_NEW_MEMBER);
@@ -144,6 +150,46 @@ export function MembersPageContainer() {
   const [newMemberError, setNewMemberError] = useState<string | null>(null);
 
   const [actionError, setActionError] = useState<string | null>(null);
+
+  const deleteRequestRows: WorkspaceDeleteRequestRow[] = useMemo(
+    () =>
+      deleteRequests.requests.map((request) => ({
+        id: request.id,
+        workspaceId: request.workspace_id,
+        workspaceName: request.workspace_name,
+        workspaceBranch: request.workspace_branch,
+        requesterUsername: request.requested_by_username,
+        reason: request.reason,
+        createdAt: request.created_at,
+      })),
+    [deleteRequests.requests]
+  );
+
+  // 批准即删除；失败（申请已被撤回 / 工作区里还有进程在跑）由后端的
+  // 409 / 404 文案直接展示，不在前端猜原因。
+  const handleApproveDeleteRequest = useCallback(
+    async (requestId: string) => {
+      setActionError(null);
+      try {
+        await deleteRequests.approveRequest(requestId);
+      } catch (error) {
+        setActionError(displayAdminError(t, error, 'localAuth.networkError'));
+      }
+    },
+    [deleteRequests, t]
+  );
+
+  const handleRejectDeleteRequest = useCallback(
+    async (requestId: string) => {
+      setActionError(null);
+      try {
+        await deleteRequests.rejectRequest(requestId);
+      } catch (error) {
+        setActionError(displayAdminError(t, error, 'localAuth.networkError'));
+      }
+    },
+    [deleteRequests, t]
+  );
 
   const [resetPasswordTargetId, setResetPasswordTargetId] = useState<
     string | null
@@ -493,6 +539,21 @@ export function MembersPageContainer() {
       createdInvite={createdInvite}
       onDismissCreatedInvite={() => setCreatedInvite(null)}
       onRevokeInvite={(inviteId) => deleteInviteMutation.mutate(inviteId)}
+      deleteRequestsSection={
+        // 个人版没有这套东西：hook 里 `enabled: !isPersonal`，一个请求都不发。
+        deleteRequests.isPersonal ? undefined : (
+          <WorkspaceDeleteRequestsPanel
+            requests={deleteRequestRows}
+            isLoading={deleteRequests.isLoading}
+            error={
+              deleteRequests.isError ? t('deleteRequests.loadError') : null
+            }
+            busyRequestId={deleteRequests.busyRequestId}
+            onApprove={handleApproveDeleteRequest}
+            onReject={handleRejectDeleteRequest}
+          />
+        )
+      }
     />
   );
 }

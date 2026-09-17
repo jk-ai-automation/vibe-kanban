@@ -258,7 +258,34 @@
       "cannotDeleteOpenPr": "PR이 열려 있는 동안에는 브랜치를 삭제할 수 없습니다",
       "unlinkFromIssueLabel": "이슈에서도 연결 해제"
     },
-    "linkError": "Failed to link workspace"
+    "linkError": "Failed to link workspace",
+    "requestDelete": "삭제 요청",
+    "requestDeleteConfirmMessage": "워크스페이스 삭제는 관리자만 할 수 있습니다. 관리자 승인을 받기 위한 삭제 요청을 제출할까요?",
+    "requestDeleteError": "삭제 요청 제출에 실패했습니다",
+    "withdrawDeleteRequest": "삭제 요청 철회",
+    "withdrawDeleteError": "삭제 요청 철회에 실패했습니다",
+    "approveDelete": "승인하고 삭제",
+    "approveDeleteConfirmMessage": "승인하면 이 워크스페이스가 즉시 삭제되며 되돌릴 수 없습니다.",
+    "approveDeleteError": "삭제 요청 승인에 실패했습니다",
+    "rejectDelete": "삭제 요청 거절",
+    "rejectDeleteError": "삭제 요청 거절에 실패했습니다",
+    "deletePending": "삭제 승인 대기",
+    "deletePendingTitle": "관리자의 삭제 요청 승인을 기다리는 중"
+  },
+  "deleteRequests": {
+    "title": "워크스페이스 삭제 요청",
+    "loading": "불러오는 중…",
+    "loadError": "삭제 요청을 불러오지 못했습니다",
+    "empty": "대기 중인 삭제 요청이 없습니다",
+    "columnWorkspace": "워크스페이스",
+    "columnBranch": "브랜치",
+    "columnRequester": "요청자",
+    "columnReason": "사유",
+    "columnCreatedAt": "제출 시각",
+    "approve": "승인하고 삭제",
+    "reject": "거절",
+    "unknownRequester": "알 수 없음",
+    "noReason": "—"
   },
   "fileTree": {
     "searchPlaceholder": "파일 검색...",

@@ -258,7 +258,34 @@
       "cannotDeleteOpenPr": "Impossible de supprimer la branche tant que la PR est ouverte",
       "unlinkFromIssueLabel": "Également dissocier du ticket"
     },
-    "linkError": "Failed to link workspace"
+    "linkError": "Failed to link workspace",
+    "requestDelete": "Demander la suppression",
+    "requestDeleteConfirmMessage": "Seul un administrateur peut supprimer un espace de travail. Envoyer une demande de suppression pour examen par un administrateur ?",
+    "requestDeleteError": "Échec de l'envoi de la demande de suppression",
+    "withdrawDeleteRequest": "Retirer la demande de suppression",
+    "withdrawDeleteError": "Échec du retrait de la demande de suppression",
+    "approveDelete": "Approuver et supprimer",
+    "approveDeleteConfirmMessage": "L'approbation supprime immédiatement cet espace de travail. Action irréversible.",
+    "approveDeleteError": "Échec de l'approbation de la demande de suppression",
+    "rejectDelete": "Rejeter la demande de suppression",
+    "rejectDeleteError": "Échec du rejet de la demande de suppression",
+    "deletePending": "Suppression en attente",
+    "deletePendingTitle": "En attente de l'examen de la demande de suppression par un administrateur"
+  },
+  "deleteRequests": {
+    "title": "Demandes de suppression d'espace de travail",
+    "loading": "Chargement...",
+    "loadError": "Échec du chargement des demandes de suppression",
+    "empty": "Aucune demande de suppression en attente",
+    "columnWorkspace": "Espace de travail",
+    "columnBranch": "Branche",
+    "columnRequester": "Demandé par",
+    "columnReason": "Motif",
+    "columnCreatedAt": "Envoyée",
+    "approve": "Approuver et supprimer",
+    "reject": "Rejeter",
+    "unknownRequester": "Inconnu",
+    "noReason": "—"
   },
   "fileTree": {
     "searchPlaceholder": "Rechercher des fichiers...",

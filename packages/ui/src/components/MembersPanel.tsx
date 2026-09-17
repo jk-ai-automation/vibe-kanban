@@ -112,6 +112,13 @@ export interface MembersPanelProps {
   createdInvite: CreatedInvite | null;
   onDismissCreatedInvite: () => void;
   onRevokeInvite: (inviteId: string) => void;
+
+  /**
+   * 「删除申请」区块。做成插槽而不是又一组 props：这个面板已经有三十多个
+   * 入参，再把审批队列的状态机塞进来会让它彻底失控。个人版传 `undefined`，
+   * 整块连同它的查询一起消失。
+   */
+  deleteRequestsSection?: React.ReactNode;
 }
 
 const inputClass = cn(
@@ -275,6 +282,7 @@ export function MembersPanel({
   createdInvite,
   onDismissCreatedInvite,
   onRevokeInvite,
+  deleteRequestsSection,
 }: MembersPanelProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -876,6 +884,8 @@ export function MembersPanel({
             </div>
           )}
         </section>
+
+        {deleteRequestsSection}
       </div>
     </div>
   );

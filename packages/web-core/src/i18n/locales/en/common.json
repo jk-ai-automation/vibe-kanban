@@ -272,7 +272,34 @@
       "deleteBranchLabel": "Delete branch",
       "cannotDeleteOpenPr": "Cannot delete branch while PR is open",
       "unlinkFromIssueLabel": "Also unlink from issue"
-    }
+    },
+    "requestDelete": "Request deletion",
+    "requestDeleteConfirmMessage": "Only an administrator can delete a workspace. Submit a deletion request for an administrator to review?",
+    "requestDeleteError": "Failed to submit the deletion request",
+    "withdrawDeleteRequest": "Withdraw deletion request",
+    "withdrawDeleteError": "Failed to withdraw the deletion request",
+    "approveDelete": "Approve and delete",
+    "approveDeleteConfirmMessage": "Approving deletes this workspace immediately. This cannot be undone.",
+    "approveDeleteError": "Failed to approve the deletion request",
+    "rejectDelete": "Reject deletion request",
+    "rejectDeleteError": "Failed to reject the deletion request",
+    "deletePending": "Deletion pending",
+    "deletePendingTitle": "Waiting for an administrator to review the deletion request"
+  },
+  "deleteRequests": {
+    "title": "Workspace deletion requests",
+    "loading": "Loading...",
+    "loadError": "Failed to load deletion requests",
+    "empty": "No pending deletion requests",
+    "columnWorkspace": "Workspace",
+    "columnBranch": "Branch",
+    "columnRequester": "Requested by",
+    "columnReason": "Reason",
+    "columnCreatedAt": "Submitted",
+    "approve": "Approve and delete",
+    "reject": "Reject",
+    "unknownRequester": "Unknown",
+    "noReason": "—"
   },
   "fileTree": {
     "searchPlaceholder": "Search files...",

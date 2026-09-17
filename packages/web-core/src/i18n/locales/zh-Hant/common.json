@@ -258,7 +258,34 @@
       "cannotDeleteOpenPr": "PR 開啟時無法刪除分支",
       "unlinkFromIssueLabel": "同時取消與議題的關聯"
     },
-    "linkError": "Failed to link workspace"
+    "linkError": "Failed to link workspace",
+    "requestDelete": "申請刪除",
+    "requestDeleteConfirmMessage": "刪除工作區只有管理員能做。是否提交一筆刪除申請交給管理員審批？",
+    "requestDeleteError": "提交刪除申請失敗",
+    "withdrawDeleteRequest": "撤回刪除申請",
+    "withdrawDeleteError": "撤回刪除申請失敗",
+    "approveDelete": "批准並刪除",
+    "approveDeleteConfirmMessage": "批准會立即刪除這個工作區，且無法復原。",
+    "approveDeleteError": "批准刪除申請失敗",
+    "rejectDelete": "駁回刪除申請",
+    "rejectDeleteError": "駁回刪除申請失敗",
+    "deletePending": "待審批刪除",
+    "deletePendingTitle": "等待管理員審批刪除申請"
+  },
+  "deleteRequests": {
+    "title": "工作區刪除申請",
+    "loading": "載入中…",
+    "loadError": "載入刪除申請失敗",
+    "empty": "沒有待處理的刪除申請",
+    "columnWorkspace": "工作區",
+    "columnBranch": "分支",
+    "columnRequester": "申請人",
+    "columnReason": "理由",
+    "columnCreatedAt": "提交時間",
+    "approve": "批准並刪除",
+    "reject": "駁回",
+    "unknownRequester": "未知",
+    "noReason": "—"
   },
   "fileTree": {
     "searchPlaceholder": "搜尋檔案...",
