@@ -26,12 +26,15 @@ export const LOCAL_AUTH_PATHS = {
 } as const;
 
 /**
- * 第三方绑定这三条**永远打本机后端**。
+ * `/api/local-auth/*` **每一条都永远打本机后端**，所以这个文件里的每次
+ * `makeLocalApiRequest` 都要带上它。
  *
  * 默认的 `hostScope: 'current'` 会把 `/api/xxx` 改写成
  * `/api/host/<id>/xxx` 转发到配对的另一台机器；而会话 Cookie 是本机这一份，
  * 转过去必然 401，`makeLocalApiRequest` 随即广播「会话过期」，
  * 用户就被莫名其妙踢回登录页了。
+ *
+ * 忘了写会被 `localOnlyHostScope.test.ts` 当场拦下。
  */
 const 本机 = { hostScope: 'none' } as const;
 
@@ -102,7 +105,7 @@ async function readEnvelope<T>(
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const response = await makeLocalApiRequest(path, { method: 'GET' });
+  const response = await makeLocalApiRequest(path, { method: 'GET', ...本机 });
   const envelope = await readEnvelope<T>(response, path);
   return envelope.data as T;
 }
@@ -125,6 +128,7 @@ export async function login(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    ...本机,
   });
 
   if (response.status === 401) throw new InvalidCredentialsError();
@@ -144,6 +148,7 @@ export async function logout(): Promise<void> {
   try {
     const response = await makeLocalApiRequest(LOCAL_AUTH_PATHS.logout, {
       method: 'POST',
+      ...本机,
     });
     if (response.status === 401) return;
     await readEnvelope<string>(response, LOCAL_AUTH_PATHS.logout);
@@ -172,7 +177,7 @@ export async function fetchSetupStatus(
 ): Promise<SetupStatusResponse> {
   const response = await makeLocalApiRequest(
     `${LOCAL_AUTH_PATHS.setup}?token=${encodeURIComponent(token)}`,
-    { method: 'GET' }
+    { method: 'GET', ...本机 }
   );
   if (response.status === 401) throw new SetupTokenInvalidError();
   const envelope = await readEnvelope<SetupStatusResponse>(
@@ -198,6 +203,7 @@ export async function submitSetupAdmin(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    ...本机,
   });
 
   if (response.status === 401) throw new SetupTokenInvalidError();
@@ -238,6 +244,7 @@ export async function acceptInvite(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    ...本机,
   });
 
   if (!response.ok) {
@@ -308,6 +315,7 @@ export async function changePassword(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    ...本机,
   });
 
   if (response.status === 401) throw new InvalidCredentialsError();

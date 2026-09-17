@@ -9,7 +9,10 @@ import type {
   ListLocalUsersResponse,
   UpdateLocalUserRequest,
 } from 'shared/types';
-import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
+import {
+  makeLocalApiRequest,
+  type LocalApiRequestOptions,
+} from '@/shared/lib/localApiTransport';
 import { parseEnvelopeError } from '@/shared/lib/local/apiEnvelope';
 
 /**
@@ -44,12 +47,20 @@ export class AdminApiError extends Error {
  * 也被 `workspaceDeleteRequestsApi.ts` 复用（那里既有 `/api/admin/*` 也有
  * 申请人侧的普通路径）：两边的错误语义完全一样——后端的 400/403/404/409
  * 文案是特意写给人看的，可以直接展示。
+ *
+ * **这里把 `hostScope: 'none'` 钉死，调用方不能覆盖**：走这个函数的接口
+ * （成员、邀请码、工作区删除申请的两侧）全都只存在于本机后端，认的是本机
+ * 会话 Cookie。默认的 `hostScope: 'current'` 会在选中远端 host 时把
+ * `/api/admin/users` 改写成 `/api/host/<id>/admin/users` 转发过去，那边不认
+ * 本机 Cookie，必然 401 —— `makeLocalApiRequest` 随即广播「会话过期」，
+ * 用户被莫名其妙踢回登录页。
  */
 export async function requestLocalEnvelope<T>(
   path: string,
   init: RequestInit = {}
 ): Promise<T> {
-  const response = await makeLocalApiRequest(path, init);
+  const 本机: LocalApiRequestOptions = { ...init, hostScope: 'none' };
+  const response = await makeLocalApiRequest(path, 本机);
 
   if (!response.ok) {
     const { message } = await parseEnvelopeError(response);
