@@ -182,6 +182,26 @@
       "revoke": "Revocar",
       "empty": "Todavía no hay códigos de invitación.",
       "loadError": "No se pudieron cargar los códigos de invitación. Inténtalo de nuevo."
+    },
+    "bindings": {
+      "sectionTitle": "Cuentas de terceros",
+      "sectionDescription": "Vincula una cuenta de Feishu, Lark o Google para poder iniciar sesión con ella.",
+      "bind": "Vincular",
+      "unbind": "Desvincular",
+      "notBound": "Sin vincular",
+      "boundAt": "Vinculada el {{time}}",
+      "loading": "Cargando…",
+      "loadError": "No se pudieron cargar tus cuentas vinculadas.",
+      "retry": "Reintentar",
+      "noProviders": "Este servidor no tiene configurado ningún inicio de sesión de terceros.",
+      "noPasswordHint": "Esta cuenta no tiene contraseña, así que necesita al menos una cuenta vinculada para iniciar sesión.",
+      "lastLoginMethodHint": "Es tu única forma de iniciar sesión. Define una contraseña o vincula otra cuenta antes de desvincularla.",
+      "providerUnavailable": "El servidor ya no ofrece este método de inicio de sesión, pero aún puedes desvincularlo.",
+      "bindSuccess": "Cuenta vinculada.",
+      "errorLastLoginMethod": "Es tu única forma de iniciar sesión, así que no se puede desvincular.",
+      "errorNotFound": "Ese vínculo ya no existe.",
+      "errorForbidden": "Se rechazó la solicitud. Recarga la página e inténtalo de nuevo.",
+      "errorGeneric": "Algo salió mal. Inténtalo de nuevo."
     }
   },
   "oauth": {

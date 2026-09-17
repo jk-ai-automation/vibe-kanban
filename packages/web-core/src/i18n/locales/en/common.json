@@ -186,6 +186,26 @@
       "revoke": "Revoke",
       "empty": "No invite codes yet.",
       "loadError": "Could not load invite codes. Please try again."
+    },
+    "bindings": {
+      "sectionTitle": "Third-party accounts",
+      "sectionDescription": "Link a Feishu, Lark, or Google account so you can sign in with it.",
+      "bind": "Link",
+      "unbind": "Unlink",
+      "notBound": "Not linked",
+      "boundAt": "Linked on {{time}}",
+      "loading": "Loading…",
+      "loadError": "Could not load your linked accounts.",
+      "retry": "Retry",
+      "noProviders": "This server has no third-party sign-in configured.",
+      "noPasswordHint": "This account has no password, so it needs at least one linked account to sign in with.",
+      "lastLoginMethodHint": "This is your only way to sign in. Set a password or link another account before unlinking it.",
+      "providerUnavailable": "The server no longer offers this sign-in method, but you can still unlink it.",
+      "bindSuccess": "Account linked.",
+      "errorLastLoginMethod": "This is your only way to sign in, so it cannot be unlinked.",
+      "errorNotFound": "That link is already gone.",
+      "errorForbidden": "The request was rejected. Reload the page and try again.",
+      "errorGeneric": "Something went wrong. Please try again."
     }
   },
   "oauth": {

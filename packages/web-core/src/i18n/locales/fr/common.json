@@ -182,6 +182,26 @@
       "revoke": "Révoquer",
       "empty": "Il n'y a pas encore de code d'invitation.",
       "loadError": "Impossible de charger les codes d'invitation. Réessayez."
+    },
+    "bindings": {
+      "sectionTitle": "Comptes tiers",
+      "sectionDescription": "Liez un compte Feishu, Lark ou Google pour pouvoir vous connecter avec.",
+      "bind": "Lier",
+      "unbind": "Délier",
+      "notBound": "Non lié",
+      "boundAt": "Lié le {{time}}",
+      "loading": "Chargement…",
+      "loadError": "Impossible de charger vos comptes liés.",
+      "retry": "Réessayer",
+      "noProviders": "Ce serveur n'a aucune connexion tierce configurée.",
+      "noPasswordHint": "Ce compte n'a pas de mot de passe : il lui faut au moins un compte lié pour se connecter.",
+      "lastLoginMethodHint": "C'est votre seul moyen de connexion. Définissez un mot de passe ou liez un autre compte avant de le délier.",
+      "providerUnavailable": "Le serveur ne propose plus cette méthode de connexion, mais vous pouvez encore la délier.",
+      "bindSuccess": "Compte lié.",
+      "errorLastLoginMethod": "C'est votre seul moyen de connexion : impossible de le délier.",
+      "errorNotFound": "Ce lien n'existe plus.",
+      "errorForbidden": "La requête a été refusée. Rechargez la page et réessayez.",
+      "errorGeneric": "Une erreur est survenue. Veuillez réessayer."
     }
   },
   "oauth": {

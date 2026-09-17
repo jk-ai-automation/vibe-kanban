@@ -182,6 +182,26 @@
       "revoke": "作廢",
       "empty": "還沒有邀請碼。",
       "loadError": "載入邀請碼清單失敗，請重試。"
+    },
+    "bindings": {
+      "sectionTitle": "第三方帳號",
+      "sectionDescription": "綁定飛書、Lark 或 Google 帳號後，就可以用它登入。",
+      "bind": "綁定",
+      "unbind": "解除綁定",
+      "notBound": "未綁定",
+      "boundAt": "綁定於 {{time}}",
+      "loading": "載入中…",
+      "loadError": "讀取綁定清單失敗。",
+      "retry": "重試",
+      "noProviders": "本伺服器未設定任何第三方登入方式。",
+      "noPasswordHint": "此帳號沒有設定密碼，需要保留至少一個已綁定的帳號才能登入。",
+      "lastLoginMethodHint": "這是你唯一的登入方式。請先設定密碼或再綁定一個帳號，然後才能解除綁定。",
+      "providerUnavailable": "伺服器已不再提供這個登入方式，但你仍然可以解除綁定。",
+      "bindSuccess": "已綁定。",
+      "errorLastLoginMethod": "這是你唯一的登入方式，無法解除綁定。",
+      "errorNotFound": "這筆綁定已經不存在了。",
+      "errorForbidden": "請求遭到拒絕，請重新整理頁面後再試。",
+      "errorGeneric": "操作失敗，請稍後再試。"
     }
   },
   "oauth": {
