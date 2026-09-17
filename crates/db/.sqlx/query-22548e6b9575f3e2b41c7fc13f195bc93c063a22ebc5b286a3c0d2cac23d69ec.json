@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id         AS \"id!: Uuid\",\n                      user_id    AS \"user_id!: Uuid\",\n                      provider   AS \"provider!\",\n                      subject    AS \"subject!\",\n                      email      AS \"email?\",\n                      created_at AS \"created_at!: DateTime<Utc>\"\n               FROM local_user_identities\n               WHERE user_id = $1\n               ORDER BY provider ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "user_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "provider!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "subject!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "email?",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "22548e6b9575f3e2b41c7fc13f195bc93c063a22ebc5b286a3c0d2cac23d69ec"
+}

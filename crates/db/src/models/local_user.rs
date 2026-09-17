@@ -190,6 +190,39 @@ impl LocalUsers {
         .await
     }
 
+    /// 按邮箱查找（入参经 [`normalize_email`]，大小写不敏感）。
+    ///
+    /// **这不是一条登录路径。** 第三方登录只用它回答「这个邮箱是不是已经
+    /// 有人占了」，从而给出「请登录后在设置里绑定」的提示；
+    /// 绝不能凭 email 命中就把人登录成那个账号——提供方返回的 email
+    /// 未必经过实时验证，自动合并等于把账号送给任何能改自己邮箱的人。
+    pub async fn find_by_email(
+        pool: &SqlitePool,
+        raw_email: &str,
+    ) -> Result<Option<LocalUser>, sqlx::Error> {
+        let Some(email) = normalize_email(Some(raw_email)) else {
+            return Ok(None);
+        };
+        sqlx::query_as!(
+            LocalUser,
+            r#"SELECT id            AS "id!: Uuid",
+                      username      AS "username!",
+                      display_name  AS "display_name!",
+                      email         AS "email?",
+                      role          AS "role!: LocalUserRole",
+                      status        AS "status!: LocalUserStatus",
+                      avatar_color  AS "avatar_color!",
+                      created_at    AS "created_at!: DateTime<Utc>",
+                      updated_at    AS "updated_at!: DateTime<Utc>",
+                      last_login_at AS "last_login_at?: DateTime<Utc>"
+               FROM local_users
+               WHERE email = $1"#,
+            email
+        )
+        .fetch_optional(pool)
+        .await
+    }
+
     pub async fn find_all(pool: &SqlitePool) -> Result<Vec<LocalUser>, sqlx::Error> {
         sqlx::query_as!(
             LocalUser,

@@ -378,6 +378,8 @@ export type CreateInviteResponse = { invite: LocalInviteInfo, code: string, };
 
 export type AcceptInviteRequest = { code: string, username: string, display_name: string, password: string, email: string | null, };
 
+export type OAuthBindStart = { authorize_url: string, };
+
 export type SetupStatusResponse = { valid: boolean, };
 
 export type SetupAdminRequest = { token: string, username: string, display_name: string, password: string, email: string | null, };

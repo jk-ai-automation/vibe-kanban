@@ -10,6 +10,7 @@
 //! 它**不是**运行时的放行依据。
 
 pub mod invite_routes;
+pub mod oauth_routes;
 pub mod password_routes;
 pub mod setup;
 
@@ -57,6 +58,11 @@ pub fn public_router() -> Router<DeploymentImpl> {
     register_public("/local-auth/invites/accept", "POST");
     register_public("/local-auth/setup", "GET");
     register_public("/local-auth/setup", "POST");
+    // 第三方登录的发起与回调。**必须免鉴权**：发起时用户当然还没登录，
+    // 回调是提供方发起的跨站顶层导航，两者都带不上会话。
+    // 两条都是 GET；`{provider}` 只接受白名单里的三个 id，其余 404。
+    register_public("/local-auth/oauth/{provider}/start", "GET");
+    register_public("/local-auth/oauth/{provider}/callback", "GET");
 
     Router::new()
         .route("/health", get(health::health_check))
@@ -70,6 +76,14 @@ pub fn public_router() -> Router<DeploymentImpl> {
             "/local-auth/setup",
             get(setup::setup_status).post(setup::setup_admin),
         )
+        .route(
+            "/local-auth/oauth/{provider}/start",
+            get(oauth_routes::start),
+        )
+        .route(
+            "/local-auth/oauth/{provider}/callback",
+            get(oauth_routes::callback),
+        )
 }
 
 /// 需要会话的本地账号路由。由调用方套上 `require_local_session`。
@@ -80,6 +94,11 @@ pub fn protected_router() -> Router<DeploymentImpl> {
         .route(
             "/local-auth/password",
             post(password_routes::change_password),
+        )
+        // 绑定由**已登录**用户发起，所以在受保护组里（同时受 CSRF 双提交保护）。
+        .route(
+            "/local-auth/oauth/{provider}/bind",
+            post(oauth_routes::bind),
         )
 }
 
@@ -142,6 +161,11 @@ mod tests {
                 ("/api/local-auth/bootstrap".to_string(), "GET"),
                 ("/api/local-auth/invites/accept".to_string(), "POST"),
                 ("/api/local-auth/login".to_string(), "POST"),
+                (
+                    "/api/local-auth/oauth/{provider}/callback".to_string(),
+                    "GET"
+                ),
+                ("/api/local-auth/oauth/{provider}/start".to_string(), "GET"),
                 ("/api/local-auth/setup".to_string(), "GET"),
                 ("/api/local-auth/setup".to_string(), "POST"),
             ],
@@ -176,9 +200,32 @@ mod tests {
             "/api/local-auth/logout",
             "/api/local-auth/me",
             "/api/local-auth/password",
+            // 绑定必须由已登录用户发起，不能进免鉴权组。
+            "/api/local-auth/oauth/{provider}/bind",
         ] {
             assert!(!public.contains(&path.to_string()), "{path} 不应免鉴权");
         }
+    }
+
+    /// 免鉴权的第三方登录端点只有「发起」与「回调」两条，且都是 GET。
+    /// 多出任何一条（尤其是写操作）都必须显式改这条测试。
+    #[test]
+    fn 免鉴权的第三方登录端点只有两条() {
+        let _ = public_router();
+        let oauth: Vec<(String, &'static str)> = public_endpoints()
+            .into_iter()
+            .filter(|(path, _)| path.contains("/oauth/"))
+            .collect();
+        assert_eq!(
+            oauth,
+            vec![
+                (
+                    "/api/local-auth/oauth/{provider}/callback".to_string(),
+                    "GET"
+                ),
+                ("/api/local-auth/oauth/{provider}/start".to_string(), "GET"),
+            ]
+        );
     }
 
     /// bootstrap 是免鉴权端点，任何人都能打；它的响应里绝不能出现用户信息。

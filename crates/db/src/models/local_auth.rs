@@ -245,6 +245,230 @@ impl LocalSessions {
     }
 }
 
+// -------------------------------------------------------------- 第三方身份
+
+/// `provider` 的存储长度上限。它只可能是 `feishu`/`lark`/`google`，
+/// 上限纯粹是「万一上层漏了校验」的兜底。
+pub const MAX_PROVIDER_LEN: usize = 32;
+/// `subject`（`union_id` / `sub`）的存储长度上限。
+/// 对方返回一个几兆的字符串不该被原样写进库里。
+pub const MAX_SUBJECT_LEN: usize = 255;
+
+/// 一条第三方身份绑定。
+///
+/// **表里没有任何令牌字段**（见迁移 `20260917000000_add_local_auth.sql`）：
+/// access token 换完用户信息就丢，绝不落库。这里存的 `subject` 是提供方那边
+/// 的**稳定标识**（飞书/Lark 的 `union_id`、Google 的 `sub`），
+/// `email` 只是备查资料，**不是**绑定键。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalUserIdentity {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub provider: String,
+    pub subject: String,
+    pub email: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum IdentityLinkError {
+    #[error("{0}")]
+    Validation(String),
+    /// `(provider, subject)` 已经绑在**别的**账号上。
+    /// 这是防账号劫持的关键：一个第三方身份只能属于一个本地账号。
+    #[error("该第三方账号已绑定到其他用户")]
+    AlreadyLinked,
+    #[error(transparent)]
+    User(#[from] crate::models::local_user::LocalUserError),
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
+pub struct LocalUserIdentities;
+
+impl LocalUserIdentities {
+    /// 按 `(provider, subject)` 查。这是登录时**唯一**的查找路径——
+    /// 刻意没有「按 email 查身份」的方法，免得有人顺手用它做自动合并。
+    pub async fn find_by_provider_subject(
+        pool: &SqlitePool,
+        provider: &str,
+        subject: &str,
+    ) -> Result<Option<LocalUserIdentity>, sqlx::Error> {
+        if provider.is_empty() || subject.is_empty() {
+            return Ok(None);
+        }
+        sqlx::query_as!(
+            LocalUserIdentity,
+            r#"SELECT id         AS "id!: Uuid",
+                      user_id    AS "user_id!: Uuid",
+                      provider   AS "provider!",
+                      subject    AS "subject!",
+                      email      AS "email?",
+                      created_at AS "created_at!: DateTime<Utc>"
+               FROM local_user_identities
+               WHERE provider = $1 AND subject = $2"#,
+            provider,
+            subject
+        )
+        .fetch_optional(pool)
+        .await
+    }
+
+    pub async fn list_for_user(
+        pool: &SqlitePool,
+        user_id: Uuid,
+    ) -> Result<Vec<LocalUserIdentity>, sqlx::Error> {
+        sqlx::query_as!(
+            LocalUserIdentity,
+            r#"SELECT id         AS "id!: Uuid",
+                      user_id    AS "user_id!: Uuid",
+                      provider   AS "provider!",
+                      subject    AS "subject!",
+                      email      AS "email?",
+                      created_at AS "created_at!: DateTime<Utc>"
+               FROM local_user_identities
+               WHERE user_id = $1
+               ORDER BY provider ASC"#,
+            user_id
+        )
+        .fetch_all(pool)
+        .await
+    }
+
+    /// 把一个第三方身份绑到某个账号上。
+    ///
+    /// 并发判据是表上的 `(provider, subject)` 唯一索引，**不是**「先查再插」：
+    /// 两个请求同时为同一个身份绑不同账号时，后到的那个必然拿到唯一约束冲突。
+    pub async fn link(
+        pool: &SqlitePool,
+        user_id: Uuid,
+        provider: &str,
+        subject: &str,
+        email: Option<&str>,
+    ) -> Result<LocalUserIdentity, IdentityLinkError> {
+        let prepared = PreparedIdentity::new(user_id, provider, subject, email)?;
+        let result = retry_on_busy(|| {
+            let prepared = prepared.clone();
+            async move { prepared.insert(pool).await }
+        })
+        .await;
+        result.map_err(map_identity_insert_error)
+    }
+
+    /// 建号 + 绑定，同一个事务。
+    ///
+    /// 必须是事务：建完用户才失败会留下一个**没有任何凭据**的账号
+    /// （没密码也没身份），它既登不进来也没人知道该删掉。
+    pub async fn create_user_with_identity(
+        pool: &SqlitePool,
+        user: crate::models::local_user::NewLocalUser,
+        provider: &str,
+        subject: &str,
+        email: Option<&str>,
+    ) -> Result<crate::models::local_user::LocalUser, IdentityLinkError> {
+        use crate::models::local_user::{PreparedUser, map_insert_error};
+
+        // 两份参数都在开事务之前校验完，事务里不会再因为参数非法而半途失败。
+        let prepared_user = PreparedUser::new(user)?;
+        let mut tx = pool.begin().await?;
+
+        let created = match prepared_user.insert(&mut *tx).await {
+            Ok(created) => created,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(IdentityLinkError::User(map_insert_error(err)));
+            }
+        };
+        let prepared_identity = match PreparedIdentity::new(created.id, provider, subject, email) {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                tx.rollback().await?;
+                return Err(err);
+            }
+        };
+        if let Err(err) = prepared_identity.insert(&mut *tx).await {
+            tx.rollback().await?;
+            return Err(map_identity_insert_error(err));
+        }
+        tx.commit().await?;
+        Ok(created)
+    }
+}
+
+/// 校验过的绑定入参，可以插进连接池或事务。
+#[derive(Debug, Clone)]
+struct PreparedIdentity {
+    id: Uuid,
+    user_id: Uuid,
+    provider: String,
+    subject: String,
+    email: Option<String>,
+    now: DateTime<Utc>,
+}
+
+impl PreparedIdentity {
+    fn new(
+        user_id: Uuid,
+        provider: &str,
+        subject: &str,
+        email: Option<&str>,
+    ) -> Result<Self, IdentityLinkError> {
+        let provider = provider.trim();
+        let subject = subject.trim();
+        if provider.is_empty() || provider.len() > MAX_PROVIDER_LEN {
+            return Err(IdentityLinkError::Validation("提供方非法".to_string()));
+        }
+        if subject.is_empty() || subject.chars().count() > MAX_SUBJECT_LEN {
+            return Err(IdentityLinkError::Validation(
+                "第三方用户标识非法".to_string(),
+            ));
+        }
+        Ok(Self {
+            id: Uuid::new_v4(),
+            user_id,
+            provider: provider.to_string(),
+            subject: subject.to_string(),
+            email: crate::models::local_user::normalize_email(email),
+            now: Utc::now(),
+        })
+    }
+
+    async fn insert<'e, E>(&self, executor: E) -> Result<LocalUserIdentity, sqlx::Error>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
+        sqlx::query_as!(
+            LocalUserIdentity,
+            r#"INSERT INTO local_user_identities (id, user_id, provider, subject, email, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               RETURNING id         AS "id!: Uuid",
+                         user_id    AS "user_id!: Uuid",
+                         provider   AS "provider!",
+                         subject    AS "subject!",
+                         email      AS "email?",
+                         created_at AS "created_at!: DateTime<Utc>""#,
+            self.id,
+            self.user_id,
+            self.provider,
+            self.subject,
+            self.email,
+            self.now
+        )
+        .fetch_one(executor)
+        .await
+    }
+}
+
+fn map_identity_insert_error(err: sqlx::Error) -> IdentityLinkError {
+    use super::db_retry::is_unique_violation;
+
+    if is_unique_violation(&err) {
+        IdentityLinkError::AlreadyLinked
+    } else {
+        IdentityLinkError::Database(err)
+    }
+}
+
 // ------------------------------------------------------------------ 邀请码
 
 /// 邀请码默认有效期（天）。管理员建码时不填就用它。
@@ -1704,5 +1928,349 @@ mod invite_tests {
     #[test]
     fn 邀请码默认有效期是七天() {
         assert_eq!(DEFAULT_INVITE_TTL_DAYS, 7);
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::{
+        models::local_user::{
+            LocalUserRole, LocalUserStatus, LocalUsers, NewLocalUser, normalize_email,
+        },
+        test_support::TestDb,
+    };
+
+    async fn 建用户(test_db: &TestDb, username: &str, email: Option<&str>) -> Uuid {
+        LocalUsers::create(
+            test_db.pool(),
+            NewLocalUser {
+                username: username.to_string(),
+                display_name: username.to_string(),
+                email: email.map(str::to_string),
+                password_hash: Some("$argon2id$x".to_string()),
+                role: LocalUserRole::Member,
+            },
+        )
+        .await
+        .expect("建用户失败")
+        .id
+    }
+
+    #[tokio::test]
+    async fn 绑定后可按_provider_与_subject_查到() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy", None).await;
+        let identity =
+            LocalUserIdentities::link(test_db.pool(), user_id, "feishu", "on_u1", Some("A@X.com"))
+                .await
+                .expect("绑定失败");
+        assert_eq!(identity.user_id, user_id);
+        assert_eq!(identity.email.as_deref(), Some("a@x.com"), "邮箱应被规范化");
+
+        let found =
+            LocalUserIdentities::find_by_provider_subject(test_db.pool(), "feishu", "on_u1")
+                .await
+                .unwrap()
+                .expect("应命中");
+        assert_eq!(found.id, identity.id);
+    }
+
+    /// 查找是精确匹配：换个提供方、换个大小写、带空白都不该命中，
+    /// 否则「飞书的 union_id」就能拿去冒充「Lark 的 union_id」。
+    #[tokio::test]
+    async fn 查找不做任何模糊匹配() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy", None).await;
+        LocalUserIdentities::link(test_db.pool(), user_id, "feishu", "on_u1", None)
+            .await
+            .unwrap();
+
+        for (provider, subject) in [
+            ("lark", "on_u1"),
+            ("google", "on_u1"),
+            ("Feishu", "on_u1"),
+            ("feishu", "on_u"),
+            ("feishu", "ON_U1"),
+            ("feishu", "on_u1 "),
+            ("feishu", ""),
+            ("", "on_u1"),
+            ("feishu", "%"),
+            ("feishu", "on_u1' OR '1'='1"),
+        ] {
+            assert!(
+                LocalUserIdentities::find_by_provider_subject(test_db.pool(), provider, subject)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "({provider:?}, {subject:?}) 不应命中"
+            );
+        }
+    }
+
+    /// **一个第三方身份只能属于一个本地账号。** 否则拿到别人 union_id 的人
+    /// 只要绑到自己账号上，就能从自己这边登进受害者的身份。
+    #[tokio::test]
+    async fn 同一身份不能绑到两个账号() {
+        let test_db = TestDb::new().await;
+        let amy = 建用户(&test_db, "amy", None).await;
+        let bob = 建用户(&test_db, "bob", None).await;
+
+        LocalUserIdentities::link(test_db.pool(), amy, "feishu", "on_u1", None)
+            .await
+            .expect("首次绑定应成功");
+        let err = LocalUserIdentities::link(test_db.pool(), bob, "feishu", "on_u1", None)
+            .await
+            .expect_err("第二次绑定必须失败");
+        assert!(matches!(err, IdentityLinkError::AlreadyLinked), "{err:?}");
+
+        // 归属没有被改掉。
+        let found =
+            LocalUserIdentities::find_by_provider_subject(test_db.pool(), "feishu", "on_u1")
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(found.user_id, amy, "归属必须还在第一个账号上");
+    }
+
+    /// 重复绑同一个身份到**同一个**账号也算冲突（唯一索引不看 user_id），
+    /// 上层据此走「已经绑过了」的分支，而不是插出第二行。
+    #[tokio::test]
+    async fn 重复绑定同一账号也会冲突() {
+        let test_db = TestDb::new().await;
+        let amy = 建用户(&test_db, "amy", None).await;
+        LocalUserIdentities::link(test_db.pool(), amy, "feishu", "on_u1", None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            LocalUserIdentities::link(test_db.pool(), amy, "feishu", "on_u1", None).await,
+            Err(IdentityLinkError::AlreadyLinked)
+        ));
+    }
+
+    #[tokio::test]
+    async fn 同一账号可以绑多个提供方() {
+        let test_db = TestDb::new().await;
+        let amy = 建用户(&test_db, "amy", None).await;
+        for provider in ["feishu", "google", "lark"] {
+            LocalUserIdentities::link(test_db.pool(), amy, provider, "sub-1", None)
+                .await
+                .unwrap_or_else(|err| panic!("{provider} 绑定失败：{err}"));
+        }
+        let list = LocalUserIdentities::list_for_user(test_db.pool(), amy)
+            .await
+            .unwrap();
+        assert_eq!(
+            list.iter().map(|i| i.provider.as_str()).collect::<Vec<_>>(),
+            ["feishu", "google", "lark"]
+        );
+    }
+
+    #[tokio::test]
+    async fn 非法的_provider_或_subject_被拒() {
+        let test_db = TestDb::new().await;
+        let amy = 建用户(&test_db, "amy", None).await;
+        let 超长 = "x".repeat(MAX_SUBJECT_LEN + 1);
+        for (provider, subject) in [
+            ("", "s"),
+            ("   ", "s"),
+            ("feishu", ""),
+            ("feishu", "   "),
+            ("feishu", 超长.as_str()),
+            (&"p".repeat(MAX_PROVIDER_LEN + 1), "s"),
+        ] {
+            let err = LocalUserIdentities::link(test_db.pool(), amy, provider, subject, None)
+                .await
+                .expect_err("非法入参必须被拒");
+            assert!(matches!(err, IdentityLinkError::Validation(_)), "{err:?}");
+        }
+        assert!(
+            LocalUserIdentities::list_for_user(test_db.pool(), amy)
+                .await
+                .unwrap()
+                .is_empty(),
+            "被拒的入参不得写进库里"
+        );
+    }
+
+    /// 删用户时身份行必须跟着走（`ON DELETE CASCADE`），
+    /// 否则留下的孤儿行会让同一个 union_id 再也绑不上任何账号。
+    #[tokio::test]
+    async fn 删用户时身份级联删除() {
+        let test_db = TestDb::new().await;
+        let amy = 建用户(&test_db, "amy", None).await;
+        LocalUserIdentities::link(test_db.pool(), amy, "feishu", "on_u1", None)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM local_users WHERE id = ?1")
+            .bind(amy)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+        assert!(
+            LocalUserIdentities::find_by_provider_subject(test_db.pool(), "feishu", "on_u1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn 建号与绑定在同一个事务里() {
+        let test_db = TestDb::new().await;
+        let user = LocalUserIdentities::create_user_with_identity(
+            test_db.pool(),
+            NewLocalUser {
+                username: "feishu-abc".to_string(),
+                display_name: "爱丽丝".to_string(),
+                email: Some("alice@x.com".to_string()),
+                password_hash: None,
+                role: LocalUserRole::Member,
+            },
+            "feishu",
+            "on_u1",
+            Some("alice@x.com"),
+        )
+        .await
+        .expect("建号 + 绑定应成功");
+        assert_eq!(user.role, LocalUserRole::Member);
+        assert_eq!(user.status, LocalUserStatus::Active);
+        assert!(
+            LocalUsers::find_password_hash(test_db.pool(), user.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "第三方建号不该有密码"
+        );
+        assert_eq!(
+            LocalUserIdentities::find_by_provider_subject(test_db.pool(), "feishu", "on_u1")
+                .await
+                .unwrap()
+                .unwrap()
+                .user_id,
+            user.id
+        );
+    }
+
+    /// 身份插不进去时用户也必须回滚：否则会留下一个既没密码也没身份的
+    /// 幽灵账号——登不进来，也没人知道该删它。
+    #[tokio::test]
+    async fn 绑定失败时新建的用户被回滚() {
+        let test_db = TestDb::new().await;
+        let amy = 建用户(&test_db, "amy", None).await;
+        LocalUserIdentities::link(test_db.pool(), amy, "feishu", "on_u1", None)
+            .await
+            .unwrap();
+        let 建号前 = LocalUsers::find_all(test_db.pool()).await.unwrap().len();
+
+        let err = LocalUserIdentities::create_user_with_identity(
+            test_db.pool(),
+            NewLocalUser {
+                username: "feishu-new".to_string(),
+                display_name: "新人".to_string(),
+                email: None,
+                password_hash: None,
+                role: LocalUserRole::Member,
+            },
+            "feishu",
+            "on_u1",
+            None,
+        )
+        .await
+        .expect_err("身份已被占用，建号必须整体失败");
+        assert!(matches!(err, IdentityLinkError::AlreadyLinked), "{err:?}");
+
+        assert_eq!(
+            LocalUsers::find_all(test_db.pool()).await.unwrap().len(),
+            建号前,
+            "失败的建号不得留下用户行"
+        );
+        assert!(
+            LocalUsers::find_by_username(test_db.pool(), "feishu-new")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// 身份表里**没有任何令牌列**。这条测试是「令牌不落库」在 schema 层的钉子：
+    /// 有人加了 `access_token` 列，这里立刻红。
+    #[tokio::test]
+    async fn 身份表里没有任何令牌列() {
+        let test_db = TestDb::new().await;
+        let rows: Vec<(i64, String, String, i64, Option<String>, i64)> =
+            sqlx::query_as("PRAGMA table_info(local_user_identities)")
+                .fetch_all(test_db.pool())
+                .await
+                .unwrap();
+        let columns: Vec<String> = rows.into_iter().map(|r| r.1.to_lowercase()).collect();
+        assert_eq!(
+            columns,
+            [
+                "id",
+                "user_id",
+                "provider",
+                "subject",
+                "email",
+                "created_at"
+            ]
+        );
+        for 禁词 in ["token", "secret", "credential", "password", "refresh"] {
+            assert!(
+                !columns.iter().any(|c| c.contains(禁词)),
+                "身份表不得有 {禁词} 列：{columns:?}"
+            );
+        }
+    }
+
+    /// 序列化出去的身份行里也不能有令牌。
+    #[tokio::test]
+    async fn 身份行序列化后不含令牌字段() {
+        let test_db = TestDb::new().await;
+        let amy = 建用户(&test_db, "amy", None).await;
+        let identity =
+            LocalUserIdentities::link(test_db.pool(), amy, "feishu", "on_u1", Some("a@x.com"))
+                .await
+                .unwrap();
+        let json = serde_json::to_string(&identity).unwrap();
+        for 禁词 in ["token", "secret", "password", "refresh"] {
+            assert!(!json.contains(禁词), "序列化泄露了 {禁词}：{json}");
+        }
+    }
+
+    // ------------------------------------------------------- 按邮箱查找
+
+    #[tokio::test]
+    async fn 按邮箱查找大小写与空白不敏感() {
+        let test_db = TestDb::new().await;
+        let amy = 建用户(&test_db, "amy", Some("Amy@Example.COM")).await;
+        for raw in ["amy@example.com", "AMY@EXAMPLE.COM", "  Amy@Example.com  "] {
+            assert_eq!(
+                LocalUsers::find_by_email(test_db.pool(), raw)
+                    .await
+                    .unwrap()
+                    .map(|u| u.id),
+                Some(amy),
+                "{raw:?} 应命中"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn 按邮箱查找空值与不存在都返回_none() {
+        let test_db = TestDb::new().await;
+        建用户(&test_db, "amy", Some("amy@example.com")).await;
+        for raw in ["", "   ", "bob@example.com", "%", "amy@example.co"] {
+            assert!(
+                LocalUsers::find_by_email(test_db.pool(), raw)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{raw:?} 不应命中"
+            );
+        }
+        assert_eq!(normalize_email(Some("  ")), None);
     }
 }

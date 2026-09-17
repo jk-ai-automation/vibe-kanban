@@ -2573,13 +2573,26 @@ GITHUB_BASE_REF=main ./scripts/check-i18n.sh
 6. **SQLite `randomblob(16)` 生成的 BLOB 能否被 sqlx 解码成 `Uuid`**（H1.3）。→ 先写一条测试验证；不行就改成应用层回填。
 7. **SQLite 外键是否默认开启**（A2.1）。sqlx 的 `SqliteConnectOptions` 默认 `foreign_keys(true)`，但本仓库的 `main_db_options`（`crates/db/src/lib.rs:82-85`）没有显式设置。→ 用 `PRAGMA foreign_keys` 查一次；若是关的，`ON DELETE CASCADE` 不会生效，`revoke_all_for_user` 之外还要手工删会话。
 
-### 12.2 第三方服务端点（全部未核实）
+### 12.2 第三方服务端点（任务 E 执行时已部分核实，2026-09-17）
 
-8. **飞书 / Lark 的 authorize / token / userinfo 端点 URL 与版本**（E1.3 表格里的值来自设计文档，未经验证）。
-9. **飞书 token 响应是否包在 `{"code":0,"data":{...}}` 信封里**，以及 v2 与 v1 的差异。
-10. **飞书 / Lark 的 userinfo 字段名**（`open_id` / `union_id` / `user_id` 哪个当 subject 最稳定；改应用后哪个会变）。**选错会导致所有人下次登录变成新账号。**
-11. **Google 是否需要 `openid email profile` 三个 scope**、是否需要 PKCE。
-12. **各提供方对 `redirect_uri` 的登记要求**（是否必须 HTTPS、是否允许局域网 IP）。→ 直接影响 §8.5 的部署建议。
+> 核实结论见设计文档 §6.4；代码里的落点是 `crates/services/src/services/local_auth/oauth.rs` 的模块文档。
+> **凡未核实的，一律做成配置项，不写死。**
+
+8. ~~**飞书 / Lark 的 authorize / token / userinfo 端点 URL 与版本**~~ → **已核实**。计划 E1.3 表格里的初值**有误**，实际预置值为：
+   - 飞书 authorize `https://accounts.feishu.cn/open-apis/authen/v1/authorize`（不是 `open.feishu.cn`）；
+   - 飞书 token `https://accounts.feishu.cn/oauth/v3/token`（**v2 已被官方标注弃用**，POST form-urlencoded）；
+   - 飞书 userinfo `https://open.feishu.cn/open-apis/authen/v1/user_info`；
+   - Lark authorize `https://accounts.larksuite.com/open-apis/authen/v1/authorize`，token `https://open.larksuite.com/open-apis/authen/v2/oauth/token`（POST JSON，**官方文档目前仍是 v2 且无弃用提示**），userinfo `https://open.larksuite.com/open-apis/authen/v1/user_info`。
+   - **URL 参数名是 `client_id` 不是 `app_id`**（后台显示为 "App ID"）。
+   - 两边版本节奏不同步，因此三个端点 + scopes + pkce 全部做成配置项：`server.json` 的 `oauth.<id>.{authorize_url,token_url,userinfo_url,scopes,pkce}`，或 `VK_OAUTH_<ID>_{AUTHORIZE_URL,TOKEN_URL,USERINFO_URL,SCOPES,PKCE}`。
+   - **未核实**：Lark 是否也有 v3 令牌端点 → 用 `token_url` 覆盖项兜底。
+9. ~~**飞书 token 响应是否包在 `{"code":0,"data":{...}}` 信封里**~~ → **已核实：不是**。飞书/Lark 的**认证类**接口是扁平结构，`code` 与 `access_token` 同层；`{code,msg,data}` 信封只出现在 `/open-apis/authen/v1/user_info` 这类 open-apis 接口上。所以**不能写一个通用的「剥 data 层」逻辑套所有飞书接口**。实现上换令牌只用一套扁平解析（顶层 `code != 0` 或有 `error` 即失败），拉用户信息才按 `userinfo_envelope` 剥一层。
+10. ~~**飞书 / Lark 的 userinfo 字段名**~~ → **已核实：绑定键用 `union_id`**。`open_id` 是应用级的，换应用凭据就变；`user_id` 在管理员删号后可能被复用；email/mobile 官方明文说「未经用户本人实时验证，不建议作为登录凭证」。Google 用 `sub`（官方原文：`Don't use the email field as a unique identifier`）。**未核实**：Lark 的 user_info 响应字段是否与飞书逐字一致 → `subject_field` / `email_field` / `name_field` 已做成 `ResolvedProvider` 上的字段，必要时可加覆盖项。
+11. ~~**Google 是否需要 `openid email profile` 三个 scope**~~ → **已核实**：Google 的 `scope` 是必填项，预置 `openid email profile`；对服务端机密客户端不强制 PKCE。飞书支持 PKCE 但不强制（应用一律视为机密客户端，`client_secret` 必带）。**未核实**：Lark 是否支持 PKCE → 预置 `pkce = false`（宁可不带，免得多一个参数被拒），飞书/Google 预置 `true`，都可用 `VK_OAUTH_<ID>_PKCE` 覆盖。**未核实**：飞书/Lark 拿到 `union_id`/`name`/`email` 所需的最小权限点字符串 → 预置为空串（不发 `scope`，用应用后台勾选的权限），需要时用 `VK_OAUTH_<ID>_SCOPES` 配。
+12. **各提供方对 `redirect_uri` 的登记要求** → **Google 已核实**：`Redirect URIs must use the HTTPS scheme, not plain HTTP`，且 `Hosts cannot be raw IP addresses`，只有 `localhost`/`127.0.0.1`/`[::1]` 例外——**局域网裸 IP 部署下 Google 登录不可用**。**飞书 / Lark 仍未核实**（最大缺口）：官方文档没有明文规定是否强制 HTTPS 或禁止裸 IP，上线前必须在开发者后台实测能否填入局域网地址。**未核实**：Google「Web application」与「Desktop app」两种客户端类型对 localhost 回调的支持范围（两份官方文档表述有出入）。
+    结论不变：**账号密码登录是团队版的主路径**，第三方登录是加分项，登录页按配置动态显示。
+
+**仍需人工完成（上线前）：** 用真实凭据把飞书 / Lark / Google 各走通一次，把实测到的端点 URL、响应字段名、权限点字符串回填到 `oauth.rs` 的预置值里（或直接写进 `server.json`）。
 
 ### 12.3 本仓库内未核实的点
 
