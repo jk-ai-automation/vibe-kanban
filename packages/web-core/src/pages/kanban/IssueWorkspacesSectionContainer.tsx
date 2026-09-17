@@ -262,7 +262,7 @@ export function IssueWorkspacesSectionContainer({
     [deleteAffordanceById]
   );
 
-  const 报错 = useCallback(
+  const showError = useCallback(
     (error: unknown, fallbackKey: string) => {
       ConfirmDialog.show({
         title: t('common:error'),
@@ -287,10 +287,10 @@ export function IssueWorkspacesSectionContainer({
       try {
         await deleteRequests.createRequest(localWorkspaceId);
       } catch (error) {
-        报错(error, 'workspaces.requestDeleteError');
+        showError(error, 'workspaces.requestDeleteError');
       }
     },
-    [t, deleteRequests, 报错]
+    [t, deleteRequests, showError]
   );
 
   const handleWithdrawDeleteRequest = useCallback(
@@ -300,10 +300,10 @@ export function IssueWorkspacesSectionContainer({
       try {
         await deleteRequests.withdrawRequest(request.id);
       } catch (error) {
-        报错(error, 'workspaces.withdrawDeleteError');
+        showError(error, 'workspaces.withdrawDeleteError');
       }
     },
-    [deleteRequests, 报错]
+    [deleteRequests, showError]
   );
 
   const handleApproveDeleteRequest = useCallback(
@@ -320,10 +320,10 @@ export function IssueWorkspacesSectionContainer({
       try {
         await deleteRequests.approveRequest(request.id);
       } catch (error) {
-        报错(error, 'workspaces.approveDeleteError');
+        showError(error, 'workspaces.approveDeleteError');
       }
     },
-    [t, deleteRequests, 报错]
+    [t, deleteRequests, showError]
   );
 
   const handleRejectDeleteRequest = useCallback(
@@ -333,10 +333,10 @@ export function IssueWorkspacesSectionContainer({
       try {
         await deleteRequests.rejectRequest(request.id);
       } catch (error) {
-        报错(error, 'workspaces.rejectDeleteError');
+        showError(error, 'workspaces.rejectDeleteError');
       }
     },
-    [deleteRequests, 报错]
+    [deleteRequests, showError]
   );
 
   // Handle deleting a workspace (unlinks first, then deletes local)
