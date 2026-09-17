@@ -247,8 +247,12 @@ export function SetupRequiredPanel({
           disabled={isSubmitting}
           className={primaryButtonClass}
         >
-          {isSubmitting && <SpinnerIcon className="size-icon-xs animate-spin" />}
-          {isSubmitting ? t('localAuth.setupSubmitting') : t('localAuth.setupSubmit')}
+          {isSubmitting && (
+            <SpinnerIcon className="size-icon-xs animate-spin" />
+          )}
+          {isSubmitting
+            ? t('localAuth.setupSubmitting')
+            : t('localAuth.setupSubmit')}
         </button>
       </form>
     </Shell>

@@ -141,7 +141,8 @@ function Avatar({
   displayName: string;
   color: string;
 }) {
-  const initial = Array.from(displayName.trim() || '?')[0]?.toUpperCase() ?? '?';
+  const initial =
+    Array.from(displayName.trim() || '?')[0]?.toUpperCase() ?? '?';
   return (
     <span
       className="flex size-icon-lg shrink-0 items-center justify-center rounded-full text-xs font-medium text-white"
@@ -185,7 +186,9 @@ function StatusBadge({
     <span
       className={cn(
         'inline-flex items-center rounded px-half py-0 text-sm font-medium',
-        status === 'active' ? 'bg-success/15 text-success' : 'bg-secondary text-low'
+        status === 'active'
+          ? 'bg-success/15 text-success'
+          : 'bg-secondary text-low'
       )}
     >
       {status === 'active'
@@ -373,7 +376,9 @@ export function MembersPanel({
                     aria-invalid={Boolean(newMemberErrors.email)}
                   />
                   {newMemberErrors.email && (
-                    <p className="text-sm text-error">{newMemberErrors.email}</p>
+                    <p className="text-sm text-error">
+                      {newMemberErrors.email}
+                    </p>
                   )}
                 </div>
                 <div className="flex flex-col gap-half">
@@ -540,13 +545,17 @@ export function MembersPanel({
                           </DropdownMenuTrigger>
                           <DropdownMenuContent>
                             <DropdownMenuItem
-                              icon={member.role === 'member' ? CheckIcon : undefined}
+                              icon={
+                                member.role === 'member' ? CheckIcon : undefined
+                              }
                               onClick={() => onChangeRole(member.id, 'member')}
                             >
                               {t('localAuth.members.roleMember')}
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                              icon={member.role === 'admin' ? CheckIcon : undefined}
+                              icon={
+                                member.role === 'admin' ? CheckIcon : undefined
+                              }
                               onClick={() => onChangeRole(member.id, 'admin')}
                             >
                               {t('localAuth.members.roleAdmin')}
@@ -577,7 +586,9 @@ export function MembersPanel({
                                 ? t('localAuth.members.fixedLocalHint')
                                 : undefined
                             }
-                            onClick={() => onToggleStatus(member.id, 'disabled')}
+                            onClick={() =>
+                              onToggleStatus(member.id, 'disabled')
+                            }
                           >
                             {t('localAuth.members.disable')}
                           </button>
@@ -825,7 +836,10 @@ export function MembersPanel({
                 <tbody>
                   {invites.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="py-double text-center text-low">
+                      <td
+                        colSpan={5}
+                        className="py-double text-center text-low"
+                      >
                         {t('localAuth.invites.empty')}
                       </td>
                     </tr>

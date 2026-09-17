@@ -355,7 +355,9 @@ export function KanbanIssuePanel({
               onParentIssueClick={onParentIssueClick}
               onRemoveParentIssue={onRemoveParentIssue}
               onStatusClick={() => onFormChange('statusId', formData.statusId)}
-              onPriorityClick={() => onFormChange('priority', formData.priority)}
+              onPriorityClick={() =>
+                onFormChange('priority', formData.priority)
+              }
               onAssigneeClick={() =>
                 onFormChange('assigneeIds', formData.assigneeIds)
               }
@@ -570,7 +572,9 @@ export function KanbanIssuePanel({
 
           {/* Relationships Section (Edit mode only) */}
           {!isCreateMode && issueId && renderRelationshipsSection && (
-            <div className="border-t">{renderRelationshipsSection(issueId)}</div>
+            <div className="border-t">
+              {renderRelationshipsSection(issueId)}
+            </div>
           )}
 
           {/* Sub-Issues Section (Edit mode only) */}

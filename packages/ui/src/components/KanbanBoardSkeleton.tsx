@@ -47,7 +47,10 @@ export function KanbanBoardSkeleton({
       role="status"
       aria-busy="true"
       aria-label={t('states.loading')}
-      className={cn('flex flex-1 gap-base overflow-hidden px-double', className)}
+      className={cn(
+        'flex flex-1 gap-base overflow-hidden px-double',
+        className
+      )}
     >
       {columnIndexes.map((_, columnIndex) => (
         <div
