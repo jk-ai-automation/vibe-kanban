@@ -18,6 +18,12 @@ import { jsonInit, requestLocalEnvelope } from '@/shared/lib/local/adminApi';
  *   `require_admin_middleware` 下，member 调一律 403。
  *
  * 错误统一是 `AdminApiError`（见 `adminApi.ts`），`message` 可以直接展示。
+ *
+ * **两组路径都只存在于本机后端**（整套账号体系就是本机的，见
+ * `runtimeMode.ts::isLocalTeamMode` 的注释），所以都不能跟着选中的远端
+ * host 走。两层保证：`localApiTransport.ts` 的 `LOCAL_ONLY_API_PREFIXES`
+ * 里有 `/api/admin` 和 `/api/workspace-delete-requests`（强制点），
+ * `requestLocalEnvelope` 又统一钉死 `hostScope: 'none'`（文档兼第二层）。
  */
 export const DELETE_REQUEST_API_PATHS = {
   mine: '/api/workspace-delete-requests',
