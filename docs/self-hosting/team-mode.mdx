@@ -78,7 +78,7 @@ Once an administrator exists, the setup endpoints return `409`. In personal mode
 
 ## Members and invitations
 
-Administrators manage members from **Settings → Members**. The backing endpoints are:
+Administrators reach member management from the user menu in the top bar, at `/members`. The entry only appears in team mode. The backing endpoints are:
 
 | Endpoint                              | Purpose                                             |
 | ------------------------------------- | --------------------------------------------------- |
@@ -268,7 +268,11 @@ Feishu and Lark may be more permissive, but that has not been confirmed against 
 
 `VK_ALLOW_OAUTH_SIGNUP` is off by default, so third-party sign-in only signs in accounts that already exist and are already linked.
 
-Accounts are never merged automatically by email address. An unlinked third-party identity whose email matches an existing account is rejected with `403`; the owner of that account must sign in first and link the identity from settings. Automatic merging would mean whoever registers an address first can take over the account.
+Accounts are never merged automatically by email address. An unlinked third-party identity whose email matches an existing account is rejected with `403`; the owner of that account must sign in first and link the identity deliberately. Automatic merging would mean whoever registers an address first can take over the account.
+
+<Warning>
+Linking has an endpoint (`POST /api/local-auth/oauth/{provider}/bind`, which requires an active session and a CSRF token) but **no entry point in the interface yet**. Until one exists, third-party sign-in is only usable for accounts whose identity was linked through the API directly. Username and password remains the path that works end to end.
+</Warning>
 
 ### Still to verify against the live providers
 
