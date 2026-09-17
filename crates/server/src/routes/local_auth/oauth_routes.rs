@@ -180,9 +180,10 @@ pub(crate) struct CallbackInput {
 ///
 /// 状态码的语义（前端按这个分流）：
 /// - 404：提供方不存在或未配置（**不用 403**，403 等于告诉人家「这里有东西」）
-/// - 400：`state` 伪造 / 重放 / 过期 / 跨 provider / 跨浏览器
+/// - 400：`state` 伪造 / 重放 / 过期 / 跨 provider / 跨浏览器；以及本机没配
+///   `public_base_url`（运维问题，但不该报 5xx——服务本身是好的，是配置缺了一项，
+///   错误页会把缺的那一项直接写出来）
 /// - 502：提供方那一侧出了问题（换令牌、拉用户信息失败）
-/// - 500：本机没配 `public_base_url`，是运维问题不是用户问题
 fn map_oauth_error(err: OAuthError) -> ApiError {
     match err {
         OAuthError::UnknownProvider => ApiError::NotFound,
@@ -1208,6 +1209,60 @@ mod tests {
         assert!(record.token_bodies[0].contains("sec_x"));
         // 用户信息用的是刚换来的令牌。
         assert_eq!(record.userinfo_auth, ["Bearer at-mock"]);
+    }
+
+    /// Lark 的换令牌请求体是 **JSON**（`TokenBodyFormat::Json`），飞书与 Google 是表单。
+    /// 上面那条用的是飞书，走的是表单分支；Lark 这条分支此前没有任何用例真的跑过，
+    /// 而验收标准要求三个提供方都在 mock IdP 下走通一趟。
+    ///
+    /// 不把 lark 加进公共的 `设置()`：`非法_provider_一律_404` 正靠「白名单里有但没配凭据」
+    /// 这个状态来验证「配了才算数」。
+    #[tokio::test]
+    async fn lark_走通一整趟且换令牌发的是_json() {
+        let db = TestDb::new().await;
+        let idp = 起_mock(MockConfig::default()).await;
+        let mut settings = 设置(ServerMode::Team, &idp.base_url, false);
+        settings
+            .providers
+            .insert("lark".to_string(), 凭据(&idp.base_url));
+        let runtime = 运行时(settings);
+        let amy = 建用户(&db, "amy", None, LocalUserRole::Member).await;
+        LocalUserIdentities::link(db.pool(), amy.id, "lark", "on_u1", None)
+            .await
+            .unwrap();
+
+        let (state, _, cookie) = 发起(&runtime, "lark");
+        let outcome = handle_callback(
+            db.pool(),
+            &runtime,
+            &客户端(),
+            回调入参("lark", "the-code", &state, &cookie),
+        )
+        .await
+        .expect("回调应成功");
+
+        assert_eq!(outcome.redirect, "/");
+        assert_eq!(outcome.login.expect("应建会话").user.id, amy.id);
+        assert_eq!(会话数(&db).await, 1);
+
+        let record = idp.record.lock().unwrap();
+        let body = &record.token_bodies[0];
+        assert!(
+            body.trim_start().starts_with('{'),
+            "Lark 换令牌必须发 JSON，不是表单。实际请求体：{body}"
+        );
+        let parsed: Value = serde_json::from_str(body).expect("请求体应是合法 JSON");
+        assert_eq!(parsed["grant_type"], "authorization_code");
+        assert_eq!(parsed["code"], "the-code");
+        assert_eq!(parsed["client_secret"], "sec_x");
+        assert_eq!(
+            parsed["redirect_uri"],
+            "https://k.example/api/local-auth/oauth/lark/callback"
+        );
+        assert!(
+            parsed.get("code_verifier").is_none(),
+            "Lark 预置不带 PKCE，多发一个参数可能被提供方直接拒掉"
+        );
     }
 
     /// 令牌**不落库**：走完一整趟之后，库里任何一张表都不该出现它。
