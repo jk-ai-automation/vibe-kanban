@@ -26,15 +26,16 @@ export const LOCAL_AUTH_PATHS = {
 } as const;
 
 /**
- * `/api/local-auth/*` **每一条都永远打本机后端**，所以这个文件里的每次
- * `makeLocalApiRequest` 都要带上它。
+ * `/api/local-auth/*` **每一条都永远打本机后端**。
  *
- * 默认的 `hostScope: 'current'` 会把 `/api/xxx` 改写成
- * `/api/host/<id>/xxx` 转发到配对的另一台机器；而会话 Cookie 是本机这一份，
- * 转过去必然 401，`makeLocalApiRequest` 随即广播「会话过期」，
- * 用户就被莫名其妙踢回登录页了。
+ * 真正的强制点**不在这里**，而是 `localApiTransport.ts` 里的
+ * `LOCAL_ONLY_API_PREFIXES` —— 那份名单不管调用方怎么写都会把这些路径
+ * 挡在本机。这里的标注是**写给读代码的人看的**：一眼就知道这条是本机专属，
+ * 不用跳过去翻名单。两层都在，少写一层不会出事，但请继续写。
  *
- * 忘了写会被 `localOnlyHostScope.test.ts` 当场拦下。
+ * （背景：默认的 `hostScope: 'current'` 会把 `/api/xxx` 改写成
+ * `/api/host/<id>/xxx` 转发到配对的另一台机器；会话 Cookie 是本机这一份，
+ * 转过去必然 401，传输层随即广播「会话过期」，用户被踢回登录页。）
  */
 const 本机 = { hostScope: 'none' } as const;
 

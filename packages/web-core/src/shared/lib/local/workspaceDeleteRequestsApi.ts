@@ -21,8 +21,9 @@ import { jsonInit, requestLocalEnvelope } from '@/shared/lib/local/adminApi';
  *
  * **两组路径都只存在于本机后端**（整套账号体系就是本机的，见
  * `runtimeMode.ts::isLocalTeamMode` 的注释），所以都不能跟着选中的远端
- * host 走。这件事由 `requestLocalEnvelope` 统一钉死 `hostScope: 'none'`，
- * 本文件不要绕开它去直接调 `makeLocalApiRequest`。
+ * host 走。两层保证：`localApiTransport.ts` 的 `LOCAL_ONLY_API_PREFIXES`
+ * 里有 `/api/admin` 和 `/api/workspace-delete-requests`（强制点），
+ * `requestLocalEnvelope` 又统一钉死 `hostScope: 'none'`（文档兼第二层）。
  */
 export const DELETE_REQUEST_API_PATHS = {
   mine: '/api/workspace-delete-requests',

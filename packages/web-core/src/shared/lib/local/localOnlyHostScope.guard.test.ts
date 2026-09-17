@@ -6,14 +6,20 @@ import { describe, expect, it } from 'vitest';
 /**
  * 「本机专属接口不许被转发到远端 host」的**源码级**护栏。
  *
- * 配套的 `localOnlyHostScope.test.ts` 是行为测试，它遍历三个已知模块的导出
- * 把请求真发一遍——覆盖得很实，但覆盖不到**将来新开的文件**。这里补的就是
- * 那一半：扫全仓源码，任何一个碰 `/api/local-auth/*` 或 `/api/admin/*` 的
- * 文件，只要自己直接调传输层，就必须每一处都标成本机。
- *
  * 背景：`makeLocalApiRequest` 默认 `hostScope: 'current'`，选中远端 host 时
  * 会把 `/api/xxx` 改写成 `/api/host/<id>/xxx` 转发过去。本地认证与管理接口
  * 只存在于本机、认的是本机会话 Cookie，转过去必然 401，用户当场被踢回登录页。
+ *
+ * 防线是**两层**，这个文件两层都盯：
+ *
+ * 1. **强制点**：`localApiTransport.ts` 的 `LOCAL_ONLY_API_PREFIXES`。
+ *    不管调用方怎么写都挡得住，所以「三个前缀在不在名单里」是本文件
+ *    **最要紧**的一条断言——它被删掉必须变红。
+ * 2. **双保险兼文档**：调用点上的 `hostScope: 'none'`。少写一处不会真出事
+ *    （第 1 层兜着），但读代码的人会看不出这条是本机专属，所以这里仍然
+ *    要求每一处都标。这一条报红时是**提醒补标注**，不是「线上要坏了」。
+ *
+ * 配套的 `localOnlyHostScope.test.ts` 从行为侧验证同样两层。
  */
 
 const 仓库根 = path.resolve(
@@ -107,6 +113,36 @@ function 碰了本机接口(正文: string): boolean {
 }
 
 describe('本机专属接口的源码护栏', () => {
+  /**
+   * **这是真正的强制点**：名单里少一条，对应那组接口在选中远端 host 时
+   * 就会被转发出去、401、把用户踢回登录页。调用点的标注只是第二层，
+   * 挡不住「新加的文件忘了标」。
+   */
+  it('三个本机专属前缀都在 LOCAL_ONLY_API_PREFIXES 里', () => {
+    const 传输层 = readFileSync(
+      path.join(
+        仓库根,
+        'packages/web-core/src/shared/lib/localApiTransport.ts'
+      ),
+      'utf8'
+    );
+    const 名单 = 传输层.match(
+      /const LOCAL_ONLY_API_PREFIXES\s*=\s*\[([\s\S]*?)\]/
+    )?.[1];
+
+    expect(
+      名单,
+      '没在 localApiTransport.ts 里找到 LOCAL_ONLY_API_PREFIXES'
+    ).toBeTruthy();
+    for (const 前缀 of [
+      '/api/local-auth',
+      '/api/admin',
+      '/api/workspace-delete-requests',
+    ]) {
+      expect(名单, `${前缀} 不在中央名单里`).toContain(`'${前缀}'`);
+    }
+  });
+
   it('扫到了源文件（别让护栏悄悄空跑）', () => {
     expect(全部源文件.length).toBeGreaterThan(100);
     expect(
@@ -133,8 +169,9 @@ describe('本机专属接口的源码护栏', () => {
 
     expect(
       漏标,
-      "这些文件请求 /api/local-auth/* 或 /api/admin/* 时没写 hostScope: 'none'，" +
-        '选中远端 host 时会被转发过去，401 之后把用户踢回登录页'
+      "这些文件请求本机专属接口时漏了 hostScope: 'none'。中央名单" +
+        '（LOCAL_ONLY_API_PREFIXES）已经兜住了，线上不会坏；但请补上标注，' +
+        '否则读代码的人看不出这条是本机专属'
     ).toEqual([]);
   });
 

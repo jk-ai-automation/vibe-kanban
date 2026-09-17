@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  makeLocalApiRequest,
   setLocalApiTransport,
   type LocalApiRequestOptions,
 } from '@/shared/lib/localApiTransport';
@@ -102,5 +103,52 @@ describe('本机专属接口不能被改写到远端 host', () => {
 
     expect(请求路径.length).toBeGreaterThan(0);
     expect(请求路径.filter((p) => p.startsWith(被转发前缀))).toEqual([]);
+  });
+});
+
+/**
+ * 纵深防御的第二层：`localApiTransport.ts` 里的 `LOCAL_ONLY_API_PREFIXES`。
+ *
+ * 上面那组测的是「调用点标了 `hostScope: 'none'`，所以没被转发」。这组把
+ * 标注**整个拿掉**（直接用默认的 `hostScope: 'current'` 调一次），证明中央
+ * 名单自己就能把这些路径按在本机 —— 将来谁新加接口忘了标注，也不会出事。
+ */
+describe('中央名单独立生效（调用点不标注也挡得住）', () => {
+  it.each([
+    '/api/local-auth/me',
+    '/api/local-auth/login',
+    '/api/local-auth/oauth/feishu/bind',
+    '/api/admin/users',
+    '/api/admin/invites/abc',
+    '/api/admin/workspace-delete-requests',
+    '/api/workspace-delete-requests',
+    '/api/workspace-delete-requests/abc',
+    '/api/workspace-delete-requests?scope=mine',
+  ])('%s 不带 hostScope 也不会被改写', async (路径) => {
+    // 刻意不传 hostScope：走默认的 'current'，也就是「跟随选中的 host」。
+    await makeLocalApiRequest(路径);
+
+    expect(请求路径).toEqual([路径]);
+  });
+
+  /**
+   * 前缀匹配的边界。`/api/workspace-delete-requests` 没有尾斜杠，如果拿
+   * `startsWith` 裸比，`/api/workspace-delete-requests-foo` 会被一起误伤，
+   * 那条本该跟着 host 走的接口就永远打不到远端了。
+   */
+  it.each([
+    '/api/workspace-delete-requests-foo',
+    '/api/administration/x',
+    '/api/local-authority/x',
+  ])('%s 不在名单上，仍然跟随选中的 host', async (路径) => {
+    await makeLocalApiRequest(路径);
+
+    expect(请求路径).toEqual([`${被转发前缀}${路径.slice('/api/'.length)}`]);
+  });
+
+  it('本来就该跟随 host 的普通接口没被波及', async () => {
+    await makeLocalApiRequest('/api/workspaces');
+
+    expect(请求路径).toEqual([`${被转发前缀}workspaces`]);
   });
 });

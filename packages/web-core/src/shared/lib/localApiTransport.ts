@@ -35,11 +35,41 @@ export interface LocalApiTransport {
   ) => Promise<WebSocket> | WebSocket;
 }
 
+/**
+ * **只存在于本机后端、绝不能被转发到远端 host 的接口前缀。**
+ *
+ * 这份名单是唯一的**强制点**：不管调用方怎么写、有没有记得标
+ * `hostScope: 'none'`、把选项包在什么变量里，走到这里都会被挡下。
+ * 调用点上的 `hostScope: 'none'` 保留着当文档（读代码的人一眼能看出
+ * 这条是本机专属，不用回来翻这份名单），但真正兜底的是这里。
+ *
+ * 后 3 条是本机账号体系：会话 Cookie（`vk_session`）是本机这一份，
+ * 而 `/api/host/<id>/{*tail}` 代理会把请求头**原样**转给对面那台机器
+ * （`crates/server/src/routes/host_relay/proxy.rs`），对面是同一个后端
+ * 二进制、同样注册了这些路由，只是不认这份 Cookie —— 于是回 401，
+ * 传输层广播「会话过期」，用户被莫名其妙踢回登录页。
+ *
+ * 写法：结尾带 `/` 的按纯前缀匹配（历史写法，保持不变）；不带 `/` 的
+ * 要求后面紧跟路径结束、`/` 或 `?`，免得 `/api/admin` 把
+ * `/api/administration` 之类的也一起误伤。
+ */
 const LOCAL_ONLY_API_PREFIXES = [
   '/api/open-remote-editor/',
   '/api/relay-auth/server/',
   '/api/relay-auth/client/',
+  '/api/local-auth',
+  '/api/admin',
+  '/api/workspace-delete-requests',
 ];
+
+function isLocalOnlyApiPath(path: string): boolean {
+  return LOCAL_ONLY_API_PREFIXES.some((prefix) => {
+    if (!path.startsWith(prefix)) return false;
+    if (prefix.endsWith('/')) return true;
+    const 边界 = path.charAt(prefix.length);
+    return 边界 === '' || 边界 === '/' || 边界 === '?';
+  });
+}
 
 function isAbsoluteUrl(pathOrUrl: string): boolean {
   return /^https?:\/\//i.test(pathOrUrl) || /^wss?:\/\//i.test(pathOrUrl);
@@ -67,7 +97,7 @@ function scopeLocalApiPath(pathOrUrl: string, hostId: string | null): string {
   const path = toPathAndQuery(pathOrUrl);
   // These endpoints must always hit the local backend because they rely on
   // local-only credentials/state.
-  if (LOCAL_ONLY_API_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+  if (isLocalOnlyApiPath(path)) {
     return pathOrUrl;
   }
 
