@@ -1,6 +1,8 @@
 import { cn } from '../lib/cn';
 import { useTranslation } from 'react-i18next';
 import {
+  ArrowUUpLeftIcon,
+  CheckIcon,
   GitPullRequestIcon,
   DotsThreeIcon,
   LinkBreakIcon,
@@ -9,6 +11,7 @@ import {
   HandIcon,
   TriangleIcon,
   CircleIcon,
+  XIcon,
 } from '@phosphor-icons/react';
 import { UserAvatar, type UserAvatarUser } from './UserAvatar';
 import { RunningDots } from './RunningDots';
@@ -45,11 +48,36 @@ export interface WorkspaceWithStats {
   latestProcessStatus?: 'running' | 'completed' | 'failed' | 'killed';
 }
 
+/**
+ * 这张卡上关于「删除」的全部可见能力。
+ *
+ * 由 `web-core` 的 `resolveDeleteAffordance` 算出来（那里有权限矩阵的单测），
+ * 卡片自己不做任何权限判断——它只负责画。个人版传 `undefined`，
+ * 整套审批 UI 连带待审批徽标一起消失，删除菜单项与历史版本逐字一致。
+ */
+export interface WorkspaceDeleteAffordance {
+  /** `delete`：直接删（管理员）。`request`：提交删除申请（非管理员）。 */
+  mode: 'delete' | 'request';
+  /** 能不能发起删除（管理员对任何工作区，成员只对自己的）。 */
+  canInitiate: boolean;
+  /** 这个工作区有没有待处理的删除申请。 */
+  pending: boolean;
+  /** 能不能就地批准/驳回（管理员）。 */
+  canDecide: boolean;
+  /** 能不能撤回（申请人本人）。 */
+  canWithdraw: boolean;
+}
+
 export interface IssueWorkspaceCardProps {
   workspace: WorkspaceWithStats;
   onClick?: () => void;
   onUnlink?: () => void;
   onDelete?: () => void;
+  /** 缺省（个人版）时卡片行为与历史版本完全一致。 */
+  deleteAffordance?: WorkspaceDeleteAffordance;
+  onWithdrawDeleteRequest?: () => void;
+  onApproveDeleteRequest?: () => void;
+  onRejectDeleteRequest?: () => void;
   showOwner?: boolean;
   showStatusBadge?: boolean;
   showNoPrText?: boolean;
@@ -112,6 +140,10 @@ export function IssueWorkspaceCard({
   onClick,
   onUnlink,
   onDelete,
+  deleteAffordance,
+  onWithdrawDeleteRequest,
+  onApproveDeleteRequest,
+  onRejectDeleteRequest,
   showOwner = true,
   showStatusBadge = true,
   showNoPrText = true,
@@ -133,6 +165,17 @@ export function IssueWorkspaceCard({
     isFailed ||
     isRunning ||
     (hasUnseenActivity && !isRunning);
+
+  const deletePending = deleteAffordance?.pending ?? false;
+  // 已经有一条待处理申请时，不再显示「申请删除 / 删除工作区」——
+  // 该看到的是它现在的状态与可做的决定。
+  const showDeleteItem = Boolean(onDelete) && !deletePending;
+  const showWithdrawItem = Boolean(
+    deletePending && deleteAffordance?.canWithdraw && onWithdrawDeleteRequest
+  );
+  const showDecideItems = Boolean(deletePending && deleteAffordance?.canDecide);
+  const hasMenu =
+    Boolean(onUnlink) || showDeleteItem || showWithdrawItem || showDecideItems;
 
   return (
     <IssueWorkspaceCardContainer onClick={onClick} className={className}>
@@ -156,6 +199,14 @@ export function IssueWorkspaceCard({
           {workspace.name && (
             <span className="text-sm text-high truncate">{workspace.name}</span>
           )}
+          {deletePending && (
+            <span
+              title={t('workspaces.deletePendingTitle')}
+              className="px-1.5 py-0.5 rounded text-xs font-medium shrink-0 bg-error/10 text-error"
+            >
+              {t('workspaces.deletePending')}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-half">
@@ -165,7 +216,7 @@ export function IssueWorkspaceCard({
               className="h-5 w-5 text-[10px] border-2 border-panel"
             />
           )}
-          {(onUnlink || onDelete) && (
+          {hasMenu && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
@@ -191,17 +242,53 @@ export function IssueWorkspaceCard({
                     {t('workspaces.unlinkFromIssue')}
                   </DropdownMenuItem>
                 )}
-                {onDelete && (
+                {showDeleteItem && (
                   <DropdownMenuItem
                     onClick={(e) => {
                       e.stopPropagation();
-                      onDelete();
+                      onDelete?.();
                     }}
                     className="text-destructive focus:text-destructive"
                   >
                     <TrashIcon className="size-icon-xs" />
-                    {t('workspaces.deleteWorkspace')}
+                    {deleteAffordance?.mode === 'request'
+                      ? t('workspaces.requestDelete')
+                      : t('workspaces.deleteWorkspace')}
                   </DropdownMenuItem>
+                )}
+                {showWithdrawItem && (
+                  <DropdownMenuItem
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onWithdrawDeleteRequest?.();
+                    }}
+                  >
+                    <ArrowUUpLeftIcon className="size-icon-xs" />
+                    {t('workspaces.withdrawDeleteRequest')}
+                  </DropdownMenuItem>
+                )}
+                {showDecideItems && (
+                  <>
+                    <DropdownMenuItem
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onApproveDeleteRequest?.();
+                      }}
+                      className="text-destructive focus:text-destructive"
+                    >
+                      <CheckIcon className="size-icon-xs" />
+                      {t('workspaces.approveDelete')}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRejectDeleteRequest?.();
+                      }}
+                    >
+                      <XIcon className="size-icon-xs" />
+                      {t('workspaces.rejectDelete')}
+                    </DropdownMenuItem>
+                  </>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>

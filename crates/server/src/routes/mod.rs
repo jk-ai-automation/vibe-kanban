@@ -34,6 +34,7 @@ pub mod ssh_session;
 pub mod tags;
 pub mod terminal;
 pub mod webrtc;
+pub mod workspace_delete_requests;
 pub mod workspaces;
 
 /// 带 `ConnectInfo<SocketAddr>` 的 make service。
@@ -86,6 +87,10 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeServiceWithConnectInfo<Rout
         .merge(host_relay::router(&deployment))
         .merge(relay_signed_routes)
         .merge(local_auth::protected_router())
+        // 删除申请的申请人侧（提交 / 撤回 / 我的申请）。挂在这里而不是
+        // relay_signed_routes 里：它是纯浏览器接口，没有 relay 侧的调用方，
+        // 与 admin 组保持同一层。审批侧在 admin::router() 里，自带管理员守卫。
+        .merge(workspace_delete_requests::router())
         // 管理员组：自带 require_admin_middleware，必须嵌在 require_local_session
         // 里面（CurrentUser 由后者注入）。
         .merge(admin::router())

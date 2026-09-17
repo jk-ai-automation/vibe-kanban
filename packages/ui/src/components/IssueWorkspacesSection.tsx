@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import {
   IssueWorkspaceCard,
   IssueWorkspaceCreateCard,
+  type WorkspaceDeleteAffordance,
   type WorkspaceWithStats,
 } from './IssueWorkspaceCard';
 import {
@@ -17,6 +18,16 @@ export interface IssueWorkspacesSectionProps {
   onCreateWorkspace?: () => void;
   onUnlinkWorkspace?: (localWorkspaceId: string) => void;
   onDeleteWorkspace?: (localWorkspaceId: string) => void;
+  /**
+   * 按本地工作区 id 取这张卡的删除能力。返回 `undefined`（个人版，或
+   * 还没加载出来）时卡片行为与历史版本逐字一致。
+   */
+  getDeleteAffordance?: (
+    localWorkspaceId: string
+  ) => WorkspaceDeleteAffordance | undefined;
+  onWithdrawDeleteRequest?: (localWorkspaceId: string) => void;
+  onApproveDeleteRequest?: (localWorkspaceId: string) => void;
+  onRejectDeleteRequest?: (localWorkspaceId: string) => void;
   shouldAnimateCreateButton?: boolean;
 }
 
@@ -32,6 +43,10 @@ export function IssueWorkspacesSection({
   onCreateWorkspace,
   onUnlinkWorkspace,
   onDeleteWorkspace,
+  getDeleteAffordance,
+  onWithdrawDeleteRequest,
+  onApproveDeleteRequest,
+  onRejectDeleteRequest,
   shouldAnimateCreateButton = false,
 }: IssueWorkspacesSectionProps) {
   const { t } = useTranslation('common');
@@ -54,6 +69,14 @@ export function IssueWorkspacesSection({
         ) : (
           workspaces.map((workspace) => {
             const { localWorkspaceId } = workspace;
+            const affordance = localWorkspaceId
+              ? getDeleteAffordance?.(localWorkspaceId)
+              : undefined;
+            // 没有 affordance（个人版，或还没加载出来）时退回历史判据：
+            // 只有自己的工作区才给删除入口。
+            const canInitiate = affordance
+              ? affordance.canInitiate
+              : workspace.isOwnedByCurrentUser;
             return (
               <IssueWorkspaceCard
                 key={workspace.id}
@@ -71,10 +94,24 @@ export function IssueWorkspacesSection({
                     : undefined
                 }
                 onDelete={
-                  onDeleteWorkspace &&
-                  localWorkspaceId &&
-                  workspace.isOwnedByCurrentUser
+                  onDeleteWorkspace && localWorkspaceId && canInitiate
                     ? () => onDeleteWorkspace(localWorkspaceId)
+                    : undefined
+                }
+                deleteAffordance={affordance}
+                onWithdrawDeleteRequest={
+                  onWithdrawDeleteRequest && localWorkspaceId
+                    ? () => onWithdrawDeleteRequest(localWorkspaceId)
+                    : undefined
+                }
+                onApproveDeleteRequest={
+                  onApproveDeleteRequest && localWorkspaceId
+                    ? () => onApproveDeleteRequest(localWorkspaceId)
+                    : undefined
+                }
+                onRejectDeleteRequest={
+                  onRejectDeleteRequest && localWorkspaceId
+                    ? () => onRejectDeleteRequest(localWorkspaceId)
                     : undefined
                 }
               />

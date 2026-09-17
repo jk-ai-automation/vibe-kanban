@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO workspace_delete_requests\n                           (id, workspace_id, requested_by_user_id, status, reason,\n                            created_at, updated_at)\n                       VALUES ($1, $2, $3, 'pending', $4, $5, $5)\n                       ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "5a8813ce42a38128aacc09fa8be9c03e0ca96d1b9783246bbcfab8b4378dd33b"
+}

@@ -38,7 +38,17 @@ export class AdminApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+/**
+ * 走本地会话信封协议的通用请求。
+ *
+ * 也被 `workspaceDeleteRequestsApi.ts` 复用（那里既有 `/api/admin/*` 也有
+ * 申请人侧的普通路径）：两边的错误语义完全一样——后端的 400/403/404/409
+ * 文案是特意写给人看的，可以直接展示。
+ */
+export async function requestLocalEnvelope<T>(
+  path: string,
+  init: RequestInit = {}
+): Promise<T> {
   const response = await makeLocalApiRequest(path, init);
 
   if (!response.ok) {
@@ -66,7 +76,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return envelope.data as T;
 }
 
-const jsonInit = (method: string, body: unknown): RequestInit => ({
+const request = requestLocalEnvelope;
+
+export const jsonInit = (method: string, body: unknown): RequestInit => ({
   method,
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),

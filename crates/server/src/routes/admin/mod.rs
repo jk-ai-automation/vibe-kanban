@@ -11,6 +11,7 @@
 
 pub mod invites;
 pub mod users;
+pub mod workspace_delete_requests;
 
 use std::sync::{Mutex, OnceLock};
 
@@ -91,6 +92,7 @@ pub fn router() -> Router<DeploymentImpl> {
     Router::new()
         .merge(users::router())
         .merge(invites::router())
+        .merge(workspace_delete_requests::router())
         .layer(axum::middleware::from_fn(require_admin_middleware))
 }
 
@@ -134,6 +136,15 @@ mod tests {
                 ("/api/admin/users".to_string(), "POST"),
                 ("/api/admin/users/{id}".to_string(), "PATCH"),
                 ("/api/admin/users/{id}/password".to_string(), "POST"),
+                ("/api/admin/workspace-delete-requests".to_string(), "GET"),
+                (
+                    "/api/admin/workspace-delete-requests/{id}/approve".to_string(),
+                    "POST",
+                ),
+                (
+                    "/api/admin/workspace-delete-requests/{id}/reject".to_string(),
+                    "POST",
+                ),
             ]
         );
     }

@@ -1,0 +1,68 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.id                   AS \"id!: Uuid\",\n                      r.workspace_id         AS \"workspace_id!: Uuid\",\n                      w.name                 AS \"workspace_name: String\",\n                      w.branch               AS \"workspace_branch!: String\",\n                      r.requested_by_user_id AS \"requested_by_user_id: Uuid\",\n                      u.username             AS \"requested_by_username: String\",\n                      r.reason               AS \"reason: String\",\n                      r.status               AS \"status!: String\",\n                      r.created_at           AS \"created_at!: DateTime<Utc>\"\n               FROM workspace_delete_requests r\n               JOIN workspaces w ON w.id = r.workspace_id\n               LEFT JOIN local_users u ON u.id = r.requested_by_user_id\n               WHERE r.status = 'pending' AND r.requested_by_user_id = $1\n               ORDER BY r.created_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: Uuid",
+        "ordinal": 0,
+        "type_info": "Blob"
+      },
+      {
+        "name": "workspace_id!: Uuid",
+        "ordinal": 1,
+        "type_info": "Blob"
+      },
+      {
+        "name": "workspace_name: String",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "workspace_branch!: String",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "requested_by_user_id: Uuid",
+        "ordinal": 4,
+        "type_info": "Blob"
+      },
+      {
+        "name": "requested_by_username: String",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "reason: String",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "status!: String",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!: DateTime<Utc>",
+        "ordinal": 8,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "8ac0cf7e3cda092dca90af51ebfd7a712d5ce0506c47714aa3af8cae6459ac0b"
+}

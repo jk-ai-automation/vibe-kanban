@@ -116,6 +116,15 @@ fn generate_types_content() -> String {
         server::routes::admin::invites::ListInvitesResponse::decl(),
         server::routes::admin::invites::CreateInviteRequest::decl(),
         server::routes::admin::invites::CreateInviteResponse::decl(),
+        server::routes::workspace_delete_requests::WorkspaceDeleteRequestInfo::decl(),
+        server::routes::workspace_delete_requests::ListWorkspaceDeleteRequestsResponse::decl(),
+        server::routes::workspace_delete_requests::CreateWorkspaceDeleteRequestRequest::decl(),
+        server::routes::admin::workspace_delete_requests::RejectWorkspaceDeleteRequestRequest::decl(
+        ),
+        server::routes::admin::workspace_delete_requests::ApproveWorkspaceDeleteRequestRequest::decl(
+        ),
+        server::routes::admin::workspace_delete_requests::WorkspaceDeleteRequestDecisionResponse::decl(
+        ),
         server::routes::local_auth::invite_routes::AcceptInviteRequest::decl(),
         server::routes::local_auth::oauth_routes::OAuthBindStart::decl(),
         server::routes::local_auth::setup::SetupStatusResponse::decl(),
