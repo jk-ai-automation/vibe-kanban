@@ -20,6 +20,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use db::models::{
     local_auth::LocalSessions,
+    local_project::DEFAULT_USER_ID,
     local_user::{LocalUser, LocalUserRole, LocalUserStatus, LocalUsers, NewLocalUser},
 };
 use deployment::Deployment;
@@ -238,6 +239,19 @@ pub(crate) async fn handle_update_user(
         if 是自己 {
             return Err(ApiError::Forbidden("不能修改自己的角色".to_string()));
         }
+        // 本机固定用户（DEFAULT_USER_ID）的角色**不可改**。它不是一个普通账号：
+        // 个人版、以及团队版里带本机令牌的进程（MCP），走的都是
+        // `SessionGate::PersonalBypass`，注入的就是这一行。把它降成 member，
+        // 个人版会当场失去删除工作区的能力（`delete_workspace` 无条件
+        // require_admin），MCP 也跟着废掉。
+        // `确保仍有可登录管理员` 拦不住这一手——本机用户没有密码凭据，
+        // 根本不算「可登录管理员」。前端 `members.ts::isFixedLocalUser` 拦了，
+        // 但那只是 UI。
+        if target.id == DEFAULT_USER_ID {
+            return Err(ApiError::Forbidden(
+                "不能修改本机固定用户的角色".to_string(),
+            ));
+        }
         if target.role == LocalUserRole::Admin {
             确保仍有可登录管理员(pool, target.id).await?;
         }
@@ -367,7 +381,7 @@ pub(crate) fn router() -> Router<DeploymentImpl> {
 
 #[cfg(test)]
 mod tests {
-    use db::{models::local_project::DEFAULT_USER_ID, test_support::TestDb};
+    use db::test_support::TestDb;
     use services::services::local_auth::token::hash_session_token;
 
     use super::*;
@@ -587,6 +601,47 @@ mod tests {
             handle_list_users(test_db.pool(), &身份(&local))
                 .await
                 .is_ok()
+        );
+    }
+
+    /// **本机固定用户的角色不可改。**
+    ///
+    /// 把它降成 member 会让个人版当场失去删除工作区的能力
+    /// （`workspaces::core::delete_workspace` 无条件 `require_admin`），
+    /// MCP / 本机进程也跟着废掉——而且没人能改回来，因为它本来就不算
+    /// 「可登录管理员」，`确保仍有可登录管理员` 拦不住这一手。
+    #[tokio::test]
+    async fn 不能把本机固定用户降权() {
+        let test_db = TestDb::new().await;
+        let amy = 建用户(
+            &test_db,
+            "amy",
+            LocalUserRole::Admin,
+            Some("hunter2hunter2"),
+        )
+        .await;
+
+        let err = handle_update_user(
+            test_db.pool(),
+            &身份(&amy),
+            DEFAULT_USER_ID,
+            &UpdateLocalUserRequest {
+                role: Some("member".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("本机固定用户不得被降权");
+        assert!(matches!(err, ApiError::Forbidden(_)), "实际：{err:?}");
+
+        let local = LocalUsers::find_by_id(test_db.pool(), DEFAULT_USER_ID)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            local.role,
+            LocalUserRole::Admin,
+            "个人版的删除能力挂在这条断言上"
         );
     }
 

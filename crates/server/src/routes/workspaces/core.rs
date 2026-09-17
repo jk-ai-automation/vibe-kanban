@@ -16,7 +16,10 @@ use sqlx::Error as SqlxError;
 use utils::response::ApiResponse;
 use workspace_manager::WorkspaceManager;
 
-use crate::{DeploymentImpl, error::ApiError};
+use crate::{
+    DeploymentImpl, error::ApiError, middleware::local_session::CurrentUser,
+    routes::admin::require_admin,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteWorkspaceQuery {
@@ -96,11 +99,47 @@ pub async fn get_first_user_message(
     Ok(ResponseJson(ApiResponse::success(message)))
 }
 
+/// 删除工作区。**只有管理员做得了**，member 一律 403。
+///
+/// `require_admin` 是这个 handler 的第一句，写在任何数据库/文件系统动作之前：
+/// 403 之后工作区一行都不会被动过。有两条测试钉着——一条按源码顺序扫，
+/// 一条真建一个工作区、拿 member 走一遍守卫再数库里的行。
+///
+/// **不按 `ServerMode` 分支**：个人版、以及团队版里带本机令牌的进程（MCP），
+/// 走的都是 `SessionGate::PersonalBypass`，注入的是迁移里那条 `role='admin'`
+/// 的本机用户，这道守卫对它恒为真，个人版行为逐字不变。少一个分支就少一处
+/// 「团队版忘了包住」的可能。前提（本机用户永远是 admin）由
+/// `admin/users.rs` 里「不得修改本机固定用户角色」那道守卫保证。
 pub async fn delete_workspace(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
+    actor: CurrentUser,
     Query(query): Query<DeleteWorkspaceQuery>,
 ) -> Result<(StatusCode, ResponseJson<ApiResponse<()>>), ApiError> {
+    require_admin(&actor)?;
+    perform_workspace_deletion(
+        &deployment,
+        workspace,
+        query.delete_remote,
+        query.delete_branches,
+    )
+    .await?;
+    Ok((StatusCode::ACCEPTED, ResponseJson(ApiResponse::success(()))))
+}
+
+/// 真正执行删除的那一段，与鉴权分开。
+///
+/// 两个调用方共用它：管理员直接删（[`delete_workspace`]），以及管理员批准
+/// 一条删除申请（`routes/admin/workspace_delete_requests.rs`）。抽出来是为了
+/// 让「批准即删除」走的是**同一条**删除路径，而不是复制一份出来慢慢跑偏。
+///
+/// 本函数**不做任何权限判断**——调用方必须自己先过守卫。
+pub(crate) async fn perform_workspace_deletion(
+    deployment: &DeploymentImpl,
+    workspace: Workspace,
+    delete_remote: bool,
+    delete_branches: bool,
+) -> Result<(), ApiError> {
     let pool = &deployment.db().pool;
     let workspace_manager = deployment.workspace_manager();
     let workspace_id = workspace.id;
@@ -155,7 +194,7 @@ pub async fn delete_workspace(
         )
         .await;
 
-    if query.delete_remote {
+    if delete_remote {
         if let Ok(client) = deployment.remote_client() {
             match client.delete_workspace(workspace_id).await {
                 Ok(()) => {
@@ -177,9 +216,9 @@ pub async fn delete_workspace(
         }
     }
 
-    WorkspaceManager::spawn_workspace_deletion_cleanup(deletion_context, query.delete_branches);
+    WorkspaceManager::spawn_workspace_deletion_cleanup(deletion_context, delete_branches);
 
-    Ok((StatusCode::ACCEPTED, ResponseJson(ApiResponse::success(()))))
+    Ok(())
 }
 
 #[axum::debug_handler]
@@ -190,4 +229,127 @@ pub async fn mark_seen(
     let pool = &deployment.db().pool;
     CodingAgentTurn::mark_seen_by_workspace_id(pool, workspace.id).await?;
     Ok(ResponseJson(ApiResponse::success(())))
+}
+
+#[cfg(test)]
+mod tests {
+    use db::{
+        models::{
+            local_project::DEFAULT_USER_ID,
+            local_user::{LocalUserRole, LocalUsers},
+            workspace::CreateWorkspace,
+        },
+        test_support::TestDb,
+    };
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn 身份(role: LocalUserRole) -> CurrentUser {
+        CurrentUser {
+            id: Uuid::new_v4(),
+            username: "someone".to_string(),
+            role,
+        }
+    }
+
+    /// 攻击样例：member 直接 `DELETE /api/workspaces/{id}`。
+    /// 必须 403，**而且库里的工作区行一条都不能少**。
+    #[tokio::test]
+    async fn member_删工作区被拒且工作区还在() {
+        let test_db = TestDb::new().await;
+        let ws = Workspace::create(
+            test_db.pool(),
+            &CreateWorkspace {
+                branch: "feat-a".to_string(),
+                name: None,
+            },
+            Uuid::new_v4(),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .expect("建工作区失败");
+
+        let err = require_admin(&身份(LocalUserRole::Member)).expect_err("member 不得删工作区");
+        assert!(matches!(err, ApiError::Forbidden(_)), "实际：{err:?}");
+
+        let 剩余: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workspaces")
+            .fetch_one(test_db.pool())
+            .await
+            .unwrap();
+        assert_eq!(剩余, 1, "403 之后工作区必须还在");
+        assert!(
+            Workspace::find_by_id(test_db.pool(), ws.id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn admin_可以删工作区() {
+        require_admin(&身份(LocalUserRole::Admin)).expect("admin 应通过");
+    }
+
+    /// 个人版零回退的机械依据：迁移写入的本机用户就是 admin，
+    /// `SessionGate::PersonalBypass` 注入的正是这条用户，
+    /// 所以 `require_admin` 对个人版恒为真。
+    #[tokio::test]
+    async fn 个人版本机用户是管理员因此照常能删() {
+        let test_db = TestDb::new().await;
+        let local = LocalUsers::find_by_id(test_db.pool(), DEFAULT_USER_ID)
+            .await
+            .unwrap()
+            .expect("迁移必须写入本机用户");
+        assert_eq!(local.role, LocalUserRole::Admin);
+
+        require_admin(&CurrentUser {
+            id: local.id,
+            username: local.username,
+            role: local.role,
+        })
+        .expect("个人版本机用户必须能删工作区");
+    }
+
+    /// `require_admin` 必须是 `delete_workspace` 的**第一句**：
+    /// 排在任何数据库 / 文件系统动作之前，403 之后什么都没发生。
+    #[test]
+    fn 删除_handler_第一句就是管理员守卫() {
+        let source = include_str!("core.rs");
+        let 函数体 = source
+            .split("pub async fn delete_workspace(")
+            .nth(1)
+            .expect("找不到 delete_workspace");
+        let 首句 = 函数体
+            .split_once(") -> Result<(StatusCode, ResponseJson<ApiResponse<()>>), ApiError> {")
+            .expect("签名变了")
+            .1
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with("//"));
+        assert_eq!(
+            首句,
+            Some("require_admin(&actor)?;"),
+            "delete_workspace 的第一句必须是管理员守卫"
+        );
+    }
+
+    /// `perform_workspace_deletion` 是**不带权限判断**的执行段，
+    /// 任何新调用方都必须自己先过守卫。这里钉住「它自己不做鉴权」这个事实，
+    /// 免得有人以为调它就自动安全了。
+    #[test]
+    fn 执行段本身不做鉴权() {
+        let source = include_str!("core.rs");
+        let 函数体 = source
+            .split("pub(crate) async fn perform_workspace_deletion(")
+            .nth(1)
+            .expect("找不到 perform_workspace_deletion")
+            .split("\n#[axum::debug_handler]")
+            .next()
+            .unwrap();
+        assert!(
+            !函数体.contains("require_admin"),
+            "执行段不该自带鉴权：鉴权是调用方的责任，混进来会掩盖漏挂守卫的调用方"
+        );
+    }
 }

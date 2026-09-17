@@ -376,6 +376,35 @@ expires_in_days: bigint | null, };
 
 export type CreateInviteResponse = { invite: LocalInviteInfo, code: string, };
 
+export type WorkspaceDeleteRequestInfo = { id: string, workspace_id: string, workspace_name: string | null, workspace_branch: string, requested_by_user_id: string | null, requested_by_username: string | null, reason: string | null, 
+/**
+ * 目前只可能是 `"pending"`：两个列表接口都只查待处理。
+ */
+status: string, created_at: string, };
+
+export type ListWorkspaceDeleteRequestsResponse = { requests: Array<WorkspaceDeleteRequestInfo>, };
+
+export type CreateWorkspaceDeleteRequestRequest = { workspace_id: string, reason: string | null, };
+
+export type RejectWorkspaceDeleteRequestRequest = { 
+/**
+ * 驳回理由，可选，≤ 500 字符。
+ */
+note: string | null, };
+
+export type ApproveWorkspaceDeleteRequestRequest = { 
+/**
+ * 是否连同分支一起删，缺省 false——与 `DELETE /api/workspaces/{id}`
+ * 的 `delete_branches` 查询参数缺省值一致。
+ */
+delete_branches: boolean | null, };
+
+export type WorkspaceDeleteRequestDecisionResponse = { request_id: string, workspace_id: string, 
+/**
+ * `"approved"`（工作区已删）或 `"rejected"`。
+ */
+outcome: string, };
+
 export type AcceptInviteRequest = { code: string, username: string, display_name: string, password: string, email: string | null, };
 
 export type OAuthBindStart = { authorize_url: string, };

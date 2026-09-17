@@ -144,17 +144,19 @@ WorkspaceDeleteRequestInfo {
 
 ### 4.1 批准的具体步骤（顺序是安全性的一部分）
 
-1. 取申请 → 取工作区（任一不存在 → 404）。
-2. 前置检查：有正在跑的非 dev-server 进程 → 409。**放在抢占之前**，
-   失败时申请仍是 `pending`，没有状态抖动。
-3. **抢占**：`UPDATE ... SET status='approved', decided_by=?, decided_at=?
+1. 取申请 → 取工作区（任一不存在 → 404）。工作区取不到就**绝不**继续，
+   不拿「同 id 的别的东西」去走删除路径。
+2. **抢占**：`UPDATE ... SET status='approved', decided_by=?, decided_at=?
    WHERE id=? AND status='pending'`，看 `rows_affected`。
    这是唯一的胜者选举点，全程不「先查后写」。`rows_affected = 0`
    → 已被撤回 / 已被驳回 / 已被另一个管理员批准 → 409，**不删任何东西**。
-4. 执行删除（停 dev server → `prepare_deletion_context` → `delete_record`）。
-   工作区行一删，级联带走申请行。
-5. 删除失败（IO / 数据库异常）→ 把申请**条件回滚**成 `pending`
+3. 执行删除，走的是与「管理员直接删」**同一个** `perform_workspace_deletion`
+   （前置检查「有进程在跑」→ 停 dev server → `prepare_deletion_context`
+   → `delete_record`）。工作区行一删，级联带走申请行。
+4. 删除失败（有进程在跑 / IO / 数据库异常）→ 把申请**条件回滚**成 `pending`
    （`WHERE id=? AND status='approved'`），避免留下悬空状态。
+   前置检查因此排在抢占**之后**：与其在两处各写一份「能不能删」的判据，
+   不如让唯一的那份留在共用的执行段里，失败由回滚兜住。
 
 ## 5. 竞态处理
 
