@@ -182,6 +182,26 @@
       "revoke": "作废",
       "empty": "还没有邀请码。",
       "loadError": "加载邀请码列表失败，请重试。"
+    },
+    "bindings": {
+      "sectionTitle": "第三方账号",
+      "sectionDescription": "绑定飞书、Lark 或 Google 账号后，就可以用它登录。",
+      "bind": "绑定",
+      "unbind": "解绑",
+      "notBound": "未绑定",
+      "boundAt": "绑定于 {{time}}",
+      "loading": "加载中…",
+      "loadError": "读取绑定列表失败。",
+      "retry": "重试",
+      "noProviders": "本服务器未配置任何第三方登录方式。",
+      "noPasswordHint": "该账号没有设置密码，需要保留至少一个已绑定的账号才能登录。",
+      "lastLoginMethodHint": "这是你唯一的登录方式。请先设置密码或再绑定一个账号，然后才能解绑它。",
+      "providerUnavailable": "服务器已不再提供这个登录方式，但你仍然可以解绑它。",
+      "bindSuccess": "已绑定。",
+      "errorLastLoginMethod": "这是你唯一的登录方式，不能解绑。",
+      "errorNotFound": "这条绑定已经不在了。",
+      "errorForbidden": "请求被拒绝，请刷新页面后重试。",
+      "errorGeneric": "操作失败，请稍后重试。"
     }
   },
   "oauth": {

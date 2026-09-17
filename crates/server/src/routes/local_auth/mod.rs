@@ -18,7 +18,7 @@ use std::sync::{Mutex, OnceLock};
 
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -99,6 +99,17 @@ pub fn protected_router() -> Router<DeploymentImpl> {
         .route(
             "/local-auth/oauth/{provider}/bind",
             post(oauth_routes::bind),
+        )
+        // 解绑同理，而且是写操作，DELETE 会被 CSRF 双提交拦一道。
+        .route(
+            "/local-auth/oauth/{provider}/binding",
+            delete(oauth_routes::unbind),
+        )
+        // 只读，只返回**自己**的绑定。段数与 `{provider}` 那两条不同，
+        // 不会与它们抢路由。
+        .route(
+            "/local-auth/oauth/bindings",
+            get(oauth_routes::list_bindings),
         )
 }
 
@@ -202,9 +213,22 @@ mod tests {
             "/api/local-auth/password",
             // 绑定必须由已登录用户发起，不能进免鉴权组。
             "/api/local-auth/oauth/{provider}/bind",
+            // 解绑与「看自己绑了什么」同理。
+            "/api/local-auth/oauth/{provider}/binding",
+            "/api/local-auth/oauth/bindings",
         ] {
             assert!(!public.contains(&path.to_string()), "{path} 不应免鉴权");
         }
+    }
+
+    /// 受保护组必须能装得起来。
+    ///
+    /// axum 0.8 是在 `.route()` 当场检测路径冲突并 **panic** 的，而路由装配
+    /// 只在 `main` 里跑一次——没有这条测试，`/oauth/bindings` 与
+    /// `/oauth/{provider}/bind` 万一撞车，要到服务器启动那一刻才炸。
+    #[test]
+    fn 受保护路由能装配且不撞车() {
+        let _ = protected_router();
     }
 
     /// 免鉴权的第三方登录端点只有「发起」与「回调」两条，且都是 GET。

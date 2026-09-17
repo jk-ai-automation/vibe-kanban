@@ -127,6 +127,8 @@ fn generate_types_content() -> String {
         ),
         server::routes::local_auth::invite_routes::AcceptInviteRequest::decl(),
         server::routes::local_auth::oauth_routes::OAuthBindStart::decl(),
+        server::routes::local_auth::oauth_routes::OAuthBinding::decl(),
+        server::routes::local_auth::oauth_routes::OAuthBindings::decl(),
         server::routes::local_auth::setup::SetupStatusResponse::decl(),
         server::routes::local_auth::setup::SetupAdminRequest::decl(),
         relay_types::StartSpake2EnrollmentRequest::decl(),

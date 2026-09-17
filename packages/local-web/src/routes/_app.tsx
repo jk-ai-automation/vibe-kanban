@@ -21,6 +21,7 @@ import { ActionsProvider } from '@/shared/providers/ActionsProvider';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { SharedAppLayout } from '@/shared/components/ui-new/containers/SharedAppLayout';
+import { OAuthBoundRedirectHandler } from '@/features/local-auth/ui/OAuthBoundRedirectHandler';
 
 function KeyboardShortcutsHandler() {
   useKeyShowHelp(
@@ -107,6 +108,7 @@ function AppLayoutRouteComponent() {
   return (
     <AppRouteProviders key={hostId ?? 'local'}>
       <ReleaseNotesHandler />
+      <OAuthBoundRedirectHandler />
       <SequenceTrackerProvider>
         <SequenceIndicator />
         <KeyboardShortcutsHandler />

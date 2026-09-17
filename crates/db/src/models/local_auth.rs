@@ -284,6 +284,27 @@ pub enum IdentityLinkError {
     Database(#[from] sqlx::Error),
 }
 
+/// 解绑失败的原因。
+///
+/// 与 [`IdentityLinkError`] 分开是刻意的：解绑只有三种结局，
+/// 混进 link 那一套会让「把自己锁在门外」这条最关键的判据淹没在
+/// 一堆与它无关的分支里。
+#[derive(Debug, thiserror::Error)]
+pub enum IdentityUnlinkError {
+    /// 当前用户名下没有这个提供方的绑定。
+    ///
+    /// **别人名下有**也走这一条：解绑按 `user_id` 圈定范围，
+    /// 「有但不是你的」与「根本没有」对调用方必须长得一模一样，
+    /// 否则这个接口就成了一台「某人绑没绑飞书」的查询机。
+    #[error("未找到该第三方账号绑定")]
+    NotFound,
+    /// 解了就再也登不进来：账号没有密码，且这是最后一个已绑定身份。
+    #[error("这是该账号唯一的登录方式，解绑后将无法登录")]
+    LastLoginMethod,
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+}
+
 pub struct LocalUserIdentities;
 
 impl LocalUserIdentities {
@@ -333,6 +354,71 @@ impl LocalUserIdentities {
         )
         .fetch_all(pool)
         .await
+    }
+
+    /// 解除某个账号在某个提供方上的绑定。
+    ///
+    /// 两条判据都写在**同一条 `DELETE` 里**，不是「先查后删」：
+    /// 1. `user_id` 进 `WHERE`，所以 A 不可能删掉 B 的行；
+    /// 2. 「解完还留得下登录方式」也进 `WHERE`——账号有密码，
+    ///    或者名下还有别的提供方。分成两步的话，无密码 + 两个身份的
+    ///    账号并发解绑两个不同提供方时，两边都会读到「还有另一个」，
+    ///    然后各删各的，人就被锁在门外了。
+    ///
+    /// 删不掉时再查一次是为了分辨原因，这一次读不影响正确性：
+    /// 真有并发把行删走了，报「未找到」正是想要的结果（幂等）。
+    pub async fn unlink(
+        pool: &SqlitePool,
+        user_id: Uuid,
+        provider: &str,
+    ) -> Result<(), IdentityUnlinkError> {
+        let provider = provider.trim().to_string();
+        // 越界的 provider 不可能在表里，直接当未找到；不下发给数据库。
+        if provider.is_empty() || provider.len() > MAX_PROVIDER_LEN {
+            return Err(IdentityUnlinkError::NotFound);
+        }
+
+        let affected = {
+            let provider = provider.clone();
+            retry_on_busy(|| {
+                let provider = provider.clone();
+                async move {
+                    sqlx::query!(
+                        r#"DELETE FROM local_user_identities
+                           WHERE user_id = $1
+                             AND provider = $2
+                             AND (EXISTS (SELECT 1 FROM local_users u
+                                          WHERE u.id = $1 AND u.password_hash IS NOT NULL)
+                                  OR EXISTS (SELECT 1 FROM local_user_identities other
+                                             WHERE other.user_id = $1
+                                               AND other.provider <> $2))"#,
+                        user_id,
+                        provider
+                    )
+                    .execute(pool)
+                    .await
+                }
+            })
+            .await?
+            .rows_affected()
+        };
+        if affected > 0 {
+            return Ok(());
+        }
+
+        let still_there: Option<i64> = sqlx::query_scalar!(
+            r#"SELECT 1 AS "one!: i64" FROM local_user_identities
+               WHERE user_id = $1 AND provider = $2"#,
+            user_id,
+            provider
+        )
+        .fetch_optional(pool)
+        .await?;
+        if still_there.is_some() {
+            Err(IdentityUnlinkError::LastLoginMethod)
+        } else {
+            Err(IdentityUnlinkError::NotFound)
+        }
     }
 
     /// 把一个第三方身份绑到某个账号上。
@@ -2272,5 +2358,204 @@ mod identity_tests {
             );
         }
         assert_eq!(normalize_email(Some("  ")), None);
+    }
+
+    // ------------------------------------------------------------ 解绑
+
+    /// 把用户的密码抹掉，模拟「只靠第三方登录」的账号。
+    async fn 去掉密码(test_db: &TestDb, user_id: Uuid) {
+        LocalUsers::set_password_hash(test_db.pool(), user_id, None)
+            .await
+            .expect("清空密码失败");
+    }
+
+    async fn 身份数(test_db: &TestDb, user_id: Uuid) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM local_user_identities WHERE user_id = ?1")
+            .bind(user_id)
+            .fetch_one(test_db.pool())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn 有密码时可以解绑最后一个身份() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy", None).await;
+        LocalUserIdentities::link(test_db.pool(), user_id, "feishu", "on_u1", None)
+            .await
+            .unwrap();
+
+        LocalUserIdentities::unlink(test_db.pool(), user_id, "feishu")
+            .await
+            .expect("有密码兜底时应允许解绑");
+        assert_eq!(身份数(&test_db, user_id).await, 0);
+    }
+
+    /// 最重要的一条：没有密码且只剩一个身份时解绑会把人锁在门外。
+    #[tokio::test]
+    async fn 无密码时不能解绑唯一的身份() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy", None).await;
+        LocalUserIdentities::link(test_db.pool(), user_id, "feishu", "on_u1", None)
+            .await
+            .unwrap();
+        去掉密码(&test_db, user_id).await;
+
+        let err = LocalUserIdentities::unlink(test_db.pool(), user_id, "feishu")
+            .await
+            .expect_err("唯一登录方式不该能解绑");
+        assert!(matches!(err, IdentityUnlinkError::LastLoginMethod));
+        assert_eq!(身份数(&test_db, user_id).await, 1, "绑定必须完好无损");
+    }
+
+    /// 无密码但还有第二个身份时，解掉其中一个是允许的。
+    #[tokio::test]
+    async fn 无密码但有两个身份时可以解绑其中一个() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy", None).await;
+        LocalUserIdentities::link(test_db.pool(), user_id, "feishu", "on_u1", None)
+            .await
+            .unwrap();
+        LocalUserIdentities::link(test_db.pool(), user_id, "google", "sub-1", None)
+            .await
+            .unwrap();
+        去掉密码(&test_db, user_id).await;
+
+        LocalUserIdentities::unlink(test_db.pool(), user_id, "feishu")
+            .await
+            .expect("还有另一个身份时应允许解绑");
+        assert_eq!(身份数(&test_db, user_id).await, 1);
+
+        // 剩下的那个就解不掉了。
+        let err = LocalUserIdentities::unlink(test_db.pool(), user_id, "google")
+            .await
+            .expect_err("剩最后一个时应被挡下");
+        assert!(matches!(err, IdentityUnlinkError::LastLoginMethod));
+        assert_eq!(身份数(&test_db, user_id).await, 1);
+    }
+
+    /// 解绑按 `user_id` 圈定范围：A 解不掉 B 的绑定。
+    #[tokio::test]
+    async fn 解绑不能跨用户() {
+        let test_db = TestDb::new().await;
+        let amy = 建用户(&test_db, "amy", None).await;
+        let bob = 建用户(&test_db, "bob", None).await;
+        LocalUserIdentities::link(test_db.pool(), bob, "feishu", "on_bob", None)
+            .await
+            .unwrap();
+
+        let err = LocalUserIdentities::unlink(test_db.pool(), amy, "feishu")
+            .await
+            .expect_err("不该动别人的绑定");
+        assert!(matches!(err, IdentityUnlinkError::NotFound));
+        assert_eq!(身份数(&test_db, bob).await, 1, "B 的绑定必须完好");
+    }
+
+    #[tokio::test]
+    async fn 解绑不存在的绑定报未找到() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy", None).await;
+        for provider in [
+            "feishu",
+            "google",
+            "lark",
+            "",
+            "   ",
+            "x".repeat(200).as_str(),
+        ] {
+            let err = LocalUserIdentities::unlink(test_db.pool(), user_id, provider)
+                .await
+                .expect_err("不存在的绑定应报未找到");
+            assert!(
+                matches!(err, IdentityUnlinkError::NotFound),
+                "provider = {provider:?}"
+            );
+        }
+    }
+
+    /// 重复解绑同一条：第二次是「未找到」而不是 panic。
+    #[tokio::test]
+    async fn 重复解绑同一条不会_panic() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy", None).await;
+        LocalUserIdentities::link(test_db.pool(), user_id, "feishu", "on_u1", None)
+            .await
+            .unwrap();
+
+        LocalUserIdentities::unlink(test_db.pool(), user_id, "feishu")
+            .await
+            .expect("第一次应成功");
+        let err = LocalUserIdentities::unlink(test_db.pool(), user_id, "feishu")
+            .await
+            .expect_err("第二次应报未找到");
+        assert!(matches!(err, IdentityUnlinkError::NotFound));
+    }
+
+    /// 并发解绑同一条：恰好一个成功，另一个报未找到，不会 panic。
+    #[tokio::test]
+    async fn 并发解绑同一条恰好成功一次() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy", None).await;
+        LocalUserIdentities::link(test_db.pool(), user_id, "feishu", "on_u1", None)
+            .await
+            .unwrap();
+
+        let (a, b) = tokio::join!(
+            LocalUserIdentities::unlink(test_db.pool(), user_id, "feishu"),
+            LocalUserIdentities::unlink(test_db.pool(), user_id, "feishu"),
+        );
+        assert_eq!(
+            [a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(),
+            1,
+            "恰好一个成功"
+        );
+        assert_eq!(身份数(&test_db, user_id).await, 0);
+    }
+
+    /// 无密码 + 两个身份时并发解绑两个不同提供方：
+    /// 数据库层的判据是单条 SQL，必须保证至少留下一个身份。
+    #[tokio::test]
+    async fn 并发解绑两个不同身份也不会把人锁在门外() {
+        let test_db = TestDb::new().await;
+        let user_id = 建用户(&test_db, "amy", None).await;
+        LocalUserIdentities::link(test_db.pool(), user_id, "feishu", "on_u1", None)
+            .await
+            .unwrap();
+        LocalUserIdentities::link(test_db.pool(), user_id, "google", "sub-1", None)
+            .await
+            .unwrap();
+        去掉密码(&test_db, user_id).await;
+
+        let _ = tokio::join!(
+            LocalUserIdentities::unlink(test_db.pool(), user_id, "feishu"),
+            LocalUserIdentities::unlink(test_db.pool(), user_id, "google"),
+        );
+        assert_eq!(
+            身份数(&test_db, user_id).await,
+            1,
+            "无论并发怎么交错，都必须留下至少一个登录方式"
+        );
+    }
+
+    #[tokio::test]
+    async fn 列出当前用户的绑定只含自己的() {
+        let test_db = TestDb::new().await;
+        let amy = 建用户(&test_db, "amy", None).await;
+        let bob = 建用户(&test_db, "bob", None).await;
+        LocalUserIdentities::link(test_db.pool(), amy, "google", "sub-amy", None)
+            .await
+            .unwrap();
+        LocalUserIdentities::link(test_db.pool(), amy, "feishu", "on_amy", None)
+            .await
+            .unwrap();
+        LocalUserIdentities::link(test_db.pool(), bob, "lark", "on_bob", None)
+            .await
+            .unwrap();
+
+        let list = LocalUserIdentities::list_for_user(test_db.pool(), amy)
+            .await
+            .expect("列表应成功");
+        let providers: Vec<&str> = list.iter().map(|it| it.provider.as_str()).collect();
+        assert_eq!(providers, ["feishu", "google"], "只含自己的，按提供方排序");
     }
 }

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT 1 AS \"one!: i64\" FROM local_user_identities\n               WHERE user_id = $1 AND provider = $2",
+  "describe": {
+    "columns": [
+      {
+        "name": "one!: i64",
+        "ordinal": 0,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0cb0d36b3ccf7c217cd6fee1a6057b2f66cc0991aa9a86d3f4986a6f4fa9f348"
+}
