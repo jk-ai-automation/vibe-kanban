@@ -109,11 +109,11 @@ The restore itself is conservative:
 bash deploy/backup_test.sh
 ```
 
-The suite works entirely in temporary directories and never touches a real data directory. It covers a basic round trip, the un-checkpointed WAL case (including the "plain `cp` loses data" control), a restore round trip, the overwrite-and-keep-originals behaviour, retention pruning, and six failure paths: missing data directory, missing database, missing `sqlite3`, corrupt archive, corrupt database inside the archive, and an archive that is not a Vibe Kanban backup.
+The suite works entirely in temporary directories and never touches a real data directory. Its 21 checks cover a basic round trip, the un-checkpointed WAL case (including the "plain `cp` loses data" control), a restore round trip, the overwrite-and-keep-originals behaviour, retention pruning, and seven failure paths: missing data directory, missing database, missing `sqlite3`, corrupt archive, missing archive, corrupt database inside the archive, and an archive that is not a Vibe Kanban backup.
 
 ## Upgrading a personal install to team mode
 
-The upgrade is purely additive. New tables and one fixed user row are created, and the creator recorded on existing issues, comments and workspaces is never rewritten — including when it points at a user id that does not exist after the migration. Tests pin that behaviour.
+The upgrade is purely additive. Four new tables and one fixed user row are created, and the creator already recorded on existing issues and comments is never rewritten — not even when it points at a user id that does not exist after the migration. Workspaces gain a creator column they did not have before, backfilled to the built-in `local` user and re-runnable without disturbing rows already filled in. Tests pin all of that.
 
 <Steps>
 <Step title="Take a backup">
