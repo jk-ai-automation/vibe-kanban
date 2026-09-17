@@ -186,8 +186,12 @@ WorkspaceDeleteRequestInfo {
 所有守卫对它恒为真，删除路径逐字不变（同一个 `perform_workspace_deletion`）。
 申请类接口在个人版存在但永远是空的：本机用户是 admin，建申请被 400 挡掉。
 
-前端：`isLocalPersonalMode()` 为真时整套 UI 不渲染、相关查询不发起
-（`useQuery({ enabled: !isLocalPersonalMode() })`），删除菜单项文案与行为与今天一致。
+前端：门禁用**新增的 `isLocalTeamMode()`**（本地数据源 **且** 需要登录），
+不是 `!isLocalPersonalMode()`。两者不是互补关系——云端构建的个人模式
+（数据源 `remote`）满足那个取反，但它根本连不上本机的
+`/api/workspace-delete-requests`，用取反会让云端界面上多出一个永远报错的区块。
+`isLocalTeamMode()` 为假时查询 `enabled: false`（一个请求都不发）、
+`resolveDeleteAffordance` 返回 `undefined`，删除菜单项文案与行为与今天逐字一致。
 
 ## 8. 前端放置
 
@@ -204,6 +208,9 @@ WorkspaceDeleteRequestInfo {
 
 文案全部走 i18n，7 个语言文件同步；key 用**字面量映射表**，不用模板字面量拼接
 （`scripts/check-unused-i18n-keys.mjs` 扫不到模板拼出来的 key，会误报未使用）。
+
+看板（`KanbanContainer`）上的工作区卡片本来就没有删除入口（不传 `onDelete`），
+本期不给它加——那会把「在看板上误删一个工作区」变成一次点击的距离。
 
 ## 9. 不做什么
 
