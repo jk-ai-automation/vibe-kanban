@@ -3,3 +3,6 @@
 
 pub mod gates;
 pub mod template;
+pub mod transition;
+
+pub use transition::{FinishedProcess, PipelineExitEvent};
