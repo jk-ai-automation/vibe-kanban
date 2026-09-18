@@ -174,6 +174,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 9. **§6.4**：`issue_flow` 的短路放在 `advance_issue_for_workspace` 里，一处覆盖 PR 创建、合并、PR 监控三条路径。
 10. **§9.2 交付阶段自动提 PR**：U2 不做，交付阶段只要求产出 `delivery-report.md`（`artifacts_present`）。
 11. **已知副作用**：每个阶段的智能体结束都会走 `finalize_task` 发一次「Workspace Complete」系统通知（`container.rs:238-270`）。U2 不改，记入任务 20 的遗留清单。
+12. **变更钩子读到未提交前的旧数据（任务 5 之后追加修复）**：sqlite 的 `update_hook` 在语句执行时、事务提交**之前**触发，`events.rs` 里 spawn 出的反查用另一个连接按 rowid 读，WAL 下若早于提交就读到旧快照——UPDATE 推出旧值（如 `status` 仍为 `running`）、INSERT 读不到行而丢掉 add，且之后不会补推，前端停在旧状态。所有钩子表（workspaces、execution_processes、scratch、issues、project_statuses、issue_comments、pipeline_runs、pipeline_stage_runs）都受影响，流水线状态推送尤其明显（任务 5 的测试在并行负载下约 1/3 概率失败）。**修复**：`create_hook` 里建一个专用的屏障池（同库同参数、`max_connections = 2`、懒连接、不装钩子，与业务主池和钩子反查池分开）；每个非删除事件先在屏障池上 `BEGIN IMMEDIATE`（`acquire_commit_barrier`），它要拿写锁，因此会等到触发钩子的写事务提交或回滚（最多 busy_timeout），失败时打 error 并丢弃这次推送；**持有屏障期间**在反查池上完成全部读（含 `find_by_id_with_status`、`push_workspace_update_for_session` 这类二次查询）并推送，再回滚屏障。持有期间别的写者提交不了，所以读到的是同一份已提交快照，推送顺序也与提交顺序一致。回归测试：`写事务延迟提交时_replace_补丁带的是提交后的值`、`写事务延迟提交时_insert_仍产出_add_补丁`（主池事务写后 sleep 200ms 再提交）。
 
 ---
 

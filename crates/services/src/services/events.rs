@@ -26,6 +26,27 @@ pub use patches::{
 };
 pub use types::{EventError, EventPatch, EventPatchInner, HookTables, RecordTypes};
 
+/// 提交屏障池的连接数。每个变更事件只占一个连接很短的时间，2 个足够，
+/// 而且与业务主池、钩子反查池都分开，排队的屏障不会占满业务连接。
+const COMMIT_BARRIER_MAX_CONNECTIONS: u32 = 2;
+
+/// 变更钩子专用的屏障池：同一数据库文件、同样的连接参数（含 busy_timeout），不装钩子。
+/// 懒连接，建池时不开连接；整个钩子生命周期内复用。
+fn commit_barrier_pool(query_pool: &SqlitePool) -> SqlitePool {
+    sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(COMMIT_BARRIER_MAX_CONNECTIONS)
+        .connect_lazy_with((*query_pool.connect_options()).clone())
+}
+
+/// 在屏障连接上开 `BEGIN IMMEDIATE`。它要拿写锁，因此会一直等到触发钩子的那个写事务
+/// 提交或回滚（最多等 busy_timeout），返回后数据库里只剩已提交数据；持有期间别的写者
+/// 提交不了。只读用，结束时回滚。
+async fn acquire_commit_barrier(
+    barrier_pool: &SqlitePool,
+) -> Result<sqlx::Transaction<'static, Sqlite>, SqlxError> {
+    barrier_pool.begin_with("BEGIN IMMEDIATE").await
+}
+
 #[derive(Clone)]
 pub struct EventService {
     msg_store: Arc<MsgStore>,
@@ -70,10 +91,12 @@ impl EventService {
     > + Send
     + Sync
     + 'static {
+        let barrier_pool = commit_barrier_pool(&db_service.pool);
         move |conn: &mut sqlx::sqlite::SqliteConnection| {
             let msg_store_for_hook = msg_store.clone();
             let entry_count_for_hook = entry_count.clone();
             let db_for_hook = db_service.clone();
+            let barrier_pool_for_hook = barrier_pool.clone();
             Box::pin(async move {
                 let mut handle = conn.lock_handle().await?;
                 let runtime_handle = tokio::runtime::Handle::current();
@@ -165,328 +188,357 @@ impl EventService {
                     let entry_count_for_hook = entry_count_for_hook.clone();
                     let msg_store_for_hook = msg_store_for_hook.clone();
                     let db = db_for_hook.clone();
+                    let barrier_pool = barrier_pool_for_hook.clone();
 
                     if let Ok(table) = HookTables::from_str(hook.table) {
                         let rowid = hook.rowid;
                         runtime_handle.spawn(async move {
-                            let record_type: RecordTypes = match (table, hook.operation.clone()) {
-                                (HookTables::Workspaces, SqliteOperation::Delete)
-                                | (HookTables::ExecutionProcesses, SqliteOperation::Delete)
-                                | (HookTables::Scratch, SqliteOperation::Delete)
-                                | (HookTables::Issues, SqliteOperation::Delete)
-                                | (HookTables::ProjectStatuses, SqliteOperation::Delete)
-                                | (HookTables::IssueComments, SqliteOperation::Delete)
-                                | (HookTables::PipelineRuns, SqliteOperation::Delete)
-                                | (HookTables::PipelineStageRuns, SqliteOperation::Delete) => {
+                            // 删除由 preupdate 钩子推 remove，这里什么都不用做，也不必抢写锁。
+                            if matches!(hook.operation, SqliteOperation::Delete) {
+                                return;
+                            }
+                            // 提交屏障：update_hook 在语句执行时（提交之前）就触发，必须等
+                            // 触发它的写事务结束后再反查，否则会读到旧值或读不到新行。
+                            let barrier = match acquire_commit_barrier(&barrier_pool).await {
+                                Ok(barrier) => barrier,
+                                Err(e) => {
+                                    tracing::error!(
+                                        "等待写事务提交失败，丢弃 {} rowid={} 的变更推送: {}",
+                                        table,
+                                        rowid,
+                                        e
+                                    );
                                     return;
-                                }
-                                (HookTables::Workspaces, _) => {
-                                    match Workspace::find_by_rowid(&db.pool, rowid).await {
-                                        Ok(Some(workspace)) => RecordTypes::Workspace(workspace),
-                                        Ok(None) => RecordTypes::DeletedWorkspace {
-                                            rowid,
-                                        },
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to fetch workspace: {:?}",
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::ExecutionProcesses, _) => {
-                                    match ExecutionProcess::find_by_rowid(&db.pool, rowid).await {
-                                        Ok(Some(process)) => RecordTypes::ExecutionProcess(process),
-                                        Ok(None) => RecordTypes::DeletedExecutionProcess {
-                                            rowid,
-                                            session_id: None,
-                                            process_id: None,
-                                        },
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to fetch execution_process: {:?}",
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::Scratch, _) => {
-                                    match Scratch::find_by_rowid(&db.pool, rowid).await {
-                                        Ok(Some(scratch)) => RecordTypes::Scratch(scratch),
-                                        Ok(None) => RecordTypes::DeletedScratch {
-                                            rowid,
-                                            scratch_id: None,
-                                            scratch_type: None,
-                                        },
-                                        Err(e) => {
-                                            tracing::error!("Failed to fetch scratch: {:?}", e);
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::Issues, _) => {
-                                    match db::models::issue::Issues::find_by_rowid(&db.pool, rowid)
-                                        .await
-                                    {
-                                        Ok(Some(issue)) => RecordTypes::Issue(issue),
-                                        Ok(None) => RecordTypes::DeletedIssue { rowid },
-                                        Err(e) => {
-                                            tracing::error!("读取 issue rowid={} 失败: {}", rowid, e);
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::ProjectStatuses, _) => {
-                                    match db::models::local_project_status::ProjectStatuses::find_by_rowid(
-                                        &db.pool, rowid,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(status)) => RecordTypes::ProjectStatus(status),
-                                        Ok(None) => RecordTypes::DeletedProjectStatus { rowid },
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "读取 project_status rowid={} 失败: {}",
-                                                rowid,
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::IssueComments, _) => {
-                                    match db::models::issue_side::IssueComments::find_by_rowid(
-                                        &db.pool, rowid,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(comment)) => RecordTypes::IssueComment(comment),
-                                        Ok(None) => RecordTypes::DeletedIssueComment { rowid },
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "读取 issue_comment rowid={} 失败: {}",
-                                                rowid,
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::PipelineRuns, _) => {
-                                    match db::models::pipeline::PipelineRuns::find_by_rowid(
-                                        &db.pool, rowid,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(run)) => RecordTypes::PipelineRun(run),
-                                        Ok(None) => RecordTypes::DeletedPipelineRun { rowid },
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "读取 pipeline_run rowid={} 失败: {}",
-                                                rowid,
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::PipelineStageRuns, _) => {
-                                    match db::models::pipeline::PipelineStageRuns::find_by_rowid(
-                                        &db.pool, rowid,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(stage_run)) => {
-                                            RecordTypes::PipelineStageRun(stage_run)
-                                        }
-                                        Ok(None) => {
-                                            RecordTypes::DeletedPipelineStageRun { rowid }
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "读取 pipeline_stage_run rowid={} 失败: {}",
-                                                rowid,
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    }
                                 }
                             };
-
-                            let db_op: &str = match hook.operation {
-                                SqliteOperation::Insert => "insert",
-                                SqliteOperation::Delete => "delete",
-                                SqliteOperation::Update => "update",
-                                SqliteOperation::Unknown(_) => "unknown",
-                            };
-
-                            // Handle operations with direct patches
-                            match &record_type {
-                                RecordTypes::Scratch(scratch) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => scratch_patch::add(scratch),
-                                        SqliteOperation::Update => scratch_patch::replace(scratch),
-                                        _ => scratch_patch::replace(scratch),
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
-                                }
-                                RecordTypes::DeletedScratch {
-                                    scratch_id: Some(scratch_id),
-                                    scratch_type: Some(scratch_type_str),
-                                    ..
-                                } => {
-                                    let patch = scratch_patch::remove(*scratch_id, scratch_type_str);
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
-                                }
-                                RecordTypes::Workspace(workspace) => {
-                                    // Emit workspace patch with status
-                                    if let Ok(Some(workspace_with_status)) =
-                                        Workspace::find_by_id_with_status(&db.pool, workspace.id)
-                                            .await
-                                    {
-                                        let patch = match hook.operation {
-                                            SqliteOperation::Insert => {
-                                                workspace_patch::add(&workspace_with_status)
+                            // 持有屏障期间反查并推送：别的写者提交不了，下面在 db.pool 上的
+                            // 所有读（含 find_by_id_with_status、push_workspace_update_for_session
+                            // 这类二次查询）看到的都是同一份已提交快照，推送顺序也与提交顺序一致。
+                            async {
+                                let record_type: RecordTypes = match (table, hook.operation.clone()) {
+                                    (HookTables::Workspaces, SqliteOperation::Delete)
+                                    | (HookTables::ExecutionProcesses, SqliteOperation::Delete)
+                                    | (HookTables::Scratch, SqliteOperation::Delete)
+                                    | (HookTables::Issues, SqliteOperation::Delete)
+                                    | (HookTables::ProjectStatuses, SqliteOperation::Delete)
+                                    | (HookTables::IssueComments, SqliteOperation::Delete)
+                                    | (HookTables::PipelineRuns, SqliteOperation::Delete)
+                                    | (HookTables::PipelineStageRuns, SqliteOperation::Delete) => {
+                                        return;
+                                    }
+                                    (HookTables::Workspaces, _) => {
+                                        match Workspace::find_by_rowid(&db.pool, rowid).await {
+                                            Ok(Some(workspace)) => RecordTypes::Workspace(workspace),
+                                            Ok(None) => RecordTypes::DeletedWorkspace {
+                                                rowid,
+                                            },
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "Failed to fetch workspace: {:?}",
+                                                    e
+                                                );
+                                                return;
                                             }
-                                            _ => workspace_patch::replace(&workspace_with_status),
-                                        };
-                                        msg_store_for_hook.push_patch(patch);
-                                    }
-                                    return;
-                                }
-                                RecordTypes::DeletedWorkspace { .. } => {
-                                    return;
-                                }
-                                RecordTypes::ExecutionProcess(process) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => {
-                                            execution_process_patch::add(process)
                                         }
-                                        SqliteOperation::Update => {
-                                            execution_process_patch::replace(process)
-                                        }
-                                        _ => execution_process_patch::replace(process), // fallback
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-
-                                    if let Err(err) = EventService::push_workspace_update_for_session(
-                                        &db.pool,
-                                        msg_store_for_hook.clone(),
-                                        process.session_id,
-                                    )
-                                    .await
-                                    {
-                                        tracing::error!(
-                                            "Failed to push workspace update after execution process change: {:?}",
-                                            err
-                                        );
                                     }
-
-                                    return;
-                                }
-                                RecordTypes::DeletedExecutionProcess {
-                                    process_id: Some(process_id),
-                                    session_id,
-                                    ..
-                                } => {
-                                    let patch = execution_process_patch::remove(*process_id);
-                                    msg_store_for_hook.push_patch(patch);
-
-                                    if let Some(session_id) = session_id
-                                        && let Err(err) =
-                                            EventService::push_workspace_update_for_session(
-                                                &db.pool,
-                                                msg_store_for_hook.clone(),
-                                                *session_id,
-                                            )
+                                    (HookTables::ExecutionProcesses, _) => {
+                                        match ExecutionProcess::find_by_rowid(&db.pool, rowid).await {
+                                            Ok(Some(process)) => RecordTypes::ExecutionProcess(process),
+                                            Ok(None) => RecordTypes::DeletedExecutionProcess {
+                                                rowid,
+                                                session_id: None,
+                                                process_id: None,
+                                            },
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "Failed to fetch execution_process: {:?}",
+                                                    e
+                                                );
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    (HookTables::Scratch, _) => {
+                                        match Scratch::find_by_rowid(&db.pool, rowid).await {
+                                            Ok(Some(scratch)) => RecordTypes::Scratch(scratch),
+                                            Ok(None) => RecordTypes::DeletedScratch {
+                                                rowid,
+                                                scratch_id: None,
+                                                scratch_type: None,
+                                            },
+                                            Err(e) => {
+                                                tracing::error!("Failed to fetch scratch: {:?}", e);
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    (HookTables::Issues, _) => {
+                                        match db::models::issue::Issues::find_by_rowid(&db.pool, rowid)
                                             .await
                                         {
+                                            Ok(Some(issue)) => RecordTypes::Issue(issue),
+                                            Ok(None) => RecordTypes::DeletedIssue { rowid },
+                                            Err(e) => {
+                                                tracing::error!("读取 issue rowid={} 失败: {}", rowid, e);
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    (HookTables::ProjectStatuses, _) => {
+                                        match db::models::local_project_status::ProjectStatuses::find_by_rowid(
+                                            &db.pool, rowid,
+                                        )
+                                        .await
+                                        {
+                                            Ok(Some(status)) => RecordTypes::ProjectStatus(status),
+                                            Ok(None) => RecordTypes::DeletedProjectStatus { rowid },
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "读取 project_status rowid={} 失败: {}",
+                                                    rowid,
+                                                    e
+                                                );
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    (HookTables::IssueComments, _) => {
+                                        match db::models::issue_side::IssueComments::find_by_rowid(
+                                            &db.pool, rowid,
+                                        )
+                                        .await
+                                        {
+                                            Ok(Some(comment)) => RecordTypes::IssueComment(comment),
+                                            Ok(None) => RecordTypes::DeletedIssueComment { rowid },
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "读取 issue_comment rowid={} 失败: {}",
+                                                    rowid,
+                                                    e
+                                                );
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    (HookTables::PipelineRuns, _) => {
+                                        match db::models::pipeline::PipelineRuns::find_by_rowid(
+                                            &db.pool, rowid,
+                                        )
+                                        .await
+                                        {
+                                            Ok(Some(run)) => RecordTypes::PipelineRun(run),
+                                            Ok(None) => RecordTypes::DeletedPipelineRun { rowid },
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "读取 pipeline_run rowid={} 失败: {}",
+                                                    rowid,
+                                                    e
+                                                );
+                                                return;
+                                            }
+                                        }
+                                    }
+                                    (HookTables::PipelineStageRuns, _) => {
+                                        match db::models::pipeline::PipelineStageRuns::find_by_rowid(
+                                            &db.pool, rowid,
+                                        )
+                                        .await
+                                        {
+                                            Ok(Some(stage_run)) => {
+                                                RecordTypes::PipelineStageRun(stage_run)
+                                            }
+                                            Ok(None) => {
+                                                RecordTypes::DeletedPipelineStageRun { rowid }
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "读取 pipeline_stage_run rowid={} 失败: {}",
+                                                    rowid,
+                                                    e
+                                                );
+                                                return;
+                                            }
+                                        }
+                                    }
+                                };
+
+                                let db_op: &str = match hook.operation {
+                                    SqliteOperation::Insert => "insert",
+                                    SqliteOperation::Delete => "delete",
+                                    SqliteOperation::Update => "update",
+                                    SqliteOperation::Unknown(_) => "unknown",
+                                };
+
+                                // Handle operations with direct patches
+                                match &record_type {
+                                    RecordTypes::Scratch(scratch) => {
+                                        let patch = match hook.operation {
+                                            SqliteOperation::Insert => scratch_patch::add(scratch),
+                                            SqliteOperation::Update => scratch_patch::replace(scratch),
+                                            _ => scratch_patch::replace(scratch),
+                                        };
+                                        msg_store_for_hook.push_patch(patch);
+                                        return;
+                                    }
+                                    RecordTypes::DeletedScratch {
+                                        scratch_id: Some(scratch_id),
+                                        scratch_type: Some(scratch_type_str),
+                                        ..
+                                    } => {
+                                        let patch = scratch_patch::remove(*scratch_id, scratch_type_str);
+                                        msg_store_for_hook.push_patch(patch);
+                                        return;
+                                    }
+                                    RecordTypes::Workspace(workspace) => {
+                                        // Emit workspace patch with status
+                                        if let Ok(Some(workspace_with_status)) =
+                                            Workspace::find_by_id_with_status(&db.pool, workspace.id)
+                                                .await
+                                        {
+                                            let patch = match hook.operation {
+                                                SqliteOperation::Insert => {
+                                                    workspace_patch::add(&workspace_with_status)
+                                                }
+                                                _ => workspace_patch::replace(&workspace_with_status),
+                                            };
+                                            msg_store_for_hook.push_patch(patch);
+                                        }
+                                        return;
+                                    }
+                                    RecordTypes::DeletedWorkspace { .. } => {
+                                        return;
+                                    }
+                                    RecordTypes::ExecutionProcess(process) => {
+                                        let patch = match hook.operation {
+                                            SqliteOperation::Insert => {
+                                                execution_process_patch::add(process)
+                                            }
+                                            SqliteOperation::Update => {
+                                                execution_process_patch::replace(process)
+                                            }
+                                            _ => execution_process_patch::replace(process), // fallback
+                                        };
+                                        msg_store_for_hook.push_patch(patch);
+
+                                        if let Err(err) = EventService::push_workspace_update_for_session(
+                                            &db.pool,
+                                            msg_store_for_hook.clone(),
+                                            process.session_id,
+                                        )
+                                        .await
+                                        {
                                             tracing::error!(
-                                                "Failed to push workspace update after execution process removal: {:?}",
+                                                "Failed to push workspace update after execution process change: {:?}",
                                                 err
                                             );
-                                    }
-
-                                    return;
-                                }
-                                RecordTypes::Issue(issue) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => issue_patch::add(issue),
-                                        _ => issue_patch::replace(issue),
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
-                                }
-                                RecordTypes::ProjectStatus(status) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => project_status_patch::add(status),
-                                        _ => project_status_patch::replace(status),
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
-                                }
-                                RecordTypes::IssueComment(comment) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => issue_comment_patch::add(comment),
-                                        _ => issue_comment_patch::replace(comment),
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
-                                }
-                                RecordTypes::PipelineRun(run) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => pipeline_run_patch::add(run),
-                                        _ => pipeline_run_patch::replace(run),
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
-                                }
-                                RecordTypes::PipelineStageRun(stage_run) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => {
-                                            pipeline_stage_run_patch::add(stage_run)
                                         }
-                                        _ => pipeline_stage_run_patch::replace(stage_run),
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
+
+                                        return;
+                                    }
+                                    RecordTypes::DeletedExecutionProcess {
+                                        process_id: Some(process_id),
+                                        session_id,
+                                        ..
+                                    } => {
+                                        let patch = execution_process_patch::remove(*process_id);
+                                        msg_store_for_hook.push_patch(patch);
+
+                                        if let Some(session_id) = session_id
+                                            && let Err(err) =
+                                                EventService::push_workspace_update_for_session(
+                                                    &db.pool,
+                                                    msg_store_for_hook.clone(),
+                                                    *session_id,
+                                                )
+                                                .await
+                                            {
+                                                tracing::error!(
+                                                    "Failed to push workspace update after execution process removal: {:?}",
+                                                    err
+                                                );
+                                        }
+
+                                        return;
+                                    }
+                                    RecordTypes::Issue(issue) => {
+                                        let patch = match hook.operation {
+                                            SqliteOperation::Insert => issue_patch::add(issue),
+                                            _ => issue_patch::replace(issue),
+                                        };
+                                        msg_store_for_hook.push_patch(patch);
+                                        return;
+                                    }
+                                    RecordTypes::ProjectStatus(status) => {
+                                        let patch = match hook.operation {
+                                            SqliteOperation::Insert => project_status_patch::add(status),
+                                            _ => project_status_patch::replace(status),
+                                        };
+                                        msg_store_for_hook.push_patch(patch);
+                                        return;
+                                    }
+                                    RecordTypes::IssueComment(comment) => {
+                                        let patch = match hook.operation {
+                                            SqliteOperation::Insert => issue_comment_patch::add(comment),
+                                            _ => issue_comment_patch::replace(comment),
+                                        };
+                                        msg_store_for_hook.push_patch(patch);
+                                        return;
+                                    }
+                                    RecordTypes::PipelineRun(run) => {
+                                        let patch = match hook.operation {
+                                            SqliteOperation::Insert => pipeline_run_patch::add(run),
+                                            _ => pipeline_run_patch::replace(run),
+                                        };
+                                        msg_store_for_hook.push_patch(patch);
+                                        return;
+                                    }
+                                    RecordTypes::PipelineStageRun(stage_run) => {
+                                        let patch = match hook.operation {
+                                            SqliteOperation::Insert => {
+                                                pipeline_stage_run_patch::add(stage_run)
+                                            }
+                                            _ => pipeline_stage_run_patch::replace(stage_run),
+                                        };
+                                        msg_store_for_hook.push_patch(patch);
+                                        return;
+                                    }
+                                    // 删除已由 preupdate 推过 remove，这里不再走旧的 entries 兜底格式。
+                                    RecordTypes::DeletedPipelineRun { .. }
+                                    | RecordTypes::DeletedPipelineStageRun { .. } => {
+                                        return;
+                                    }
+                                    _ => {}
                                 }
-                                // 删除已由 preupdate 推过 remove，这里不再走旧的 entries 兜底格式。
-                                RecordTypes::DeletedPipelineRun { .. }
-                                | RecordTypes::DeletedPipelineStageRun { .. } => {
-                                    return;
-                                }
-                                _ => {}
+
+                                // Fallback: use the old entries format for other record types
+                                let next_entry_count = {
+                                    let mut entry_count = entry_count_for_hook.write().await;
+                                    *entry_count += 1;
+                                    *entry_count
+                                };
+
+                                let event_patch: EventPatch = EventPatch {
+                                    op: "add".to_string(),
+                                    path: format!("/entries/{next_entry_count}"),
+                                    value: EventPatchInner {
+                                        db_op: db_op.to_string(),
+                                        record: record_type,
+                                    },
+                                };
+
+                                let patch =
+                                    serde_json::from_value(json!([
+                                        serde_json::to_value(event_patch).unwrap()
+                                    ]))
+                                    .unwrap();
+
+                                msg_store_for_hook.push_patch(patch);
                             }
-
-                            // Fallback: use the old entries format for other record types
-                            let next_entry_count = {
-                                let mut entry_count = entry_count_for_hook.write().await;
-                                *entry_count += 1;
-                                *entry_count
-                            };
-
-                            let event_patch: EventPatch = EventPatch {
-                                op: "add".to_string(),
-                                path: format!("/entries/{next_entry_count}"),
-                                value: EventPatchInner {
-                                    db_op: db_op.to_string(),
-                                    record: record_type,
-                                },
-                            };
-
-                            let patch =
-                                serde_json::from_value(json!([
-                                    serde_json::to_value(event_patch).unwrap()
-                                ]))
-                                .unwrap();
-
-                            msg_store_for_hook.push_patch(patch);
+                            .await;
+                            // 只读，回滚即可；回滚失败时 sqlx 在连接归还前会再补一次回滚。
+                            if let Err(e) = barrier.rollback().await {
+                                tracing::error!("释放变更推送屏障失败: {}", e);
+                            }
                         });
                     }
                 });
@@ -956,5 +1008,82 @@ mod tests {
         })
         .await
         .expect("应收到本项目流水线的增量");
+    }
+
+    /// 回归：钩子在语句执行时（提交之前）就触发。反查若不等提交，UPDATE 会推出旧值、
+    /// INSERT 会查不到行而丢掉 add。这里让写事务故意晚 200ms 提交，稳定复现。
+    #[tokio::test]
+    async fn 写事务延迟提交时_replace_补丁带的是提交后的值() {
+        use db::models::pipeline::PipelineRuns;
+
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+        let run = PipelineRuns::create(&pool, &run_params(project_id, issue_id))
+            .await
+            .unwrap();
+        let run_path = format!("/pipeline_runs/{}", run.id);
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("UPDATE pipeline_runs SET status = 'paused' WHERE id = ?1")
+            .bind(run.id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tx.commit().await.unwrap();
+
+        let replace = wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path && matches!(op, PatchOperation::Replace(_))
+        })
+        .await;
+        let PatchOperation::Replace(replace) = replace else {
+            unreachable!()
+        };
+        assert_eq!(
+            replace.value["status"], "paused",
+            "反查必须等写事务提交后再读，不能推出提交前的旧值"
+        );
+    }
+
+    #[tokio::test]
+    async fn 写事务延迟提交时_insert_仍产出_add_补丁() {
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+
+        let run_id = Uuid::new_v4();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO pipeline_runs (id, issue_id, project_id, template_key, \
+             template_version, template_json, executor_config, status, current_stage_key, \
+             created_at, updated_at) \
+             VALUES (?1, ?2, ?3, 'standard', 1, '{}', '{}', 'running', 'requirement', ?4, ?4)",
+        )
+        .bind(run_id)
+        .bind(issue_id)
+        .bind(project_id)
+        .bind(chrono::Utc::now())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tx.commit().await.unwrap();
+
+        let run_path = format!("/pipeline_runs/{run_id}");
+        let add = wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+        let PatchOperation::Add(add) = add else {
+            unreachable!()
+        };
+        assert_eq!(add.value["status"], "running");
     }
 }
