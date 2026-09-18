@@ -198,3 +198,11 @@ develop 阶段不产出文件，关卡看 `checks`。**（C3）** `repos` 表没
 「第一次」按产出物目录里是否已存在同名文件的旧版本来判断（模拟器把旧文件改名为 `*.prev` 再写新文件）。
 
 **（C9）** 模拟器识别到上面两行（目录必须是绝对路径）即进入流水线模式：只写产出物，**不做**原来的随机删改文件；日志每行间隔 0.1 秒（原 1 秒）。标记从提示词的「需求：」行读取（引擎把 `{simple_id} {标题}` 写在这一行，标题压成单行）。提示词常量与解析函数在 `crates/executors/src/pipeline_prompt.rs`，引擎与模拟器共用。
+
+## 6. 补充修订（2026-09-18，汇总计划 B 的疑问后由主控决定）
+
+- **C10 `gate_condition`**：`PipelineTemplateStageView` 增加 `pub gate_condition: Option<String>`——自动关卡时为判定名（`checks_passed` / `no_blocking_findings` / `all_cases_passed` / `artifacts_present`），人工关卡与无关卡时为 `None`。前端按它显示「通过条件」文案，不再按阶段 key 写死。
+- **C11 等待起点**：阶段进入 `waiting_gate` 或 `failed` 时写 `finished_at`（= 执行结束时刻）。工作台「等了多久」用 `stage_run.finished_at`，不新增字段。
+- **C12 暂停中的关卡决策**：运行为 `paused` 时 `gate` 接口照常受理（不返回 409）：决策落库；通过则下一阶段新尝试建成 `pending`（与行为总表「进入阶段 | 运行 paused」一致），打回则同阶段新尝试建成 `pending`。
+- **C13 路由契约测试**：`crates/server/src/routes/local_projects/mod.rs` 的「前端用到的本地端点都挂上了路由」测试把 `packages/web-core/src/entities/pipeline/api/pipelineApi.ts` 纳入扫描，前端的占位参数统一映射成 `{id}` 再比对（计划 A 任务 18 落实；若计划 B 的文件晚于它落地，则在计划 B 任务 12 里补上）。
+- 「打回到任意阶段」（rewind）接口不做：看板运行中禁止跨列拖，已停的只允许往回拖且只改列。
