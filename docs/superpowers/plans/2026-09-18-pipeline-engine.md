@@ -2958,7 +2958,10 @@ EOF
         let path_b = format!("/pipeline_runs/{}", run_b.id);
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let Some(Ok(LogMsg::JsonPatch(patch))) = stream.next().await else {
+                let Some(msg) = stream.next().await else {
+                    panic!("需求流意外结束");
+                };
+                let Ok(LogMsg::JsonPatch(patch)) = msg else {
                     continue;
                 };
                 let path = patch.0[0].path().to_string();
