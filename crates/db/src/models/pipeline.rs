@@ -744,7 +744,9 @@ impl PipelineStageRuns {
         Ok(())
     }
 
-    /// 改尝试状态。summary / error 为 None 时保持原值；进入终态时写 finished_at。
+    /// 改尝试状态。summary / error 为 None 时保持原值。
+    /// finished_at 表示「执行结束时刻」（契约修订 C11）：进入 waiting_gate 或终态时写入，
+    /// 已有值不覆盖（waiting_gate → passed / rejected 保留进入等待的时刻）。
     pub async fn set_status(
         pool: &SqlitePool,
         id: Uuid,
@@ -755,8 +757,8 @@ impl PipelineStageRuns {
         let sql = format!(
             "UPDATE pipeline_stage_runs SET status = ?2, summary = COALESCE(?3, summary), \
              error = COALESCE(?4, error), \
-             finished_at = CASE WHEN ?2 IN ('passed', 'rejected', 'failed', 'skipped') \
-                                THEN ?5 ELSE finished_at END \
+             finished_at = CASE WHEN ?2 IN ('waiting_gate', 'passed', 'rejected', 'failed', 'skipped') \
+                                THEN COALESCE(finished_at, ?5) ELSE finished_at END \
              WHERE id = ?1 RETURNING {STAGE_COLUMNS}"
         );
         sqlx::query_as::<_, PipelineStageRun>(&sql)
@@ -1142,7 +1144,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn 终态写结束时间而等待确认不写() {
+    async fn 进入等待确认或失败即写结束时间且后续转终态不覆盖() {
         let test_db = TestDb::new().await;
         let issue = 准备需求(&test_db, "终态").await;
         let run = PipelineRuns::create(test_db.pool(), &建运行参数(&issue))
@@ -1158,7 +1160,9 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(stage.finished_at.is_none(), "running 不写结束时间");
 
+        // C11：finished_at 表示「执行结束时刻」，进入 waiting_gate 就写。
         let waiting = PipelineStageRuns::set_status(
             test_db.pool(),
             stage.id,
@@ -1168,25 +1172,50 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(waiting.finished_at.is_none());
+        assert!(
+            waiting.finished_at.is_some(),
+            "进入 waiting_gate 写结束时间"
+        );
         assert_eq!(waiting.summary.as_deref(), Some("等待人工确认"));
 
-        let rejected = PipelineStageRuns::set_status(
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let passed = PipelineStageRuns::set_status(
             test_db.pool(),
             stage.id,
-            PipelineStageStatus::Rejected,
+            PipelineStageStatus::Passed,
             None,
-            Some("补充验收标准"),
+            None,
         )
         .await
         .unwrap();
-        assert!(rejected.finished_at.is_some());
         assert_eq!(
-            rejected.summary.as_deref(),
+            passed.finished_at, waiting.finished_at,
+            "人工通过不覆盖执行结束时刻"
+        );
+        assert_eq!(
+            passed.summary.as_deref(),
             Some("等待人工确认"),
             "None 不覆盖原值"
         );
-        assert_eq!(rejected.error.as_deref(), Some("补充验收标准"));
+
+        // failed 同样写结束时间，error 按传入值落库。
+        let second = PipelineStageRuns::create(
+            test_db.pool(),
+            &建阶段参数(&run, PipelineStageKey::Spec, PipelineStageStatus::Running),
+        )
+        .await
+        .unwrap();
+        let failed = PipelineStageRuns::set_status(
+            test_db.pool(),
+            second.id,
+            PipelineStageStatus::Failed,
+            None,
+            Some("进程退出码 1"),
+        )
+        .await
+        .unwrap();
+        assert!(failed.finished_at.is_some(), "进入 failed 写结束时间");
+        assert_eq!(failed.error.as_deref(), Some("进程退出码 1"));
     }
 
     #[tokio::test]
