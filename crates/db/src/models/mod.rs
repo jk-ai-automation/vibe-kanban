@@ -11,6 +11,7 @@ pub mod local_project;
 pub mod local_project_status;
 pub mod local_user;
 pub mod merge;
+pub mod pipeline;
 pub mod project;
 pub mod pull_request;
 pub mod repo;
