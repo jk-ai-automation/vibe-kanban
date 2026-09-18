@@ -21,8 +21,8 @@ mod streams;
 pub mod types;
 
 pub use patches::{
-    execution_process_patch, issue_comment_patch, issue_patch, project_status_patch, scratch_patch,
-    workspace_patch,
+    execution_process_patch, issue_comment_patch, issue_patch, pipeline_run_patch,
+    pipeline_stage_run_patch, project_status_patch, scratch_patch, workspace_patch,
 };
 pub use types::{EventError, EventPatch, EventPatchInner, HookTables, RecordTypes};
 
@@ -138,6 +138,23 @@ impl EventService {
                                         .push_patch(issue_comment_patch::remove(comment_id));
                                 }
                             }
+                            "pipeline_runs" => {
+                                if let Ok(value) = preupdate.get_old_column_value(0)
+                                    && let Ok(run_id) = <Uuid as Decode<Sqlite>>::decode(value)
+                                {
+                                    msg_store_for_preupdate
+                                        .push_patch(pipeline_run_patch::remove(run_id));
+                                }
+                            }
+                            "pipeline_stage_runs" => {
+                                if let Ok(value) = preupdate.get_old_column_value(0)
+                                    && let Ok(stage_run_id) =
+                                        <Uuid as Decode<Sqlite>>::decode(value)
+                                {
+                                    msg_store_for_preupdate
+                                        .push_patch(pipeline_stage_run_patch::remove(stage_run_id));
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -158,7 +175,9 @@ impl EventService {
                                 | (HookTables::Scratch, SqliteOperation::Delete)
                                 | (HookTables::Issues, SqliteOperation::Delete)
                                 | (HookTables::ProjectStatuses, SqliteOperation::Delete)
-                                | (HookTables::IssueComments, SqliteOperation::Delete) => {
+                                | (HookTables::IssueComments, SqliteOperation::Delete)
+                                | (HookTables::PipelineRuns, SqliteOperation::Delete)
+                                | (HookTables::PipelineStageRuns, SqliteOperation::Delete) => {
                                     return;
                                 }
                                 (HookTables::Workspaces, _) => {
@@ -248,6 +267,46 @@ impl EventService {
                                         Err(e) => {
                                             tracing::error!(
                                                 "读取 issue_comment rowid={} 失败: {}",
+                                                rowid,
+                                                e
+                                            );
+                                            return;
+                                        }
+                                    }
+                                }
+                                (HookTables::PipelineRuns, _) => {
+                                    match db::models::pipeline::PipelineRuns::find_by_rowid(
+                                        &db.pool, rowid,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some(run)) => RecordTypes::PipelineRun(run),
+                                        Ok(None) => RecordTypes::DeletedPipelineRun { rowid },
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "读取 pipeline_run rowid={} 失败: {}",
+                                                rowid,
+                                                e
+                                            );
+                                            return;
+                                        }
+                                    }
+                                }
+                                (HookTables::PipelineStageRuns, _) => {
+                                    match db::models::pipeline::PipelineStageRuns::find_by_rowid(
+                                        &db.pool, rowid,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Some(stage_run)) => {
+                                            RecordTypes::PipelineStageRun(stage_run)
+                                        }
+                                        Ok(None) => {
+                                            RecordTypes::DeletedPipelineStageRun { rowid }
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "读取 pipeline_stage_run rowid={} 失败: {}",
                                                 rowid,
                                                 e
                                             );
@@ -379,6 +438,29 @@ impl EventService {
                                     msg_store_for_hook.push_patch(patch);
                                     return;
                                 }
+                                RecordTypes::PipelineRun(run) => {
+                                    let patch = match hook.operation {
+                                        SqliteOperation::Insert => pipeline_run_patch::add(run),
+                                        _ => pipeline_run_patch::replace(run),
+                                    };
+                                    msg_store_for_hook.push_patch(patch);
+                                    return;
+                                }
+                                RecordTypes::PipelineStageRun(stage_run) => {
+                                    let patch = match hook.operation {
+                                        SqliteOperation::Insert => {
+                                            pipeline_stage_run_patch::add(stage_run)
+                                        }
+                                        _ => pipeline_stage_run_patch::replace(stage_run),
+                                    };
+                                    msg_store_for_hook.push_patch(patch);
+                                    return;
+                                }
+                                // 删除已由 preupdate 推过 remove，这里不再走旧的 entries 兜底格式。
+                                RecordTypes::DeletedPipelineRun { .. }
+                                | RecordTypes::DeletedPipelineStageRun { .. } => {
+                                    return;
+                                }
                                 _ => {}
                             }
 
@@ -496,6 +578,44 @@ mod tests {
 
     fn patch_path(op: &PatchOperation) -> &str {
         op.path().as_str()
+    }
+
+    async fn insert_issue(pool: &sqlx::SqlitePool, project_id: Uuid, status_id: Uuid) -> Uuid {
+        let issue_id = Uuid::new_v4();
+        let number: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(issue_number), 0) + 1 FROM issues WHERE project_id = ?1",
+        )
+        .bind(project_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO issues (id, project_id, issue_number, simple_id, status_id, title) \
+             VALUES (?1, ?2, ?3, ?4, ?5, '流水线推送测试')",
+        )
+        .bind(issue_id)
+        .bind(project_id)
+        .bind(number)
+        .bind(format!("PL-{number}"))
+        .bind(status_id)
+        .execute(pool)
+        .await
+        .expect("插入 issue 失败");
+        issue_id
+    }
+
+    fn run_params(project_id: Uuid, issue_id: Uuid) -> db::models::pipeline::CreatePipelineRun {
+        db::models::pipeline::CreatePipelineRun {
+            issue_id,
+            project_id,
+            workspace_id: None,
+            template_key: "standard".to_string(),
+            template_version: 1,
+            template_json: "{}".to_string(),
+            template_warning: None,
+            executor_config_json: "{}".to_string(),
+            first_stage: db::models::pipeline::PipelineStageKey::Requirement,
+        }
     }
 
     /// `update_hook` 里用 `runtime_handle.spawn` 异步反查再 push patch（:154），
@@ -688,5 +808,150 @@ mod tests {
 
         let op = wait_for_patch(&msg_store, |op| patch_path(op) == "/probe").await;
         assert!(matches!(op, PatchOperation::Add(_)));
+    }
+
+    #[tokio::test]
+    async fn 流水线运行与阶段的增改删都产出_json_patch() {
+        use db::models::pipeline::{
+            CreateStageRun, GateKind, PipelineRunStatus, PipelineRuns, PipelineStageKey,
+            PipelineStageRuns, PipelineStageStatus,
+        };
+
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+
+        let run = PipelineRuns::create(&pool, &run_params(project_id, issue_id))
+            .await
+            .unwrap();
+        let run_path = format!("/pipeline_runs/{}", run.id);
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+
+        PipelineRuns::update_status(&pool, run.id, PipelineRunStatus::Paused, None)
+            .await
+            .unwrap();
+        let replace = wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path
+                && matches!(op, PatchOperation::Replace(r) if r.value["status"] == "paused")
+        })
+        .await;
+        let PatchOperation::Replace(replace) = replace else {
+            unreachable!()
+        };
+        assert_eq!(replace.value["project_id"], project_id.to_string());
+
+        let stage = PipelineStageRuns::create(
+            &pool,
+            &CreateStageRun {
+                run_id: run.id,
+                project_id,
+                stage_key: PipelineStageKey::Requirement,
+                gate_kind: GateKind::Human,
+                status: PipelineStageStatus::Running,
+                feedback: None,
+            },
+        )
+        .await
+        .unwrap();
+        let stage_path = format!("/pipeline_stage_runs/{}", stage.id);
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == stage_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+
+        sqlx::query("DELETE FROM pipeline_stage_runs WHERE id = ?1")
+            .bind(stage.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == stage_path && matches!(op, PatchOperation::Remove(_))
+        })
+        .await;
+
+        sqlx::query("DELETE FROM pipeline_runs WHERE id = ?1")
+            .bind(run.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path && matches!(op, PatchOperation::Remove(_))
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn 需求流首帧带流水线快照且只转发本项目的流水线增量() {
+        use db::models::pipeline::PipelineRuns;
+        use futures::StreamExt;
+
+        use super::pipeline_run_patch;
+
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_a, status_a) = insert_project_and_status(&pool).await;
+        let (project_b, status_b) = insert_project_and_status(&pool).await;
+        let issue_a = insert_issue(&pool, project_a, status_a).await;
+        let issue_b = insert_issue(&pool, project_b, status_b).await;
+        let run_a = PipelineRuns::create(&pool, &run_params(project_a, issue_a))
+            .await
+            .unwrap();
+        let run_b = PipelineRuns::create(&pool, &run_params(project_b, issue_b))
+            .await
+            .unwrap();
+
+        let events = EventService::new(
+            fixture.db.clone(),
+            fixture.msg_store.clone(),
+            Arc::new(RwLock::new(0)),
+        );
+        let mut stream = events.stream_issues_raw(project_a).await.unwrap();
+
+        let Some(Ok(LogMsg::JsonPatch(first))) = stream.next().await else {
+            panic!("首帧应是 JSON Patch");
+        };
+        let snapshot = serde_json::to_value(&first).unwrap();
+        let ops = snapshot.as_array().unwrap();
+        let runs_op = ops
+            .iter()
+            .find(|op| op["path"] == "/pipeline_runs")
+            .expect("首帧必须带 /pipeline_runs");
+        assert!(runs_op["value"].get(run_a.id.to_string()).is_some());
+        assert!(
+            runs_op["value"].get(run_b.id.to_string()).is_none(),
+            "首帧不得带别的项目的运行"
+        );
+        assert!(
+            ops.iter().any(|op| op["path"] == "/pipeline_stage_runs"),
+            "首帧必须带 /pipeline_stage_runs"
+        );
+
+        fixture
+            .msg_store
+            .push_patch(pipeline_run_patch::replace(&run_b));
+        fixture
+            .msg_store
+            .push_patch(pipeline_run_patch::replace(&run_a));
+
+        let path_a = format!("/pipeline_runs/{}", run_a.id);
+        let path_b = format!("/pipeline_runs/{}", run_b.id);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let Some(Ok(LogMsg::JsonPatch(patch))) = stream.next().await else {
+                    continue;
+                };
+                let path = patch.0[0].path().to_string();
+                assert_ne!(path, path_b, "不得转发别的项目的流水线");
+                if path == path_a {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("应收到本项目流水线的增量");
     }
 }
