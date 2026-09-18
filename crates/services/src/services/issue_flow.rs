@@ -2,7 +2,9 @@
 //! 所有入口都以「工作区 → 绑定需求」为起点；工作区未绑定需求时静默跳过，
 //! 因此团队版（需求在云端）不会被影响。
 
-use db::models::{issue::Issues, local_project_status::StageType, workspace::Workspace};
+use db::models::{
+    issue::Issues, local_project_status::StageType, pipeline::PipelineRuns, workspace::Workspace,
+};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -38,6 +40,13 @@ pub async fn advance_issue_for_workspace(
     let Some(issue_id) = workspace.issue_id else {
         return Ok(false);
     };
+
+    // 需求有未结束的流水线时，阶段只由流水线引擎写（设计 §6.4），这里让路，避免双写。
+    // 覆盖全部调用方：建 PR（routes/workspaces/pr.rs）、合并（git.rs）、PR 监控（pr_monitor.rs）。
+    if PipelineRuns::has_active_for_issue(pool, issue_id).await? {
+        tracing::debug!("需求 {} 有未结束的流水线，跳过自动流转", issue_id);
+        return Ok(false);
+    }
 
     match Issues::move_to_stage(pool, issue_id, stage.into()).await {
         Ok(Some(_)) => Ok(true),
@@ -224,5 +233,45 @@ mod tests {
             .unwrap();
         assert_eq!(first.status_id, done.id);
         assert_eq!(second.status_id, done.id);
+    }
+
+    #[tokio::test]
+    async fn 需求有未结束的流水线时不自动流转() {
+        use db::models::pipeline::{CreatePipelineRun, PipelineRuns, PipelineStageKey};
+
+        let test_db = TestDb::new().await;
+        let (project_id, issue_id, workspace_id) = 准备(&test_db).await;
+        PipelineRuns::create(
+            test_db.pool(),
+            &CreatePipelineRun {
+                issue_id,
+                project_id,
+                workspace_id: Some(workspace_id),
+                template_key: "standard".to_string(),
+                template_version: 1,
+                template_json: "{}".to_string(),
+                template_warning: None,
+                executor_config_json: "{}".to_string(),
+                first_stage: PipelineStageKey::Requirement,
+            },
+        )
+        .await
+        .unwrap();
+
+        let moved =
+            advance_issue_for_workspace(test_db.pool(), workspace_id, IssueFlowStage::Review)
+                .await
+                .unwrap();
+        assert!(!moved, "流水线在跑时 issue_flow 必须让路");
+
+        let todo = ProjectStatuses::find_stage(test_db.pool(), project_id, StageType::Todo)
+            .await
+            .unwrap()
+            .unwrap();
+        let issue = Issues::find_by_id(test_db.pool(), issue_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(issue.status_id, todo.id, "需求列不应被改动");
     }
 }

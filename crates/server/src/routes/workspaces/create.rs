@@ -212,6 +212,41 @@ fn rewrite_imported_issue_attachments_markdown(
     rewritten
 }
 
+/// 把本地需求绑定到工作区；需求没有未结束的流水线时顺带推进到「开发中」。
+/// 流水线在跑时只绑定不流转：阶段由流水线引擎独占写（设计 §6.4）。
+pub(crate) async fn link_local_issue(
+    pool: &sqlx::SqlitePool,
+    workspace_id: Uuid,
+    issue_id: Uuid,
+) -> Result<(), ApiError> {
+    Workspace::set_issue_id(pool, workspace_id, Some(issue_id))
+        .await
+        .map_err(ApiError::Database)?;
+
+    match db::models::pipeline::PipelineRuns::has_active_for_issue(pool, issue_id).await {
+        Ok(true) => {
+            tracing::debug!("需求 {} 有未结束的流水线，建工作区时不改需求列", issue_id);
+            return Ok(());
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!("查询需求 {} 的流水线失败，跳过自动流转: {}", issue_id, e);
+            return Ok(());
+        }
+    }
+
+    if let Err(e) = db::models::issue::Issues::move_to_stage(
+        pool,
+        issue_id,
+        db::models::local_project_status::StageType::Dev,
+    )
+    .await
+    {
+        tracing::warn!("需求 {} 流转到开发中失败: {}", issue_id, e);
+    }
+    Ok(())
+}
+
 pub async fn create_and_start_workspace(
     State(deployment): State<DeploymentImpl>,
     current_user: crate::middleware::local_session::CurrentUser,
@@ -264,23 +299,12 @@ pub async fn create_and_start_workspace(
     };
 
     if let Some(issue) = &local_issue {
-        db::models::workspace::Workspace::set_issue_id(
+        link_local_issue(
             &deployment.db().pool,
             managed_workspace.workspace.id,
-            Some(issue.id),
-        )
-        .await
-        .map_err(ApiError::Database)?;
-
-        if let Err(e) = db::models::issue::Issues::move_to_stage(
-            &deployment.db().pool,
             issue.id,
-            db::models::local_project_status::StageType::Dev,
         )
-        .await
-        {
-            tracing::warn!("需求 {} 流转到开发中失败: {}", issue.id, e);
-        }
+        .await?;
     }
 
     if local_issue.is_none()
@@ -593,5 +617,145 @@ mod tests {
                 .issue_id,
             Some(issue.id)
         );
+    }
+
+    async fn 准备本地需求与工作区(
+        test_db: &db::test_support::TestDb,
+    ) -> (Uuid, Uuid, Uuid) {
+        use api_types::{issue::CreateIssueRequest, project::CreateProjectRequest};
+        use db::models::{
+            issue::Issues,
+            local_project::{DEFAULT_ORGANIZATION_ID, DEFAULT_USER_ID, LocalProjects},
+            local_project_status::{ProjectStatuses, StageType},
+            workspace::{CreateWorkspace, Workspace},
+        };
+
+        let project = LocalProjects::create(
+            test_db.pool(),
+            &CreateProjectRequest {
+                id: None,
+                organization_id: DEFAULT_ORGANIZATION_ID,
+                name: "Vibe Kanban".to_string(),
+                color: "#6366f1".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let todo = ProjectStatuses::find_stage(test_db.pool(), project.id, StageType::Todo)
+            .await
+            .unwrap()
+            .unwrap();
+        let issue = Issues::create(
+            test_db.pool(),
+            &CreateIssueRequest {
+                id: None,
+                project_id: project.id,
+                status_id: todo.id,
+                title: "示例".to_string(),
+                description: None,
+                priority: None,
+                start_date: None,
+                target_date: None,
+                completed_at: None,
+                sort_order: 0.0,
+                parent_issue_id: None,
+                parent_issue_sort_order: None,
+                extension_metadata: serde_json::json!({}),
+            },
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        let workspace = Workspace::create(
+            test_db.pool(),
+            &CreateWorkspace {
+                branch: "vk/demo".to_string(),
+                name: None,
+            },
+            Uuid::new_v4(),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        (project.id, issue.id, workspace.id)
+    }
+
+    #[tokio::test]
+    async fn link_local_issue_无流水线时绑定并推进到开发中() {
+        use db::models::{
+            issue::Issues,
+            local_project_status::{ProjectStatuses, StageType},
+            workspace::Workspace,
+        };
+
+        let test_db = db::test_support::TestDb::new().await;
+        let (project_id, issue_id, workspace_id) = 准备本地需求与工作区(&test_db).await;
+
+        super::link_local_issue(test_db.pool(), workspace_id, issue_id)
+            .await
+            .unwrap();
+
+        let dev = ProjectStatuses::find_stage(test_db.pool(), project_id, StageType::Dev)
+            .await
+            .unwrap()
+            .unwrap();
+        let issue = Issues::find_by_id(test_db.pool(), issue_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(issue.status_id, dev.id);
+        let workspace = Workspace::find_by_id(test_db.pool(), workspace_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(workspace.issue_id, Some(issue_id));
+    }
+
+    #[tokio::test]
+    async fn link_local_issue_有未结束流水线时只绑定不流转() {
+        use db::models::{
+            issue::Issues,
+            local_project_status::{ProjectStatuses, StageType},
+            pipeline::{CreatePipelineRun, PipelineRuns, PipelineStageKey},
+            workspace::Workspace,
+        };
+
+        let test_db = db::test_support::TestDb::new().await;
+        let (project_id, issue_id, workspace_id) = 准备本地需求与工作区(&test_db).await;
+        PipelineRuns::create(
+            test_db.pool(),
+            &CreatePipelineRun {
+                issue_id,
+                project_id,
+                workspace_id: None,
+                template_key: "standard".to_string(),
+                template_version: 1,
+                template_json: "{}".to_string(),
+                template_warning: None,
+                executor_config_json: "{}".to_string(),
+                first_stage: PipelineStageKey::Requirement,
+            },
+        )
+        .await
+        .unwrap();
+
+        super::link_local_issue(test_db.pool(), workspace_id, issue_id)
+            .await
+            .unwrap();
+
+        let todo = ProjectStatuses::find_stage(test_db.pool(), project_id, StageType::Todo)
+            .await
+            .unwrap()
+            .unwrap();
+        let issue = Issues::find_by_id(test_db.pool(), issue_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(issue.status_id, todo.id, "流水线在跑时不得改需求列");
+        let workspace = Workspace::find_by_id(test_db.pool(), workspace_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(workspace.issue_id, Some(issue_id), "绑定照常");
     }
 }
