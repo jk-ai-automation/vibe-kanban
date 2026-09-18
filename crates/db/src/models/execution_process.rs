@@ -56,6 +56,10 @@ pub enum ExecutionProcessRunReason {
     ArchiveScript,
     CodingAgent,
     DevServer,
+    /// 流水线引擎自己跑的检查脚本（开发阶段的 checks）。库内值 `pipelinestep`，
+    /// 迁移 20260918000000_add_pipeline.sql 放开了 CHECK。
+    /// 流水线阶段的编码智能体进程仍然是 `CodingAgent`，见计划 A §4 纠正 1。
+    PipelineStep,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, TS)]
@@ -678,5 +682,82 @@ impl ExecutionProcess {
         .await?;
 
         Ok(rows.into_iter().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use executors::actions::{
+        ExecutorAction, ExecutorActionType,
+        script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
+    };
+    use uuid::Uuid;
+
+    use super::{CreateExecutionProcess, ExecutionProcess, ExecutionProcessRunReason};
+    use crate::{
+        models::{
+            local_project::DEFAULT_USER_ID,
+            session::{CreateSession, Session},
+            workspace::{CreateWorkspace, Workspace},
+        },
+        test_support::TestDb,
+    };
+
+    #[test]
+    fn pipeline_step_序列化为全小写() {
+        assert_eq!(
+            serde_json::to_value(ExecutionProcessRunReason::PipelineStep).unwrap(),
+            "pipelinestep"
+        );
+    }
+
+    #[tokio::test]
+    async fn pipeline_step_进程可以落库并读回() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.pool();
+        let workspace = Workspace::create(
+            pool,
+            &CreateWorkspace {
+                branch: "vk/pipeline".to_string(),
+                name: None,
+            },
+            Uuid::new_v4(),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        let session = Session::create(
+            pool,
+            &CreateSession {
+                executor: None,
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+        let action = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "set -e\ntrue\n".to_string(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::PipelineCheck,
+                working_dir: None,
+            }),
+            None,
+        );
+        let process = ExecutionProcess::create(
+            pool,
+            &CreateExecutionProcess {
+                session_id: session.id,
+                executor_action: action,
+                run_reason: ExecutionProcessRunReason::PipelineStep,
+            },
+            Uuid::new_v4(),
+            &[],
+        )
+        .await
+        .expect("PipelineStep 进程应能落库");
+        assert_eq!(process.run_reason, ExecutionProcessRunReason::PipelineStep);
     }
 }

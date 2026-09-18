@@ -25,6 +25,8 @@ pub enum ScriptContext {
     ArchiveScript,
     DevServer,
     ToolInstallScript,
+    /// 流水线开发阶段的检查脚本（模板 `checks`）。
+    PipelineCheck,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
