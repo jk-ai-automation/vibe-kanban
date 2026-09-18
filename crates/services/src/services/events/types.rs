@@ -17,7 +17,7 @@ pub enum EventError {
     Other(#[from] AnyhowError), // Catches any unclassified errors
 }
 
-#[derive(EnumString, Display)]
+#[derive(EnumString, Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HookTables {
     #[strum(to_string = "workspaces")]
     Workspaces,
