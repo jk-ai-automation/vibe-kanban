@@ -574,4 +574,137 @@ mod tests {
             "run_reason 相关的 3 个索引必须重建，实际：{indexes:?}"
         );
     }
+
+    /// `20260918000000_add_pipeline.sql` 重建了 execution_processes.run_reason 列：
+    /// 在只跑到它之前的旧库上造三条不同 run_reason 的进程，升级后数据与 run_reason 必须原样保留。
+    #[tokio::test]
+    async fn 流水线迁移保留已有执行进程的数据与_run_reason() {
+        use sqlx::Row;
+
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let path = dir.path().join("legacy_pipeline.sqlite");
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete);
+        let pool = sqlx::SqlitePool::connect_with(options)
+            .await
+            .expect("连接失败");
+
+        // 只跑到流水线迁移之前，模拟升级前的库。
+        let migrator = sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+            .await
+            .expect("读取迁移目录失败");
+        let legacy: Vec<_> = migrator
+            .iter()
+            .filter(|m| m.version < 20260918000000)
+            .cloned()
+            .collect();
+        assert!(
+            migrator.iter().any(|m| m.version == 20260918000000),
+            "迁移目录里应有流水线迁移"
+        );
+        let mut legacy_migrator =
+            sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+                .await
+                .expect("读取迁移目录失败");
+        legacy_migrator.migrations = legacy.into();
+        legacy_migrator.run(&pool).await.expect("旧迁移应成功");
+
+        let session_id = 建会话(&pool).await;
+        let rows = [
+            (
+                uuid::Uuid::new_v4(),
+                "codingagent",
+                "completed",
+                Some(0_i64),
+                r#"{"k":"agent"}"#,
+            ),
+            (
+                uuid::Uuid::new_v4(),
+                "archivescript",
+                "failed",
+                Some(2),
+                r#"{"k":"archive"}"#,
+            ),
+            (
+                uuid::Uuid::new_v4(),
+                "devserver",
+                "running",
+                None,
+                r#"{"k":"dev"}"#,
+            ),
+        ];
+        for (id, run_reason, status, exit_code, action) in &rows {
+            sqlx::query(
+                "INSERT INTO execution_processes \
+                 (id, session_id, run_reason, executor_action, status, exit_code, \
+                  started_at, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, '2026-09-01T00:00:00Z', \
+                         '2026-09-01T00:00:00Z', '2026-09-01T00:00:01Z')",
+            )
+            .bind(id)
+            .bind(session_id)
+            .bind(run_reason)
+            .bind(action)
+            .bind(status)
+            .bind(exit_code)
+            .execute(&pool)
+            .await
+            .expect("旧库插入执行进程失败");
+        }
+        // 旧库的 CHECK 还不认识 pipelinestep。
+        assert!(
+            sqlx::query(
+                "INSERT INTO execution_processes (id, session_id, run_reason) VALUES (?1, ?2, 'pipelinestep')",
+            )
+            .bind(uuid::Uuid::new_v4())
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .is_err(),
+            "升级前 pipelinestep 应被拒绝"
+        );
+
+        migrator
+            .run(&pool)
+            .await
+            .expect("流水线迁移应能应用在旧库上");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_processes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 3, "升级不增不减执行进程");
+        for (id, run_reason, status, exit_code, action) in &rows {
+            let row = sqlx::query(
+                "SELECT session_id, run_reason, executor_action, status, exit_code, \
+                        started_at, created_at, updated_at \
+                 FROM execution_processes WHERE id = ?1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .expect("升级后执行进程应仍在");
+            assert_eq!(row.get::<uuid::Uuid, _>("session_id"), session_id);
+            assert_eq!(row.get::<String, _>("run_reason"), *run_reason);
+            assert_eq!(row.get::<String, _>("executor_action"), *action);
+            assert_eq!(row.get::<String, _>("status"), *status);
+            assert_eq!(row.get::<Option<i64>, _>("exit_code"), *exit_code);
+            assert_eq!(row.get::<String, _>("started_at"), "2026-09-01T00:00:00Z");
+            assert_eq!(row.get::<String, _>("created_at"), "2026-09-01T00:00:00Z");
+            assert_eq!(row.get::<String, _>("updated_at"), "2026-09-01T00:00:01Z");
+        }
+
+        // 升级后新值可写入，且可重复执行迁移。
+        sqlx::query(
+            "INSERT INTO execution_processes (id, session_id, run_reason) VALUES (?1, ?2, 'pipelinestep')",
+        )
+        .bind(uuid::Uuid::new_v4())
+        .bind(session_id)
+        .execute(&pool)
+        .await
+        .expect("升级后 pipelinestep 应被接受");
+        migrator.run(&pool).await.expect("重复执行迁移应成功");
+    }
 }

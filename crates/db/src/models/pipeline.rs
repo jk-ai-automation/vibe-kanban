@@ -6,9 +6,11 @@
 use chrono::{DateTime, Utc};
 use executors::profile::ExecutorConfig;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool, Type};
+use sqlx::{FromRow, Row, SqlitePool, Type, sqlite::SqliteRow};
 use ts_rs::TS;
 use uuid::Uuid;
+
+use super::db_retry::retry_on_busy;
 
 /// 产出物入库上限：超过部分只留在磁盘（设计 §5）。
 pub const MAX_ARTIFACT_BYTES: usize = 256 * 1024;
@@ -383,20 +385,23 @@ impl PipelineRuns {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'running', ?10, ?11, ?11) \
              RETURNING {RUN_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineRun>(&sql)
-            .bind(Uuid::new_v4())
-            .bind(data.issue_id)
-            .bind(data.project_id)
-            .bind(data.workspace_id)
-            .bind(&data.template_key)
-            .bind(data.template_version)
-            .bind(&data.template_json)
-            .bind(&data.template_warning)
-            .bind(&data.executor_config_json)
-            .bind(data.first_stage)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, PipelineRun>(&sql)
+                .bind(Uuid::new_v4())
+                .bind(data.issue_id)
+                .bind(data.project_id)
+                .bind(data.workspace_id)
+                .bind(&data.template_key)
+                .bind(data.template_version)
+                .bind(&data.template_json)
+                .bind(&data.template_warning)
+                .bind(&data.executor_config_json)
+                .bind(data.first_stage)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     pub async fn find_by_id(
@@ -493,7 +498,8 @@ impl PipelineRuns {
         )
     }
 
-    /// 改运行状态；`current_stage` 为 None 时保持不变。completed / cancelled 写 finished_at。
+    /// 改运行状态；`current_stage` 为 None 时保持不变。
+    /// finished_at：进入 completed / cancelled 时写入且已有值不覆盖；其余状态置 NULL。
     pub async fn update_status(
         pool: &SqlitePool,
         id: Uuid,
@@ -503,56 +509,77 @@ impl PipelineRuns {
         let sql = format!(
             "UPDATE pipeline_runs SET status = ?2, \
              current_stage_key = COALESCE(?3, current_stage_key), updated_at = ?4, \
-             finished_at = CASE WHEN ?2 IN ('completed', 'cancelled') THEN ?4 ELSE NULL END \
+             finished_at = CASE WHEN ?2 IN ('completed', 'cancelled') \
+                                THEN COALESCE(finished_at, ?4) ELSE NULL END \
              WHERE id = ?1 RETURNING {RUN_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineRun>(&sql)
-            .bind(id)
-            .bind(status)
-            .bind(current_stage)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, PipelineRun>(&sql)
+                .bind(id)
+                .bind(status)
+                .bind(current_stage)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     /// 工作台「需要你确认 / 需要你处理」：waiting_gate 与 failed 的运行，等得最久的在前。
+    ///
+    /// 一条 SQL：每个运行配它最新的一条阶段尝试与需求。「等了多久」以阶段的 finished_at
+    /// （执行结束时刻，契约修订 C11）为准，没有时退回运行的 updated_at。
+    /// 没有任何阶段尝试或需求已删除的运行不出现（内连接）。
     pub async fn list_pending(
         pool: &SqlitePool,
         project_id: Option<Uuid>,
     ) -> Result<Vec<PendingPipelineItem>, sqlx::Error> {
-        let sql = format!(
-            "SELECT {RUN_COLUMNS} FROM pipeline_runs \
-             WHERE status IN ('waiting_gate', 'failed') AND (?1 IS NULL OR project_id = ?1) \
-             ORDER BY updated_at ASC, rowid ASC"
-        );
-        let runs = sqlx::query_as::<_, PipelineRun>(&sql)
-            .bind(project_id)
-            .fetch_all(pool)
-            .await?;
-
-        let mut items = Vec::with_capacity(runs.len());
-        for run in runs {
-            let Some(stage_run) = PipelineStageRuns::find_latest_for_run(pool, run.id).await?
-            else {
-                continue;
-            };
-            let issue: Option<(String, String)> =
-                sqlx::query_as("SELECT simple_id, title FROM issues WHERE id = ?1")
-                    .bind(run.issue_id)
-                    .fetch_optional(pool)
-                    .await?;
-            let Some((issue_simple_id, issue_title)) = issue else {
-                continue;
-            };
-            items.push(PendingPipelineItem {
-                run,
-                stage_run,
-                issue_simple_id,
-                issue_title,
-            });
-        }
-        Ok(items)
+        let rows = sqlx::query(
+            "SELECT r.id, r.issue_id, r.project_id, r.workspace_id, r.template_key, \
+                    r.template_version, r.status, r.current_stage_key, r.created_at, \
+                    r.updated_at, r.finished_at, \
+                    s.id AS s_id, s.run_id AS s_run_id, s.project_id AS s_project_id, \
+                    s.stage_key AS s_stage_key, s.attempt AS s_attempt, s.status AS s_status, \
+                    s.gate_kind AS s_gate_kind, s.session_id AS s_session_id, \
+                    s.execution_process_id AS s_execution_process_id, \
+                    s.started_at AS s_started_at, s.finished_at AS s_finished_at, \
+                    s.summary AS s_summary, s.error AS s_error, \
+                    i.simple_id AS issue_simple_id, i.title AS issue_title \
+             FROM pipeline_runs r \
+             JOIN pipeline_stage_runs s \
+               ON s.rowid = (SELECT MAX(rowid) FROM pipeline_stage_runs WHERE run_id = r.id) \
+             JOIN issues i ON i.id = r.issue_id \
+             WHERE r.status IN ('waiting_gate', 'failed') AND (?1 IS NULL OR r.project_id = ?1) \
+             ORDER BY COALESCE(s.finished_at, r.updated_at) ASC, r.rowid ASC",
+        )
+        .bind(project_id)
+        .fetch_all(pool)
+        .await?;
+        rows.iter().map(pending_item_from_row).collect()
     }
+}
+
+fn pending_item_from_row(row: &SqliteRow) -> Result<PendingPipelineItem, sqlx::Error> {
+    Ok(PendingPipelineItem {
+        run: PipelineRun::from_row(row)?,
+        stage_run: PipelineStageRun {
+            id: row.try_get("s_id")?,
+            run_id: row.try_get("s_run_id")?,
+            project_id: row.try_get("s_project_id")?,
+            stage_key: row.try_get("s_stage_key")?,
+            attempt: row.try_get("s_attempt")?,
+            status: row.try_get("s_status")?,
+            gate_kind: row.try_get("s_gate_kind")?,
+            session_id: row.try_get("s_session_id")?,
+            execution_process_id: row.try_get("s_execution_process_id")?,
+            started_at: row.try_get("s_started_at")?,
+            finished_at: row.try_get("s_finished_at")?,
+            summary: row.try_get("s_summary")?,
+            error: row.try_get("s_error")?,
+        },
+        issue_simple_id: row.try_get("issue_simple_id")?,
+        issue_title: row.try_get("issue_title")?,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -567,7 +594,6 @@ impl PipelineStageRuns {
         pool: &SqlitePool,
         data: &CreateStageRun,
     ) -> Result<PipelineStageRun, sqlx::Error> {
-        let started_at = (data.status == PipelineStageStatus::Running).then(Utc::now);
         let sql = format!(
             "INSERT INTO pipeline_stage_runs (id, run_id, project_id, stage_key, attempt, status, \
              gate_kind, feedback, started_at) \
@@ -575,17 +601,21 @@ impl PipelineStageRuns {
              FROM pipeline_stage_runs WHERE run_id = ?2 AND stage_key = ?4 \
              RETURNING {STAGE_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineStageRun>(&sql)
-            .bind(Uuid::new_v4())
-            .bind(data.run_id)
-            .bind(data.project_id)
-            .bind(data.stage_key)
-            .bind(data.status)
-            .bind(data.gate_kind)
-            .bind(&data.feedback)
-            .bind(started_at)
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            let started_at = (data.status == PipelineStageStatus::Running).then(Utc::now);
+            sqlx::query_as::<_, PipelineStageRun>(&sql)
+                .bind(Uuid::new_v4())
+                .bind(data.run_id)
+                .bind(data.project_id)
+                .bind(data.stage_key)
+                .bind(data.status)
+                .bind(data.gate_kind)
+                .bind(&data.feedback)
+                .bind(started_at)
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     pub async fn find_by_id(
@@ -711,6 +741,9 @@ impl PipelineStageRuns {
     }
 
     /// 会话已开：记会话与首个进程，状态置 running，started_at 只写一次。
+    ///
+    /// 只允许从 pending（首次启动）或 running（已建成 running 的尝试补记会话）启动；
+    /// 其它状态不改任何数据，返回 `sqlx::Error::RowNotFound`（尝试不存在时也是它）。
     pub async fn mark_started(
         pool: &SqlitePool,
         id: Uuid,
@@ -720,15 +753,18 @@ impl PipelineStageRuns {
         let sql = format!(
             "UPDATE pipeline_stage_runs SET status = 'running', session_id = ?2, \
              execution_process_id = ?3, started_at = COALESCE(started_at, ?4) \
-             WHERE id = ?1 RETURNING {STAGE_COLUMNS}"
+             WHERE id = ?1 AND status IN ('pending', 'running') RETURNING {STAGE_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineStageRun>(&sql)
-            .bind(id)
-            .bind(session_id)
-            .bind(execution_process_id)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, PipelineStageRun>(&sql)
+                .bind(id)
+                .bind(session_id)
+                .bind(execution_process_id)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     pub async fn set_execution_process(
@@ -736,17 +772,24 @@ impl PipelineStageRuns {
         id: Uuid,
         execution_process_id: Uuid,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE pipeline_stage_runs SET execution_process_id = ?2 WHERE id = ?1")
-            .bind(id)
-            .bind(execution_process_id)
-            .execute(pool)
-            .await?;
+        retry_on_busy(|| async {
+            sqlx::query("UPDATE pipeline_stage_runs SET execution_process_id = ?2 WHERE id = ?1")
+                .bind(id)
+                .bind(execution_process_id)
+                .execute(pool)
+                .await
+        })
+        .await?;
         Ok(())
     }
 
     /// 改尝试状态。summary / error 为 None 时保持原值。
     /// finished_at 表示「执行结束时刻」（契约修订 C11）：进入 waiting_gate 或终态时写入，
     /// 已有值不覆盖（waiting_gate → passed / rejected 保留进入等待的时刻）。
+    ///
+    /// 终态（passed / rejected / failed / skipped）不能改回非终态（pending / running /
+    /// waiting_gate）：这种调用不改任何数据，返回 `sqlx::Error::RowNotFound`
+    /// （尝试不存在时也是它）。终态之间的改写不受限。
     pub async fn set_status(
         pool: &SqlitePool,
         id: Uuid,
@@ -759,16 +802,22 @@ impl PipelineStageRuns {
              error = COALESCE(?4, error), \
              finished_at = CASE WHEN ?2 IN ('waiting_gate', 'passed', 'rejected', 'failed', 'skipped') \
                                 THEN COALESCE(finished_at, ?5) ELSE finished_at END \
-             WHERE id = ?1 RETURNING {STAGE_COLUMNS}"
+             WHERE id = ?1 \
+               AND NOT (status IN ('passed', 'rejected', 'failed', 'skipped') \
+                        AND ?2 IN ('pending', 'running', 'waiting_gate')) \
+             RETURNING {STAGE_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineStageRun>(&sql)
-            .bind(id)
-            .bind(status)
-            .bind(summary)
-            .bind(error)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, PipelineStageRun>(&sql)
+                .bind(id)
+                .bind(status)
+                .bind(summary)
+                .bind(error)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 }
 
@@ -790,15 +839,18 @@ impl PipelineGateDecisions {
             "INSERT INTO pipeline_gate_decisions (id, stage_run_id, decision, comment, decided_by, decided_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING {DECISION_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineGateDecision>(&sql)
-            .bind(Uuid::new_v4())
-            .bind(stage_run_id)
-            .bind(decision)
-            .bind(comment)
-            .bind(decided_by)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, PipelineGateDecision>(&sql)
+                .bind(Uuid::new_v4())
+                .bind(stage_run_id)
+                .bind(decision)
+                .bind(comment)
+                .bind(decided_by)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     pub async fn list_by_run(
@@ -855,17 +907,20 @@ impl IssueArtifacts {
              FROM issue_artifacts WHERE issue_id = ?2 AND kind = ?4 \
              RETURNING {ARTIFACT_SUMMARY_COLUMNS}"
         );
-        sqlx::query_as::<_, IssueArtifactSummary>(&sql)
-            .bind(Uuid::new_v4())
-            .bind(issue_id)
-            .bind(stage_run_id)
-            .bind(kind)
-            .bind(rel_path)
-            .bind(stored)
-            .bind(truncated)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, IssueArtifactSummary>(&sql)
+                .bind(Uuid::new_v4())
+                .bind(issue_id)
+                .bind(stage_run_id)
+                .bind(kind)
+                .bind(rel_path)
+                .bind(&stored)
+                .bind(truncated)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     pub async fn find_by_id(
@@ -1556,5 +1611,215 @@ mod tests {
         );
         let back: PipelineTemplateStageView = serde_json::from_value(json).unwrap();
         assert_eq!(back, human);
+    }
+
+    #[tokio::test]
+    async fn 待处理列表按阶段执行结束时刻排序而非运行更新时间() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.pool();
+        let a = 准备需求(&test_db, "甲").await;
+        let b = 准备需求(&test_db, "乙").await;
+        let pause = || tokio::time::sleep(std::time::Duration::from_millis(5));
+
+        let run_a = PipelineRuns::create(pool, &建运行参数(&a)).await.unwrap();
+        let run_b = PipelineRuns::create(pool, &建运行参数(&b)).await.unwrap();
+        let stage_a = PipelineStageRuns::create(
+            pool,
+            &建阶段参数(
+                &run_a,
+                PipelineStageKey::Requirement,
+                PipelineStageStatus::Running,
+            ),
+        )
+        .await
+        .unwrap();
+        let stage_b = PipelineStageRuns::create(
+            pool,
+            &建阶段参数(
+                &run_b,
+                PipelineStageKey::Requirement,
+                PipelineStageStatus::Running,
+            ),
+        )
+        .await
+        .unwrap();
+
+        // 甲的阶段先结束进入等待，乙的后结束；但甲的运行行最后才更新。
+        PipelineStageRuns::set_status(
+            pool,
+            stage_a.id,
+            PipelineStageStatus::WaitingGate,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        pause().await;
+        PipelineStageRuns::set_status(
+            pool,
+            stage_b.id,
+            PipelineStageStatus::WaitingGate,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        pause().await;
+        PipelineRuns::update_status(pool, run_b.id, PipelineRunStatus::WaitingGate, None)
+            .await
+            .unwrap();
+        pause().await;
+        PipelineRuns::update_status(pool, run_a.id, PipelineRunStatus::WaitingGate, None)
+            .await
+            .unwrap();
+
+        let pending = PipelineRuns::list_pending(pool, None).await.unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|p| p.issue_title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["甲", "乙"],
+            "按阶段 finished_at 排序：甲等得更久"
+        );
+        assert_eq!(pending[0].stage_run.id, stage_a.id);
+        assert_eq!(
+            pending[0].stage_run.status,
+            PipelineStageStatus::WaitingGate
+        );
+        assert!(pending[0].stage_run.finished_at.is_some());
+        assert_eq!(pending[0].run.id, run_a.id);
+        assert_eq!(pending[0].issue_simple_id, a.simple_id);
+    }
+
+    #[tokio::test]
+    async fn 只允许从待启动或运行中标记启动() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.pool();
+        let issue = 准备需求(&test_db, "启动").await;
+        let run = PipelineRuns::create(pool, &建运行参数(&issue))
+            .await
+            .unwrap();
+
+        let running = PipelineStageRuns::create(
+            pool,
+            &建阶段参数(
+                &run,
+                PipelineStageKey::Requirement,
+                PipelineStageStatus::Running,
+            ),
+        )
+        .await
+        .unwrap();
+        PipelineStageRuns::mark_started(pool, running.id, Uuid::new_v4(), Uuid::new_v4())
+            .await
+            .expect("running 的尝试可以补记会话");
+
+        let waiting = PipelineStageRuns::set_status(
+            pool,
+            running.id,
+            PipelineStageStatus::WaitingGate,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let error =
+            PipelineStageRuns::mark_started(pool, waiting.id, Uuid::new_v4(), Uuid::new_v4())
+                .await
+                .expect_err("waiting_gate 不能被重新启动");
+        assert!(
+            matches!(error, sqlx::Error::RowNotFound),
+            "实际错误：{error:?}"
+        );
+        let unchanged = PipelineStageRuns::find_by_id(pool, waiting.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged, waiting, "拒绝时不改任何数据");
+
+        let missing =
+            PipelineStageRuns::mark_started(pool, Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4())
+                .await
+                .expect_err("不存在的尝试");
+        assert!(matches!(missing, sqlx::Error::RowNotFound));
+    }
+
+    #[tokio::test]
+    async fn 终态不能改回非终态但终态之间可以改() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.pool();
+        let issue = 准备需求(&test_db, "终态保护").await;
+        let run = PipelineRuns::create(pool, &建运行参数(&issue))
+            .await
+            .unwrap();
+        let stage = PipelineStageRuns::create(
+            pool,
+            &建阶段参数(&run, PipelineStageKey::Spec, PipelineStageStatus::Running),
+        )
+        .await
+        .unwrap();
+        let passed =
+            PipelineStageRuns::set_status(pool, stage.id, PipelineStageStatus::Passed, None, None)
+                .await
+                .unwrap();
+
+        for status in [
+            PipelineStageStatus::Pending,
+            PipelineStageStatus::Running,
+            PipelineStageStatus::WaitingGate,
+        ] {
+            let error =
+                PipelineStageRuns::set_status(pool, stage.id, status, Some("不该写入"), None)
+                    .await
+                    .expect_err("终态不能改回非终态");
+            assert!(
+                matches!(error, sqlx::Error::RowNotFound),
+                "{status:?}：{error:?}"
+            );
+        }
+        let unchanged = PipelineStageRuns::find_by_id(pool, stage.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged, passed, "拒绝时不改任何数据");
+
+        let skipped =
+            PipelineStageRuns::set_status(pool, stage.id, PipelineStageStatus::Skipped, None, None)
+                .await
+                .expect("终态之间可以改");
+        assert_eq!(skipped.status, PipelineStageStatus::Skipped);
+        assert_eq!(skipped.finished_at, passed.finished_at);
+    }
+
+    #[tokio::test]
+    async fn 运行结束时间只写一次且回到非终态时清空() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.pool();
+        let issue = 准备需求(&test_db, "运行结束时间").await;
+        let run = PipelineRuns::create(pool, &建运行参数(&issue))
+            .await
+            .unwrap();
+
+        let completed =
+            PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Completed, None)
+                .await
+                .unwrap();
+        assert!(completed.finished_at.is_some());
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let cancelled =
+            PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Cancelled, None)
+                .await
+                .unwrap();
+        assert_eq!(
+            cancelled.finished_at, completed.finished_at,
+            "已有结束时间不覆盖"
+        );
+        assert!(cancelled.updated_at > completed.updated_at);
+
+        let reopened = PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Paused, None)
+            .await
+            .unwrap();
+        assert!(reopened.finished_at.is_none(), "非终态清空结束时间");
     }
 }

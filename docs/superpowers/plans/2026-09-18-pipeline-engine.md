@@ -77,7 +77,9 @@
 
 `max_rounds` 默认 3（人工关卡阶段也适用：缺产出物/进程失败会重试）；人工打回不计入失败次数。
 
-（C11）阶段尝试进入 `waiting_gate` / `failed` 时写 `finished_at`（= 执行结束时刻），后续转 `passed` / `rejected` 不覆盖（`COALESCE(finished_at, 现在)`）。工作台「等了多久」用 `stage_run.finished_at`。
+（C11）阶段尝试进入 `waiting_gate` / `failed` 时写 `finished_at`（= 执行结束时刻），后续转 `passed` / `rejected` 不覆盖（`COALESCE(finished_at, 现在)`）。工作台「等了多久」用 `stage_run.finished_at`（`list_pending` 按 `COALESCE(s.finished_at, r.updated_at)` 排序）。
+
+模型层护栏（任务 3）：`mark_started` 只接受 pending / running 的尝试；`set_status` 不允许终态（passed / rejected / failed / skipped）改回非终态；两者违规时不改数据、返回 `sqlx::Error::RowNotFound`。运行的 `finished_at` 只在 completed / cancelled 时写且不覆盖，回到非终态清空。所有写方法都包 `retry_on_busy`。
 
 ### 1.4 阶段 → 看板列（设计 §6.4）
 
@@ -431,12 +433,145 @@ EOF
         .unwrap();
         assert_eq!(indexes.len(), 3, "run_reason 相关的 3 个索引必须重建，实际：{indexes:?}");
     }
+
+    /// `20260918000000_add_pipeline.sql` 重建了 execution_processes.run_reason 列：
+    /// 在只跑到它之前的旧库上造三条不同 run_reason 的进程，升级后数据与 run_reason 必须原样保留。
+    #[tokio::test]
+    async fn 流水线迁移保留已有执行进程的数据与_run_reason() {
+        use sqlx::Row;
+
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let path = dir.path().join("legacy_pipeline.sqlite");
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Delete);
+        let pool = sqlx::SqlitePool::connect_with(options)
+            .await
+            .expect("连接失败");
+
+        // 只跑到流水线迁移之前，模拟升级前的库。
+        let migrator = sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+            .await
+            .expect("读取迁移目录失败");
+        let legacy: Vec<_> = migrator
+            .iter()
+            .filter(|m| m.version < 20260918000000)
+            .cloned()
+            .collect();
+        assert!(
+            migrator.iter().any(|m| m.version == 20260918000000),
+            "迁移目录里应有流水线迁移"
+        );
+        let mut legacy_migrator =
+            sqlx::migrate::Migrator::new(std::path::Path::new("./migrations"))
+                .await
+                .expect("读取迁移目录失败");
+        legacy_migrator.migrations = legacy.into();
+        legacy_migrator.run(&pool).await.expect("旧迁移应成功");
+
+        let session_id = 建会话(&pool).await;
+        let rows = [
+            (
+                uuid::Uuid::new_v4(),
+                "codingagent",
+                "completed",
+                Some(0_i64),
+                r#"{"k":"agent"}"#,
+            ),
+            (
+                uuid::Uuid::new_v4(),
+                "archivescript",
+                "failed",
+                Some(2),
+                r#"{"k":"archive"}"#,
+            ),
+            (
+                uuid::Uuid::new_v4(),
+                "devserver",
+                "running",
+                None,
+                r#"{"k":"dev"}"#,
+            ),
+        ];
+        for (id, run_reason, status, exit_code, action) in &rows {
+            sqlx::query(
+                "INSERT INTO execution_processes \
+                 (id, session_id, run_reason, executor_action, status, exit_code, \
+                  started_at, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, '2026-09-01T00:00:00Z', \
+                         '2026-09-01T00:00:00Z', '2026-09-01T00:00:01Z')",
+            )
+            .bind(id)
+            .bind(session_id)
+            .bind(run_reason)
+            .bind(action)
+            .bind(status)
+            .bind(exit_code)
+            .execute(&pool)
+            .await
+            .expect("旧库插入执行进程失败");
+        }
+        // 旧库的 CHECK 还不认识 pipelinestep。
+        assert!(
+            sqlx::query(
+                "INSERT INTO execution_processes (id, session_id, run_reason) VALUES (?1, ?2, 'pipelinestep')",
+            )
+            .bind(uuid::Uuid::new_v4())
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .is_err(),
+            "升级前 pipelinestep 应被拒绝"
+        );
+
+        migrator
+            .run(&pool)
+            .await
+            .expect("流水线迁移应能应用在旧库上");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_processes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 3, "升级不增不减执行进程");
+        for (id, run_reason, status, exit_code, action) in &rows {
+            let row = sqlx::query(
+                "SELECT session_id, run_reason, executor_action, status, exit_code, \
+                        started_at, created_at, updated_at \
+                 FROM execution_processes WHERE id = ?1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .expect("升级后执行进程应仍在");
+            assert_eq!(row.get::<uuid::Uuid, _>("session_id"), session_id);
+            assert_eq!(row.get::<String, _>("run_reason"), *run_reason);
+            assert_eq!(row.get::<String, _>("executor_action"), *action);
+            assert_eq!(row.get::<String, _>("status"), *status);
+            assert_eq!(row.get::<Option<i64>, _>("exit_code"), *exit_code);
+            assert_eq!(row.get::<String, _>("started_at"), "2026-09-01T00:00:00Z");
+            assert_eq!(row.get::<String, _>("created_at"), "2026-09-01T00:00:00Z");
+            assert_eq!(row.get::<String, _>("updated_at"), "2026-09-01T00:00:01Z");
+        }
+
+        // 升级后新值可写入，且可重复执行迁移。
+        sqlx::query(
+            "INSERT INTO execution_processes (id, session_id, run_reason) VALUES (?1, ?2, 'pipelinestep')",
+        )
+        .bind(uuid::Uuid::new_v4())
+        .bind(session_id)
+        .execute(&pool)
+        .await
+        .expect("升级后 pipelinestep 应被接受");
+        migrator.run(&pool).await.expect("重复执行迁移应成功");
+    }
 ```
 
 - [ ] **Step 2: 运行，确认失败**
 
 Run: `cargo test -p db test_support::tests`
-Expected: `流水线四张表存在且_id_是第零列` 失败（`表 pipeline_runs 不存在`），`执行进程_run_reason_接受_pipelinestep` 失败（`CHECK constraint failed`）。
+Expected: `流水线四张表存在且_id_是第零列` 失败（`表 pipeline_runs 不存在`），`执行进程_run_reason_接受_pipelinestep` 失败（`CHECK constraint failed`），`流水线迁移保留已有执行进程的数据与_run_reason` 失败（`迁移目录里应有流水线迁移`）。
 
 - [ ] **Step 3: 写迁移**
 
@@ -576,7 +711,7 @@ CREATE INDEX idx_execution_processes_session_run_reason_created
 - [ ] **Step 4: 让 `sqlx::migrate!` 感知新文件并运行测试**
 
 Run: `touch crates/db/src/lib.rs && cargo test -p db test_support::tests`
-Expected: 全部通过（含原有 8 个 + 新增 3 个），`test result: ok. 11 passed`。
+Expected: 全部通过（含原有 8 个 + 新增 4 个），`test result: ok. 12 passed`。
 （若新增的两个仍报「表不存在」，说明宏没重新展开：执行 `cargo clean -p db` 后重跑。）
 
 - [ ] **Step 5: 确认老库能升级**
@@ -619,9 +754,11 @@ EOF
 use chrono::{DateTime, Utc};
 use executors::profile::ExecutorConfig;
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool, Type};
+use sqlx::{FromRow, Row, SqlitePool, Type, sqlite::SqliteRow};
 use ts_rs::TS;
 use uuid::Uuid;
+
+use super::db_retry::retry_on_busy;
 
 /// 产出物入库上限：超过部分只留在磁盘（设计 §5）。
 pub const MAX_ARTIFACT_BYTES: usize = 256 * 1024;
@@ -872,6 +1009,9 @@ pub struct PipelineTemplateStageView {
     pub gate_kind: GateKind,
     /// 人工关卡中文名，如「需求确认」。
     pub gate_label: Option<String>,
+    /// 自动关卡的判定名（`checks_passed` / `no_blocking_findings` / `all_cases_passed` /
+    /// `artifacts_present`）；人工关卡与无关卡为 None。契约修订 C10。
+    pub gate_condition: Option<String>,
     #[ts(type = "number")]
     pub max_rounds: i64,
 }
@@ -993,20 +1133,23 @@ impl PipelineRuns {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'running', ?10, ?11, ?11) \
              RETURNING {RUN_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineRun>(&sql)
-            .bind(Uuid::new_v4())
-            .bind(data.issue_id)
-            .bind(data.project_id)
-            .bind(data.workspace_id)
-            .bind(&data.template_key)
-            .bind(data.template_version)
-            .bind(&data.template_json)
-            .bind(&data.template_warning)
-            .bind(&data.executor_config_json)
-            .bind(data.first_stage)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, PipelineRun>(&sql)
+                .bind(Uuid::new_v4())
+                .bind(data.issue_id)
+                .bind(data.project_id)
+                .bind(data.workspace_id)
+                .bind(&data.template_key)
+                .bind(data.template_version)
+                .bind(&data.template_json)
+                .bind(&data.template_warning)
+                .bind(&data.executor_config_json)
+                .bind(data.first_stage)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     pub async fn find_by_id(
@@ -1092,16 +1235,19 @@ impl PipelineRuns {
         .bind(id)
         .fetch_optional(pool)
         .await?;
-        Ok(row.map(
-            |(template_json, template_warning, executor_config_json)| PipelineRunInternals {
-                template_json,
-                template_warning,
-                executor_config_json,
-            },
-        ))
+        Ok(
+            row.map(|(template_json, template_warning, executor_config_json)| {
+                PipelineRunInternals {
+                    template_json,
+                    template_warning,
+                    executor_config_json,
+                }
+            }),
+        )
     }
 
-    /// 改运行状态；`current_stage` 为 None 时保持不变。completed / cancelled 写 finished_at。
+    /// 改运行状态；`current_stage` 为 None 时保持不变。
+    /// finished_at：进入 completed / cancelled 时写入且已有值不覆盖；其余状态置 NULL。
     pub async fn update_status(
         pool: &SqlitePool,
         id: Uuid,
@@ -1111,56 +1257,77 @@ impl PipelineRuns {
         let sql = format!(
             "UPDATE pipeline_runs SET status = ?2, \
              current_stage_key = COALESCE(?3, current_stage_key), updated_at = ?4, \
-             finished_at = CASE WHEN ?2 IN ('completed', 'cancelled') THEN ?4 ELSE NULL END \
+             finished_at = CASE WHEN ?2 IN ('completed', 'cancelled') \
+                                THEN COALESCE(finished_at, ?4) ELSE NULL END \
              WHERE id = ?1 RETURNING {RUN_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineRun>(&sql)
-            .bind(id)
-            .bind(status)
-            .bind(current_stage)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, PipelineRun>(&sql)
+                .bind(id)
+                .bind(status)
+                .bind(current_stage)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     /// 工作台「需要你确认 / 需要你处理」：waiting_gate 与 failed 的运行，等得最久的在前。
+    ///
+    /// 一条 SQL：每个运行配它最新的一条阶段尝试与需求。「等了多久」以阶段的 finished_at
+    /// （执行结束时刻，契约修订 C11）为准，没有时退回运行的 updated_at。
+    /// 没有任何阶段尝试或需求已删除的运行不出现（内连接）。
     pub async fn list_pending(
         pool: &SqlitePool,
         project_id: Option<Uuid>,
     ) -> Result<Vec<PendingPipelineItem>, sqlx::Error> {
-        let sql = format!(
-            "SELECT {RUN_COLUMNS} FROM pipeline_runs \
-             WHERE status IN ('waiting_gate', 'failed') AND (?1 IS NULL OR project_id = ?1) \
-             ORDER BY updated_at ASC, rowid ASC"
-        );
-        let runs = sqlx::query_as::<_, PipelineRun>(&sql)
-            .bind(project_id)
-            .fetch_all(pool)
-            .await?;
-
-        let mut items = Vec::with_capacity(runs.len());
-        for run in runs {
-            let Some(stage_run) = PipelineStageRuns::find_latest_for_run(pool, run.id).await?
-            else {
-                continue;
-            };
-            let issue: Option<(String, String)> =
-                sqlx::query_as("SELECT simple_id, title FROM issues WHERE id = ?1")
-                    .bind(run.issue_id)
-                    .fetch_optional(pool)
-                    .await?;
-            let Some((issue_simple_id, issue_title)) = issue else {
-                continue;
-            };
-            items.push(PendingPipelineItem {
-                run,
-                stage_run,
-                issue_simple_id,
-                issue_title,
-            });
-        }
-        Ok(items)
+        let rows = sqlx::query(
+            "SELECT r.id, r.issue_id, r.project_id, r.workspace_id, r.template_key, \
+                    r.template_version, r.status, r.current_stage_key, r.created_at, \
+                    r.updated_at, r.finished_at, \
+                    s.id AS s_id, s.run_id AS s_run_id, s.project_id AS s_project_id, \
+                    s.stage_key AS s_stage_key, s.attempt AS s_attempt, s.status AS s_status, \
+                    s.gate_kind AS s_gate_kind, s.session_id AS s_session_id, \
+                    s.execution_process_id AS s_execution_process_id, \
+                    s.started_at AS s_started_at, s.finished_at AS s_finished_at, \
+                    s.summary AS s_summary, s.error AS s_error, \
+                    i.simple_id AS issue_simple_id, i.title AS issue_title \
+             FROM pipeline_runs r \
+             JOIN pipeline_stage_runs s \
+               ON s.rowid = (SELECT MAX(rowid) FROM pipeline_stage_runs WHERE run_id = r.id) \
+             JOIN issues i ON i.id = r.issue_id \
+             WHERE r.status IN ('waiting_gate', 'failed') AND (?1 IS NULL OR r.project_id = ?1) \
+             ORDER BY COALESCE(s.finished_at, r.updated_at) ASC, r.rowid ASC",
+        )
+        .bind(project_id)
+        .fetch_all(pool)
+        .await?;
+        rows.iter().map(pending_item_from_row).collect()
     }
+}
+
+fn pending_item_from_row(row: &SqliteRow) -> Result<PendingPipelineItem, sqlx::Error> {
+    Ok(PendingPipelineItem {
+        run: PipelineRun::from_row(row)?,
+        stage_run: PipelineStageRun {
+            id: row.try_get("s_id")?,
+            run_id: row.try_get("s_run_id")?,
+            project_id: row.try_get("s_project_id")?,
+            stage_key: row.try_get("s_stage_key")?,
+            attempt: row.try_get("s_attempt")?,
+            status: row.try_get("s_status")?,
+            gate_kind: row.try_get("s_gate_kind")?,
+            session_id: row.try_get("s_session_id")?,
+            execution_process_id: row.try_get("s_execution_process_id")?,
+            started_at: row.try_get("s_started_at")?,
+            finished_at: row.try_get("s_finished_at")?,
+            summary: row.try_get("s_summary")?,
+            error: row.try_get("s_error")?,
+        },
+        issue_simple_id: row.try_get("issue_simple_id")?,
+        issue_title: row.try_get("issue_title")?,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1175,7 +1342,6 @@ impl PipelineStageRuns {
         pool: &SqlitePool,
         data: &CreateStageRun,
     ) -> Result<PipelineStageRun, sqlx::Error> {
-        let started_at = (data.status == PipelineStageStatus::Running).then(Utc::now);
         let sql = format!(
             "INSERT INTO pipeline_stage_runs (id, run_id, project_id, stage_key, attempt, status, \
              gate_kind, feedback, started_at) \
@@ -1183,17 +1349,21 @@ impl PipelineStageRuns {
              FROM pipeline_stage_runs WHERE run_id = ?2 AND stage_key = ?4 \
              RETURNING {STAGE_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineStageRun>(&sql)
-            .bind(Uuid::new_v4())
-            .bind(data.run_id)
-            .bind(data.project_id)
-            .bind(data.stage_key)
-            .bind(data.status)
-            .bind(data.gate_kind)
-            .bind(&data.feedback)
-            .bind(started_at)
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            let started_at = (data.status == PipelineStageStatus::Running).then(Utc::now);
+            sqlx::query_as::<_, PipelineStageRun>(&sql)
+                .bind(Uuid::new_v4())
+                .bind(data.run_id)
+                .bind(data.project_id)
+                .bind(data.stage_key)
+                .bind(data.status)
+                .bind(data.gate_kind)
+                .bind(&data.feedback)
+                .bind(started_at)
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     pub async fn find_by_id(
@@ -1222,8 +1392,9 @@ impl PipelineStageRuns {
         pool: &SqlitePool,
         run_id: Uuid,
     ) -> Result<Vec<PipelineStageRun>, sqlx::Error> {
-        let sql =
-            format!("SELECT {STAGE_COLUMNS} FROM pipeline_stage_runs WHERE run_id = ?1 ORDER BY rowid");
+        let sql = format!(
+            "SELECT {STAGE_COLUMNS} FROM pipeline_stage_runs WHERE run_id = ?1 ORDER BY rowid"
+        );
         sqlx::query_as::<_, PipelineStageRun>(&sql)
             .bind(run_id)
             .fetch_all(pool)
@@ -1318,6 +1489,9 @@ impl PipelineStageRuns {
     }
 
     /// 会话已开：记会话与首个进程，状态置 running，started_at 只写一次。
+    ///
+    /// 只允许从 pending（首次启动）或 running（已建成 running 的尝试补记会话）启动；
+    /// 其它状态不改任何数据，返回 `sqlx::Error::RowNotFound`（尝试不存在时也是它）。
     pub async fn mark_started(
         pool: &SqlitePool,
         id: Uuid,
@@ -1327,15 +1501,18 @@ impl PipelineStageRuns {
         let sql = format!(
             "UPDATE pipeline_stage_runs SET status = 'running', session_id = ?2, \
              execution_process_id = ?3, started_at = COALESCE(started_at, ?4) \
-             WHERE id = ?1 RETURNING {STAGE_COLUMNS}"
+             WHERE id = ?1 AND status IN ('pending', 'running') RETURNING {STAGE_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineStageRun>(&sql)
-            .bind(id)
-            .bind(session_id)
-            .bind(execution_process_id)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, PipelineStageRun>(&sql)
+                .bind(id)
+                .bind(session_id)
+                .bind(execution_process_id)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     pub async fn set_execution_process(
@@ -1343,17 +1520,24 @@ impl PipelineStageRuns {
         id: Uuid,
         execution_process_id: Uuid,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE pipeline_stage_runs SET execution_process_id = ?2 WHERE id = ?1")
-            .bind(id)
-            .bind(execution_process_id)
-            .execute(pool)
-            .await?;
+        retry_on_busy(|| async {
+            sqlx::query("UPDATE pipeline_stage_runs SET execution_process_id = ?2 WHERE id = ?1")
+                .bind(id)
+                .bind(execution_process_id)
+                .execute(pool)
+                .await
+        })
+        .await?;
         Ok(())
     }
 
     /// 改尝试状态。summary / error 为 None 时保持原值。
     /// finished_at 表示「执行结束时刻」（契约修订 C11）：进入 waiting_gate 或终态时写入，
     /// 已有值不覆盖（waiting_gate → passed / rejected 保留进入等待的时刻）。
+    ///
+    /// 终态（passed / rejected / failed / skipped）不能改回非终态（pending / running /
+    /// waiting_gate）：这种调用不改任何数据，返回 `sqlx::Error::RowNotFound`
+    /// （尝试不存在时也是它）。终态之间的改写不受限。
     pub async fn set_status(
         pool: &SqlitePool,
         id: Uuid,
@@ -1366,16 +1550,22 @@ impl PipelineStageRuns {
              error = COALESCE(?4, error), \
              finished_at = CASE WHEN ?2 IN ('waiting_gate', 'passed', 'rejected', 'failed', 'skipped') \
                                 THEN COALESCE(finished_at, ?5) ELSE finished_at END \
-             WHERE id = ?1 RETURNING {STAGE_COLUMNS}"
+             WHERE id = ?1 \
+               AND NOT (status IN ('passed', 'rejected', 'failed', 'skipped') \
+                        AND ?2 IN ('pending', 'running', 'waiting_gate')) \
+             RETURNING {STAGE_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineStageRun>(&sql)
-            .bind(id)
-            .bind(status)
-            .bind(summary)
-            .bind(error)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, PipelineStageRun>(&sql)
+                .bind(id)
+                .bind(status)
+                .bind(summary)
+                .bind(error)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 }
 
@@ -1397,15 +1587,18 @@ impl PipelineGateDecisions {
             "INSERT INTO pipeline_gate_decisions (id, stage_run_id, decision, comment, decided_by, decided_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING {DECISION_COLUMNS}"
         );
-        sqlx::query_as::<_, PipelineGateDecision>(&sql)
-            .bind(Uuid::new_v4())
-            .bind(stage_run_id)
-            .bind(decision)
-            .bind(comment)
-            .bind(decided_by)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, PipelineGateDecision>(&sql)
+                .bind(Uuid::new_v4())
+                .bind(stage_run_id)
+                .bind(decision)
+                .bind(comment)
+                .bind(decided_by)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     pub async fn list_by_run(
@@ -1462,17 +1655,20 @@ impl IssueArtifacts {
              FROM issue_artifacts WHERE issue_id = ?2 AND kind = ?4 \
              RETURNING {ARTIFACT_SUMMARY_COLUMNS}"
         );
-        sqlx::query_as::<_, IssueArtifactSummary>(&sql)
-            .bind(Uuid::new_v4())
-            .bind(issue_id)
-            .bind(stage_run_id)
-            .bind(kind)
-            .bind(rel_path)
-            .bind(stored)
-            .bind(truncated)
-            .bind(Utc::now())
-            .fetch_one(pool)
-            .await
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, IssueArtifactSummary>(&sql)
+                .bind(Uuid::new_v4())
+                .bind(issue_id)
+                .bind(stage_run_id)
+                .bind(kind)
+                .bind(rel_path)
+                .bind(&stored)
+                .bind(truncated)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     pub async fn find_by_id(
@@ -1644,7 +1840,10 @@ mod tests {
         assert_eq!(internals.executor_config_json, "{}");
 
         let json = serde_json::to_value(&run).unwrap();
-        assert!(json.get("template_json").is_none(), "内部列不能出现在对外类型里");
+        assert!(
+            json.get("template_json").is_none(),
+            "内部列不能出现在对外类型里"
+        );
         assert_eq!(json["status"], "running");
         assert_eq!(json["current_stage_key"], "requirement");
     }
@@ -1718,13 +1917,21 @@ mod tests {
         let pool = test_db.pool();
         let a1 = PipelineStageRuns::create(
             pool,
-            &建阶段参数(&run, PipelineStageKey::Requirement, PipelineStageStatus::Running),
+            &建阶段参数(
+                &run,
+                PipelineStageKey::Requirement,
+                PipelineStageStatus::Running,
+            ),
         )
         .await
         .unwrap();
         let a2 = PipelineStageRuns::create(
             pool,
-            &建阶段参数(&run, PipelineStageKey::Requirement, PipelineStageStatus::Pending),
+            &建阶段参数(
+                &run,
+                PipelineStageKey::Requirement,
+                PipelineStageStatus::Pending,
+            ),
         )
         .await
         .unwrap();
@@ -1875,7 +2082,10 @@ mod tests {
         assert_eq!(started.execution_process_id, Some(process_id));
         assert!(PipelineStageRuns::any_launched(pool, run.id).await.unwrap());
         assert_eq!(
-            PipelineStageRuns::feedback(pool, running.id).await.unwrap().as_deref(),
+            PipelineStageRuns::feedback(pool, running.id)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("上次失败原因")
         );
         assert_eq!(
@@ -1909,17 +2119,32 @@ mod tests {
         .unwrap();
         let pool = test_db.pool();
         let v1 = IssueArtifacts::insert_version(
-            pool, issue.id, stage.id, ArtifactKind::Spec, ".vk/runs/X/spec.md", "第一版",
+            pool,
+            issue.id,
+            stage.id,
+            ArtifactKind::Spec,
+            ".vk/runs/X/spec.md",
+            "第一版",
         )
         .await
         .unwrap();
         let v2 = IssueArtifacts::insert_version(
-            pool, issue.id, stage.id, ArtifactKind::Spec, ".vk/runs/X/spec.md", "第二版",
+            pool,
+            issue.id,
+            stage.id,
+            ArtifactKind::Spec,
+            ".vk/runs/X/spec.md",
+            "第二版",
         )
         .await
         .unwrap();
         let plan = IssueArtifacts::insert_version(
-            pool, issue.id, stage.id, ArtifactKind::Plan, ".vk/runs/X/plan.md", "计划",
+            pool,
+            issue.id,
+            stage.id,
+            ArtifactKind::Plan,
+            ".vk/runs/X/plan.md",
+            "计划",
         )
         .await
         .unwrap();
@@ -1933,13 +2158,18 @@ mod tests {
         assert_eq!(latest.content, "第二版");
         assert_eq!(latest.summary.id, v2.id);
 
-        let fetched = IssueArtifacts::find_by_id(pool, plan.id).await.unwrap().unwrap();
+        let fetched = IssueArtifacts::find_by_id(pool, plan.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(fetched.content, "计划");
         let json = serde_json::to_value(&fetched).unwrap();
         assert_eq!(json["kind"], "plan", "summary 字段平铺在顶层");
         assert_eq!(json["content"], "计划");
 
-        let all = IssueArtifacts::list_summaries_for_issue(pool, issue.id).await.unwrap();
+        let all = IssueArtifacts::list_summaries_for_issue(pool, issue.id)
+            .await
+            .unwrap();
         assert_eq!(all.len(), 3);
     }
 
@@ -2000,10 +2230,16 @@ mod tests {
 
         let mut runs = Vec::new();
         for issue in [&a, &b, &c] {
-            let run = PipelineRuns::create(pool, &建运行参数(issue)).await.unwrap();
+            let run = PipelineRuns::create(pool, &建运行参数(issue))
+                .await
+                .unwrap();
             PipelineStageRuns::create(
                 pool,
-                &建阶段参数(&run, PipelineStageKey::Requirement, PipelineStageStatus::Running),
+                &建阶段参数(
+                    &run,
+                    PipelineStageKey::Requirement,
+                    PipelineStageStatus::Running,
+                ),
             )
             .await
             .unwrap();
@@ -2020,13 +2256,21 @@ mod tests {
 
         let pending = PipelineRuns::list_pending(pool, None).await.unwrap();
         assert_eq!(
-            pending.iter().map(|p| p.issue_title.as_str()).collect::<Vec<_>>(),
+            pending
+                .iter()
+                .map(|p| p.issue_title.as_str())
+                .collect::<Vec<_>>(),
             vec!["乙", "甲"]
         );
-        assert_eq!(pending[0].stage_run.stage_key, PipelineStageKey::Requirement);
+        assert_eq!(
+            pending[0].stage_run.stage_key,
+            PipelineStageKey::Requirement
+        );
         assert_eq!(pending[0].issue_simple_id, b.simple_id);
 
-        let only_a = PipelineRuns::list_pending(pool, Some(a.project_id)).await.unwrap();
+        let only_a = PipelineRuns::list_pending(pool, Some(a.project_id))
+            .await
+            .unwrap();
         assert_eq!(only_a.len(), 1);
         assert_eq!(only_a[0].run.issue_id, a.id);
     }
@@ -2040,7 +2284,11 @@ mod tests {
             .unwrap();
         let stage = PipelineStageRuns::create(
             test_db.pool(),
-            &建阶段参数(&run, PipelineStageKey::Requirement, PipelineStageStatus::Running),
+            &建阶段参数(
+                &run,
+                PipelineStageKey::Requirement,
+                PipelineStageStatus::Running,
+            ),
         )
         .await
         .unwrap();
@@ -2089,8 +2337,253 @@ mod tests {
         for key in PipelineStageKey::ALL {
             assert_eq!(PipelineStageKey::parse(key.as_str()), Some(key));
         }
-        assert_eq!(ArtifactKind::from_file_name("test-cases.csv"), Some(ArtifactKind::TestCases));
+        assert_eq!(
+            ArtifactKind::from_file_name("test-cases.csv"),
+            Some(ArtifactKind::TestCases)
+        );
         assert_eq!(ArtifactKind::from_file_name("notes.md"), None);
+    }
+
+    #[test]
+    fn 模板阶段视图序列化带_gate_condition() {
+        let auto = PipelineTemplateStageView {
+            key: PipelineStageKey::Develop,
+            skill: "develop".to_string(),
+            gate_kind: GateKind::Auto,
+            gate_label: None,
+            gate_condition: Some("checks_passed".to_string()),
+            max_rounds: 3,
+        };
+        let json = serde_json::to_value(&auto).unwrap();
+        assert_eq!(json["gate_condition"], "checks_passed");
+        assert_eq!(json["gate_kind"], "auto");
+        assert_eq!(json["max_rounds"], 3);
+
+        let human = PipelineTemplateStageView {
+            key: PipelineStageKey::Requirement,
+            skill: "requirement".to_string(),
+            gate_kind: GateKind::Human,
+            gate_label: Some("需求确认".to_string()),
+            gate_condition: None,
+            max_rounds: 3,
+        };
+        let json = serde_json::to_value(&human).unwrap();
+        assert!(
+            json["gate_condition"].is_null(),
+            "人工关卡的 gate_condition 为 null"
+        );
+        let back: PipelineTemplateStageView = serde_json::from_value(json).unwrap();
+        assert_eq!(back, human);
+    }
+
+    #[tokio::test]
+    async fn 待处理列表按阶段执行结束时刻排序而非运行更新时间() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.pool();
+        let a = 准备需求(&test_db, "甲").await;
+        let b = 准备需求(&test_db, "乙").await;
+        let pause = || tokio::time::sleep(std::time::Duration::from_millis(5));
+
+        let run_a = PipelineRuns::create(pool, &建运行参数(&a)).await.unwrap();
+        let run_b = PipelineRuns::create(pool, &建运行参数(&b)).await.unwrap();
+        let stage_a = PipelineStageRuns::create(
+            pool,
+            &建阶段参数(
+                &run_a,
+                PipelineStageKey::Requirement,
+                PipelineStageStatus::Running,
+            ),
+        )
+        .await
+        .unwrap();
+        let stage_b = PipelineStageRuns::create(
+            pool,
+            &建阶段参数(
+                &run_b,
+                PipelineStageKey::Requirement,
+                PipelineStageStatus::Running,
+            ),
+        )
+        .await
+        .unwrap();
+
+        // 甲的阶段先结束进入等待，乙的后结束；但甲的运行行最后才更新。
+        PipelineStageRuns::set_status(
+            pool,
+            stage_a.id,
+            PipelineStageStatus::WaitingGate,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        pause().await;
+        PipelineStageRuns::set_status(
+            pool,
+            stage_b.id,
+            PipelineStageStatus::WaitingGate,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        pause().await;
+        PipelineRuns::update_status(pool, run_b.id, PipelineRunStatus::WaitingGate, None)
+            .await
+            .unwrap();
+        pause().await;
+        PipelineRuns::update_status(pool, run_a.id, PipelineRunStatus::WaitingGate, None)
+            .await
+            .unwrap();
+
+        let pending = PipelineRuns::list_pending(pool, None).await.unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|p| p.issue_title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["甲", "乙"],
+            "按阶段 finished_at 排序：甲等得更久"
+        );
+        assert_eq!(pending[0].stage_run.id, stage_a.id);
+        assert_eq!(
+            pending[0].stage_run.status,
+            PipelineStageStatus::WaitingGate
+        );
+        assert!(pending[0].stage_run.finished_at.is_some());
+        assert_eq!(pending[0].run.id, run_a.id);
+        assert_eq!(pending[0].issue_simple_id, a.simple_id);
+    }
+
+    #[tokio::test]
+    async fn 只允许从待启动或运行中标记启动() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.pool();
+        let issue = 准备需求(&test_db, "启动").await;
+        let run = PipelineRuns::create(pool, &建运行参数(&issue))
+            .await
+            .unwrap();
+
+        let running = PipelineStageRuns::create(
+            pool,
+            &建阶段参数(
+                &run,
+                PipelineStageKey::Requirement,
+                PipelineStageStatus::Running,
+            ),
+        )
+        .await
+        .unwrap();
+        PipelineStageRuns::mark_started(pool, running.id, Uuid::new_v4(), Uuid::new_v4())
+            .await
+            .expect("running 的尝试可以补记会话");
+
+        let waiting = PipelineStageRuns::set_status(
+            pool,
+            running.id,
+            PipelineStageStatus::WaitingGate,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let error =
+            PipelineStageRuns::mark_started(pool, waiting.id, Uuid::new_v4(), Uuid::new_v4())
+                .await
+                .expect_err("waiting_gate 不能被重新启动");
+        assert!(
+            matches!(error, sqlx::Error::RowNotFound),
+            "实际错误：{error:?}"
+        );
+        let unchanged = PipelineStageRuns::find_by_id(pool, waiting.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged, waiting, "拒绝时不改任何数据");
+
+        let missing =
+            PipelineStageRuns::mark_started(pool, Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4())
+                .await
+                .expect_err("不存在的尝试");
+        assert!(matches!(missing, sqlx::Error::RowNotFound));
+    }
+
+    #[tokio::test]
+    async fn 终态不能改回非终态但终态之间可以改() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.pool();
+        let issue = 准备需求(&test_db, "终态保护").await;
+        let run = PipelineRuns::create(pool, &建运行参数(&issue))
+            .await
+            .unwrap();
+        let stage = PipelineStageRuns::create(
+            pool,
+            &建阶段参数(&run, PipelineStageKey::Spec, PipelineStageStatus::Running),
+        )
+        .await
+        .unwrap();
+        let passed =
+            PipelineStageRuns::set_status(pool, stage.id, PipelineStageStatus::Passed, None, None)
+                .await
+                .unwrap();
+
+        for status in [
+            PipelineStageStatus::Pending,
+            PipelineStageStatus::Running,
+            PipelineStageStatus::WaitingGate,
+        ] {
+            let error =
+                PipelineStageRuns::set_status(pool, stage.id, status, Some("不该写入"), None)
+                    .await
+                    .expect_err("终态不能改回非终态");
+            assert!(
+                matches!(error, sqlx::Error::RowNotFound),
+                "{status:?}：{error:?}"
+            );
+        }
+        let unchanged = PipelineStageRuns::find_by_id(pool, stage.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged, passed, "拒绝时不改任何数据");
+
+        let skipped =
+            PipelineStageRuns::set_status(pool, stage.id, PipelineStageStatus::Skipped, None, None)
+                .await
+                .expect("终态之间可以改");
+        assert_eq!(skipped.status, PipelineStageStatus::Skipped);
+        assert_eq!(skipped.finished_at, passed.finished_at);
+    }
+
+    #[tokio::test]
+    async fn 运行结束时间只写一次且回到非终态时清空() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.pool();
+        let issue = 准备需求(&test_db, "运行结束时间").await;
+        let run = PipelineRuns::create(pool, &建运行参数(&issue))
+            .await
+            .unwrap();
+
+        let completed =
+            PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Completed, None)
+                .await
+                .unwrap();
+        assert!(completed.finished_at.is_some());
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let cancelled =
+            PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Cancelled, None)
+                .await
+                .unwrap();
+        assert_eq!(
+            cancelled.finished_at, completed.finished_at,
+            "已有结束时间不覆盖"
+        );
+        assert!(cancelled.updated_at > completed.updated_at);
+
+        let reopened = PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Paused, None)
+            .await
+            .unwrap();
+        assert!(reopened.finished_at.is_none(), "非终态清空结束时间");
     }
 }
 ```
@@ -2105,7 +2598,7 @@ Expected: FAIL，`assertion \`left == right\` failed`，left 为 `(1, 2, 1)`。�
 - [ ] **Step 4: 运行全部模型测试**
 
 Run: `cargo test -p db models::pipeline`
-Expected: `test result: ok. 13 passed; 0 failed`
+Expected: `test result: ok. 18 passed; 0 failed`
 （**已核实**：sqlx 0.8.6 对字符串枚举的 SQLite 派生就是 `type_info = <str>::type_info()`、`compatible = <&str>::compatible()`（`~/.cargo/registry/src/*/sqlx-macros-core-0.8.6/src/derives/type.rs:218-223`），运行时 `query_as` 解码 TEXT 列没有问题。）
 
 - [ ] **Step 5: 提交**
@@ -3232,8 +3725,17 @@ stages:
         assert_eq!(view.stages.len(), 7);
         assert_eq!(view.stages[0].gate_kind, GateKind::Human);
         assert_eq!(view.stages[0].gate_label.as_deref(), Some("需求确认"));
+        assert_eq!(view.stages[0].gate_condition, None, "人工关卡没有判定名");
         assert_eq!(view.stages[3].gate_kind, GateKind::Auto);
         assert_eq!(view.stages[3].gate_label, None);
+        assert_eq!(view.stages[3].gate_condition.as_deref(), Some("checks_passed"));
+        for stage in &view.stages {
+            assert_eq!(
+                stage.gate_condition.is_some(),
+                stage.gate_kind == GateKind::Auto,
+                "只有自动关卡有 gate_condition：{stage:?}"
+            );
+        }
     }
 
     #[test]
@@ -3386,6 +3888,16 @@ impl AutoGate {
             _ => None,
         }
     }
+
+    /// 判定名，与 YAML 里的写法一致；也是契约 `PipelineTemplateStageView.gate_condition` 的取值（C10）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AutoGate::ChecksPassed => "checks_passed",
+            AutoGate::NoBlockingFindings => "no_blocking_findings",
+            AutoGate::AllCasesPassed => "all_cases_passed",
+            AutoGate::ArtifactsPresent => "artifacts_present",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3408,6 +3920,13 @@ impl StageGate {
     pub fn human_label(&self) -> Option<&str> {
         match self {
             StageGate::Human { label } => Some(label.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn auto_rule(&self) -> Option<AutoGate> {
+        match self {
+            StageGate::Auto { rule } => Some(*rule),
             _ => None,
         }
     }
@@ -3460,6 +3979,8 @@ impl PipelineTemplate {
                     skill: stage.skill.clone(),
                     gate_kind: stage.gate.kind(),
                     gate_label: stage.gate.human_label().map(str::to_string),
+                    // C10：自动关卡填判定名，人工与无关卡为 None。
+                    gate_condition: stage.gate.auto_rule().map(|rule| rule.as_str().to_string()),
                     max_rounds: stage.max_rounds,
                 })
                 .collect(),
