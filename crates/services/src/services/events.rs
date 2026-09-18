@@ -26,9 +26,7 @@ pub use patches::{
 };
 pub use types::{EventError, EventPatch, EventPatchInner, HookTables, RecordTypes};
 
-/// 提交屏障池只有 1 个连接：sqlx 池按先来先得分配连接，各次提交的推送因此按提交顺序
-/// 尽力有序（spawn 出的任务到达取连接处的先后不作严格保证）；同一行无论先后，
-/// 反查读到的都是屏障时刻的已提交数据，最终一致。与业务主池、钩子反查池都分开，
+/// 提交屏障池只有 1 个连接（sqlx 池按先来先得分配）。与业务主池、钩子反查池都分开，
 /// 排队的屏障不会占用业务连接。
 const COMMIT_BARRIER_MAX_CONNECTIONS: u32 = 1;
 
@@ -40,13 +38,14 @@ fn commit_barrier_pool(query_pool: &SqlitePool) -> SqlitePool {
         .connect_lazy_with((*query_pool.connect_options()).clone())
 }
 
-/// 在屏障连接上开 `BEGIN IMMEDIATE`。commit hook 在提交真正完成之前触发，所以仍要等：
-/// 它要拿写锁，因此会一直等到触发钩子的那个写事务结束（最多等 busy_timeout），返回后
-/// 数据库里只剩已提交数据；持有期间别的写者提交不了。只读用，结束时回滚。
-async fn acquire_commit_barrier(
-    barrier_pool: &SqlitePool,
-) -> Result<sqlx::Transaction<'static, Sqlite>, SqlxError> {
-    barrier_pool.begin_with("BEGIN IMMEDIATE").await
+/// 提交屏障：只作「触发钩子的写者已结束」的同步点。
+///
+/// commit hook 在提交真正完成之前触发，所以要等：`BEGIN IMMEDIATE` 要拿写锁，会一直等到
+/// 那个写事务提交或回滚（最多等 busy_timeout）。拿到后立即回滚释放写锁，不在持锁期间
+/// 反查，别的写者因此不必等推送结束。
+async fn wait_for_commit(barrier_pool: &SqlitePool) -> Result<(), SqlxError> {
+    let barrier = barrier_pool.begin_with("BEGIN IMMEDIATE").await?;
+    barrier.rollback().await
 }
 
 /// 非删除的行变更。删除在 preupdate 钩子里就地生成 remove 补丁（之后读不到旧行了）。
@@ -135,7 +134,16 @@ struct HookContext {
     /// 反查用的库（不装钩子）。
     db: DBService,
     barrier_pool: SqlitePool,
-    barrier_counter: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    /// 推送串行化（全局一把，tokio Mutex 先来先得）：各次推送按过屏障的顺序排队。
+    publish_order: Arc<tokio::sync::Mutex<()>>,
+    probe: Option<Arc<HookProbe>>,
+}
+
+/// 测试探针：统计过屏障的次数，并可在推送前人为延迟。
+#[derive(Default)]
+struct HookProbe {
+    barrier_count: std::sync::atomic::AtomicUsize,
+    publish_delay_ms: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Clone)]
@@ -185,16 +193,16 @@ impl EventService {
         Self::create_hook_inner(msg_store, entry_count, db_service, None)
     }
 
-    /// 同 [`Self::create_hook`]；`barrier_counter` 为 Some 时每过一次提交屏障加一（测试用）。
+    /// 同 [`Self::create_hook`]；`probe` 只给测试用（统计屏障次数、人为延迟推送）。
     ///
     /// 流程：preupdate / update 钩子只把变更记进本连接的缓冲；commit hook 触发时整体取走，
-    /// spawn 一个任务过一次提交屏障后推送（先删除，再按行去重反查）；rollback hook 清空缓冲，
-    /// 回滚掉的写入不推任何补丁。
+    /// spawn 一个任务，过一次提交屏障后在推送锁内推送（先删除，再按行去重反查）；
+    /// rollback hook 清空缓冲，回滚掉的写入不推任何补丁。
     fn create_hook_inner(
         msg_store: Arc<MsgStore>,
         entry_count: Arc<RwLock<usize>>,
         db_service: DBService,
-        barrier_counter: Option<Arc<std::sync::atomic::AtomicUsize>>,
+        probe: Option<Arc<HookProbe>>,
     ) -> impl for<'a> Fn(
         &'a mut sqlx::sqlite::SqliteConnection,
     ) -> std::pin::Pin<
@@ -207,7 +215,8 @@ impl EventService {
             entry_count,
             barrier_pool: commit_barrier_pool(&db_service.pool),
             db: db_service,
-            barrier_counter,
+            publish_order: Arc::new(tokio::sync::Mutex::new(())),
+            probe,
         };
         move |conn: &mut sqlx::sqlite::SqliteConnection| {
             let context = context.clone();
@@ -267,27 +276,35 @@ impl EventService {
         }
     }
 
-    /// 推送一次提交攒下的变更：过一次屏障 → 先推删除 → 按行去重反查并推送 → 释放屏障。
+    /// 推送一次提交攒下的变更：过一次屏障（确认写者已提交，随即释放写锁）→ 在推送锁内
+    /// 先推删除 → 按行去重反查并推送。
     ///
-    /// 持有屏障期间别的写者提交不了，所以下面在反查库上的所有读（含
-    /// find_by_id_with_status、push_workspace_update_for_session 这类二次查询）
-    /// 看到的是同一份已提交快照。
+    /// 一致性：同一行最终一致——每次反查都在各自的提交之后，推送又串行，最后一个推送读到的
+    /// 是所有提交之后的数据。不保证同一次推送内的多个读（含 find_by_id_with_status、
+    /// push_workspace_update_for_session 这类二次查询）是同一快照：推送期间别的写者可以提交，
+    /// 读到的只会更新，不会更旧。
     async fn publish_committed(context: HookContext, batch: PendingChanges) {
-        let barrier = match acquire_commit_barrier(&context.barrier_pool).await {
-            Ok(barrier) => barrier,
-            Err(e) => {
-                tracing::error!(
-                    "等待写事务提交失败，丢弃本次提交的 {} 条删除与 {} 条变更推送，\
-                     客户端需重连后才能恢复这些行的状态: {}",
-                    batch.removals.len(),
-                    batch.changes.len(),
-                    e
-                );
-                return;
+        if let Err(e) = wait_for_commit(&context.barrier_pool).await {
+            tracing::error!(
+                "等待写事务提交失败，丢弃本次提交的 {} 条删除与 {} 条变更推送，\
+                 客户端需重连后才能恢复这些行的状态: {}",
+                batch.removals.len(),
+                batch.changes.len(),
+                e
+            );
+            return;
+        }
+        let _publish_guard = context.publish_order.lock().await;
+        if let Some(probe) = &context.probe {
+            probe
+                .barrier_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let delay = probe
+                .publish_delay_ms
+                .load(std::sync::atomic::Ordering::SeqCst);
+            if delay > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
             }
-        };
-        if let Some(counter) = &context.barrier_counter {
-            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
 
         // 先删后改：同一事务里删掉再按同一 id 重插的行，最终状态是 add。
@@ -297,11 +314,6 @@ impl EventService {
         }
         for (table, rowid, change) in changes {
             Self::push_row_change(&context, table, rowid, change).await;
-        }
-
-        // 只读，回滚即可；回滚失败时 sqlx 在连接归还前会再补一次回滚。
-        if let Err(e) = barrier.rollback().await {
-            tracing::error!("释放变更推送屏障失败: {}", e);
         }
     }
 
@@ -565,8 +577,8 @@ mod tests {
         _dir: tempfile::TempDir,
         db: DBService,
         msg_store: Arc<MsgStore>,
-        /// 过提交屏障的次数。
-        barrier_count: Arc<std::sync::atomic::AtomicUsize>,
+        /// 过提交屏障的次数与推送延迟。
+        probe: Arc<super::HookProbe>,
     }
 
     /// 建两个指向同一数据库文件的 `DBService`：一个专供钩子内部查询用，一个是
@@ -581,12 +593,12 @@ mod tests {
 
         let msg_store = Arc::new(MsgStore::new());
         let entry_count = Arc::new(RwLock::new(0usize));
-        let barrier_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe = Arc::new(super::HookProbe::default());
         let hook = EventService::create_hook_inner(
             msg_store.clone(),
             entry_count,
             hook_query_db,
-            Some(barrier_count.clone()),
+            Some(probe.clone()),
         );
 
         let db = DBService::new_at_path_with_after_connect(&path, journal_mode, hook)
@@ -597,7 +609,7 @@ mod tests {
             _dir: dir,
             db,
             msg_store,
-            barrier_count,
+            probe,
         }
     }
 
@@ -1225,6 +1237,7 @@ mod tests {
         let (project_id, status_id) = insert_project_and_status(&pool).await;
         let_hooks_settle().await;
         let before = fixture
+            .probe
             .barrier_count
             .load(std::sync::atomic::Ordering::SeqCst);
 
@@ -1257,8 +1270,55 @@ mod tests {
         let_hooks_settle().await;
 
         let after = fixture
+            .probe
             .barrier_count
             .load(std::sync::atomic::Ordering::SeqCst);
         assert_eq!(after - before, 1, "一个事务只应过一次提交屏障");
+    }
+
+    /// 屏障只作「写者已提交」的同步点：推送（反查）进行中，别的写事务应能立即拿到写锁。
+    #[tokio::test]
+    async fn 推送进行中别的写事务不必等推送结束() {
+        use std::sync::atomic::Ordering;
+
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let_hooks_settle().await;
+
+        const DELAY_MS: u64 = 2000;
+        fixture
+            .probe
+            .publish_delay_ms
+            .store(DELAY_MS, Ordering::SeqCst);
+        let before = fixture.probe.barrier_count.load(Ordering::SeqCst);
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+        // 等推送任务过了屏障、进入人为延迟。
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while fixture.probe.barrier_count.load(Ordering::SeqCst) == before {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("推送任务应过屏障");
+
+        let started = std::time::Instant::now();
+        sqlx::query("UPDATE local_projects SET name = '并发写' WHERE id = ?1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(DELAY_MS / 4),
+            "推送期间写锁不应被占着，并发写耗时 {elapsed:?}"
+        );
+
+        fixture.probe.publish_delay_ms.store(0, Ordering::SeqCst);
+        let issue_path = format!("/issues/{issue_id}");
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
     }
 }
