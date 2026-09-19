@@ -116,6 +116,13 @@ module.exports = {
         error: "hsl(var(--error))",
         success: "hsl(var(--success))",
         merged: "hsl(var(--merged))",
+        // Pipeline stage semantic colors (设计文档 §8.5)
+        'stage-neutral': "hsl(var(--stage-neutral))",
+        'stage-dev': "hsl(var(--stage-dev))",
+        'stage-review': "hsl(var(--stage-review))",
+        'stage-test': "hsl(var(--stage-test))",
+        'stage-done': "hsl(var(--stage-done))",
+        'stage-failed': "hsl(var(--stage-failed))",
         // Text on accent
         'on-brand': "hsl(var(--text-on-brand))",
         // shadcn-style colors (used by @apply in CSS base layer)
