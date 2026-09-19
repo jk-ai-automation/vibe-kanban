@@ -8,6 +8,8 @@ import {
 } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { useTranslation } from 'react-i18next';
+import { useRouter } from '@tanstack/react-router';
+import { PERSONAL_ROUTES } from '@/shared/lib/routes/personalRoutes';
 import type { OrganizationMemberWithProfile } from 'shared/types';
 import type { IssuePriority } from 'shared/remote-types';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
@@ -1043,6 +1045,16 @@ export function KanbanIssuePanelContainer({
     navigator.clipboard.writeText(url);
   }, [projectId, selectedKanbanIssueId]);
 
+  // 「全屏查看」只在个人版出现（设计文档 §8.4）。本文件也被 remote-web 编译，
+  // 那里没有详情路由，所以用 history.push 路径字符串，不用带类型的 navigate。
+  const router = useRouter();
+  const handleOpenFullscreen = useCallback(() => {
+    if (!selectedKanbanIssueId || !projectId) return;
+    router.history.push(
+      PERSONAL_ROUTES.issueDetail(projectId, selectedKanbanIssueId)
+    );
+  }, [projectId, router, selectedKanbanIssueId]);
+
   // More actions callback - opens command bar with issue actions
   const handleMoreActions = useCallback(async () => {
     if (!selectedKanbanIssueId || !projectId) return;
@@ -1127,6 +1139,11 @@ export function KanbanIssuePanelContainer({
       }
       onCopyLink={mode === 'edit' ? handleCopyLink : undefined}
       onMoreActions={mode === 'edit' ? handleMoreActions : undefined}
+      onOpenFullscreen={
+        mode === 'edit' && isLocalPersonalMode()
+          ? handleOpenFullscreen
+          : undefined
+      }
       onPasteFiles={onPasteFiles}
       localAttachments={localAttachments}
       dropzoneProps={{ getRootProps, getInputProps, isDragActive }}
