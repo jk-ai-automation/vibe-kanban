@@ -53,8 +53,43 @@ import {
   SettingsTextarea,
 } from './SettingsComponents';
 import { useSettingsDirty } from './SettingsDirtyContext';
+import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { isLocalPersonalMode } from '@/shared/lib/local/runtimeMode';
 
-export function GeneralSettingsSection() {
+/**
+ * 数据导出卡片（仅个人版；团队版导出仍在左侧 AppBar）。
+ * 个人版把导出入口从左侧栏挪到这里（设计文档 §8.1）。
+ *
+ * 单独成组件：`useAppNavigation` 只在个人版渲染时才调用，团队版与云端构建
+ * 的常规设置完全不碰它。
+ */
+function PersonalExportCard({ onClose }: { onClose?: () => void }) {
+  const { t } = useTranslation(['settings', 'common']);
+  const appNavigation = useAppNavigation();
+  const handleOpenExport = useCallback(() => {
+    onClose?.();
+    appNavigation.goToExport();
+  }, [appNavigation, onClose]);
+
+  return (
+    <SettingsCard
+      title={t('settings.general.export.title')}
+      description={t('settings.general.export.description')}
+    >
+      <div className="flex justify-end">
+        <PrimaryButton
+          variant="tertiary"
+          value={t('settings.general.export.button')}
+          onClick={handleOpenExport}
+        />
+      </div>
+    </SettingsCard>
+  );
+}
+
+export function GeneralSettingsSection({
+  onClose,
+}: { onClose?: () => void } = {}) {
   const { t } = useTranslation(['settings', 'common']);
   const { setDirty: setContextDirty } = useSettingsDirty();
 
@@ -835,6 +870,8 @@ export function GeneralSettingsSection() {
           />
         </div>
       </SettingsCard>
+
+      {isLocalPersonalMode() && <PersonalExportCard onClose={onClose} />}
 
       <SettingsSaveBar
         show={hasUnsavedChanges}
