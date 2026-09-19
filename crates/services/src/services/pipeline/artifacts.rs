@@ -59,10 +59,17 @@ pub fn list_existing(dir: &Path) -> Vec<String> {
     names
 }
 
+/// 产出物只能是目录下的纯文件名：不含路径分隔符，不是空串、`.` 或 `..`。
+pub fn is_plain_file_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\'])
+}
+
 /// 读阶段声明的产出物：存在且非空白的才收进来。非 UTF-8 按有损转换。
+/// 不是纯文件名的声明（模板写了路径）一律不读，防止读到产出物目录之外的文件。
 pub fn read_declared(dir: &Path, declared: &[String]) -> BTreeMap<String, String> {
     declared
         .iter()
+        .filter(|name| is_plain_file_name(name))
         .filter_map(|name| {
             let bytes = std::fs::read(dir.join(name)).ok()?;
             let text = String::from_utf8_lossy(&bytes).into_owned();
@@ -150,6 +157,28 @@ mod tests {
         ];
         let read = read_declared(dir.path(), &declared);
         assert_eq!(read.keys().collect::<Vec<_>>(), vec!["spec.md"]);
+    }
+
+    #[test]
+    fn 声明的文件名带路径时不读() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("runs");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(root.path().join("secret.md"), "目录外").unwrap();
+        std::fs::write(dir.join("sub").join("a.md"), "子目录").unwrap();
+        std::fs::write(dir.join("ok.md"), "正常").unwrap();
+        let declared = vec![
+            "../secret.md".to_string(),
+            "sub/a.md".to_string(),
+            "sub\\a.md".to_string(),
+            "..".to_string(),
+            ".".to_string(),
+            "".to_string(),
+            root.path().join("secret.md").to_string_lossy().into_owned(),
+            "ok.md".to_string(),
+        ];
+        let read = read_declared(&dir, &declared);
+        assert_eq!(read.keys().collect::<Vec<_>>(), vec!["ok.md"]);
     }
 
     #[tokio::test]
