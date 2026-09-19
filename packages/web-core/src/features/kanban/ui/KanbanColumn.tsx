@@ -12,8 +12,11 @@ import {
   IssueWorkspaceCard,
   type WorkspaceWithStats,
 } from '@vibe/ui/components/IssueWorkspaceCard';
+import { PipelineProgressBar } from '@vibe/ui/components/PipelineProgressBar';
+import { PipelineStatusTag } from '@vibe/ui/components/PipelineStatusTag';
 import { SearchableTagDropdownContainer } from '@/shared/components/SearchableTagDropdownContainer';
 import type { ResolvedRelationship } from '@/shared/lib/resolveRelationships';
+import type { PipelineCardInfo } from '@/entities/pipeline/model/cardInfo';
 import type { OrganizationMemberWithProfile } from 'shared/types';
 import type { Issue, IssueTag, PullRequest, Tag } from 'shared/remote-types';
 import type { BoardColumn } from '../model/boardModel';
@@ -25,6 +28,11 @@ import {
 } from '../model/cardBadges';
 import type { DensityClasses } from '../model/density';
 import { stageLabelKey } from '../model/stageType';
+import {
+  pipelineColumnEmptyKey,
+  pipelineColumnHintKey,
+  pipelineColumnTitleKey,
+} from '../model/pipelineColumns';
 import { cn } from '@/shared/lib/utils';
 
 export type KanbanColumnProps = {
@@ -50,6 +58,13 @@ export type KanbanColumnProps = {
   showAssignees: boolean;
   /** 密度对应的 class 与开关。 */
   density: DensityClasses;
+  /**
+   * 个人版流水线看板（设计文档 §8.3）：列名换成流水线列名、不显示列内新建、
+   * 空列说明原因。默认 false，团队版行为不变。
+   */
+  isPipelineBoard?: boolean;
+  /** 个人版：需求 id → 卡片底部进度格与状态标签。没有流水线的需求不在表里。 */
+  pipelineCards?: ReadonlyMap<string, PipelineCardInfo>;
   getPullRequestsForIssue: (issueId: string) => PullRequest[];
   getTagObjectsForIssue: (issueId: string) => Tag[];
   getTagsForIssue: (issueId: string) => IssueTag[];
@@ -68,7 +83,8 @@ export type KanbanColumnProps = {
 /**
  * 看板的单个泳道。纯展示：所有数据与回调走 props，**内部不用任何 hook**。
  * （需要翻译的文案都交给 `KanbanColumnHeader` / `KanbanColumnEmptyState` /
- * `KanbanCardContent` 这些 UI 组件自己去 `useTranslation`。）
+ * `KanbanCardContent` 这些 UI 组件自己去 `useTranslation`；流水线卡片信息
+ * 由容器翻译好传进来。）
  */
 export function KanbanColumn({
   column,
@@ -85,6 +101,8 @@ export function KanbanColumn({
   showStageBadge,
   showAssignees,
   density,
+  isPipelineBoard = false,
+  pipelineCards,
   getPullRequestsForIssue,
   getTagObjectsForIssue,
   getTagsForIssue,
@@ -108,11 +126,17 @@ export function KanbanColumn({
       <KanbanHeader>
         <KanbanColumnHeader
           name={status.name}
+          nameKey={
+            isPipelineBoard ? pipelineColumnTitleKey(status.name, stage) : null
+          }
           color={status.color}
           count={count}
           wip={wipState(count, wipLimit)}
           wipLimit={wipLimit}
           stageLabelKey={showStageBadge ? stageLabelKey(stage) : null}
+          hintKey={isPipelineBoard ? pipelineColumnHintKey(stage) : null}
+          showAddButton={!isPipelineBoard}
+          dataStage={stage}
           onAddIssue={() => onAddIssue(status.id)}
         />
       </KanbanHeader>
@@ -133,6 +157,7 @@ export function KanbanColumn({
             // 已经在工作区卡片里露出的 PR，不在需求层重复渲染。
             return !workspaceIdsShownOnCard.has(pr.workspace_id);
           });
+          const pipelineCard = pipelineCards?.get(issue.id) ?? null;
 
           return (
             <KanbanCard
@@ -140,7 +165,11 @@ export function KanbanColumn({
               id={issue.id}
               name={issue.title}
               index={index}
-              className="group"
+              className={cn(
+                'group',
+                // 失败红边框：颜色 + 文字 + 进度格三重编码（设计文档 §8.5）
+                pipelineCard?.isFailed && 'ring-1 ring-stage-failed'
+              )}
               onClick={(e) => onCardClick(issue.id, e)}
               isOpen={selectedIssueId === issue.id}
               isMobile={isMobile}
@@ -199,6 +228,24 @@ export function KanbanColumn({
                   ),
                 }}
               />
+              {pipelineCard && (
+                <div
+                  data-testid="kanban-card-pipeline"
+                  data-issue-id={issue.id}
+                  className="mt-half flex flex-col gap-half"
+                >
+                  <div className="flex items-center">
+                    <PipelineStatusTag
+                      tone={pipelineCard.tone}
+                      label={pipelineCard.statusText}
+                    />
+                  </div>
+                  <PipelineProgressBar
+                    cells={pipelineCard.cells}
+                    ariaLabel={pipelineCard.progressLabel}
+                  />
+                </div>
+              )}
               {issueWorkspaces.length > 0 && (
                 <div className={cn('mt-base flex flex-col', density.cards)}>
                   {issueWorkspaces.map((workspace) => (
@@ -227,8 +274,13 @@ export function KanbanColumn({
         {emptyStateKind !== 'none' && (
           <KanbanColumnEmptyState
             kind={emptyStateKind}
+            hintKey={
+              isPipelineBoard && emptyStateKind === 'empty'
+                ? pipelineColumnEmptyKey(stage)
+                : undefined
+            }
             onCreateIssue={
-              emptyStateKind === 'empty'
+              emptyStateKind === 'empty' && !isPipelineBoard
                 ? () => onAddIssue(status.id)
                 : undefined
             }

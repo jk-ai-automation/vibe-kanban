@@ -115,6 +115,8 @@ interface KanbanFilterBarProps<
   onDensityToggle?: () => void;
   /** 密度按钮的无障碍标签与 tooltip（已翻译）。 */
   densityLabel?: string;
+  /** 是否显示 Team / Personal 切换。默认显示；个人版隐藏（设计文档 §8.1）。 */
+  showViewSwitch?: boolean;
 }
 
 export function KanbanFilterBar<
@@ -153,6 +155,7 @@ export function KanbanFilterBar<
   density,
   onDensityToggle,
   densityLabel,
+  showViewSwitch = true,
 }: KanbanFilterBarProps<TTag, TUser, TSortField>) {
   const { t } = useTranslation('common');
   const [mobileSearchExpanded, setMobileSearchExpanded] = useState(false);
@@ -191,20 +194,22 @@ export function KanbanFilterBar<
             isMobile ? 'gap-half' : 'gap-base'
           )}
         >
-          <ButtonGroup className="flex-wrap">
-            <ButtonGroupItem
-              active={activeViewId === viewIds.TEAM}
-              onClick={() => onViewChange(viewIds.TEAM)}
-            >
-              {t('kanban.team', 'Team')}
-            </ButtonGroupItem>
-            <ButtonGroupItem
-              active={activeViewId === viewIds.PERSONAL}
-              onClick={() => onViewChange(viewIds.PERSONAL)}
-            >
-              {t('kanban.personal', 'Personal')}
-            </ButtonGroupItem>
-          </ButtonGroup>
+          {showViewSwitch && (
+            <ButtonGroup className="flex-wrap">
+              <ButtonGroupItem
+                active={activeViewId === viewIds.TEAM}
+                onClick={() => onViewChange(viewIds.TEAM)}
+              >
+                {t('kanban.team', 'Team')}
+              </ButtonGroupItem>
+              <ButtonGroupItem
+                active={activeViewId === viewIds.PERSONAL}
+                onClick={() => onViewChange(viewIds.PERSONAL)}
+              >
+                {t('kanban.personal', 'Personal')}
+              </ButtonGroupItem>
+            </ButtonGroup>
+          )}
 
           {isMobile ? (
             <button
