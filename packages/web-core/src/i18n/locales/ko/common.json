@@ -890,7 +890,8 @@
       "noRepo": "Add a repository in Settings → Repositories first",
       "noProject": "Create a project first",
       "error": "Failed to start: {{message}}",
-      "startFailedAfterCreate": "The requirement was created, but the pipeline failed to start: {{message}}. Click Start again to retry for the same requirement."
+      "startFailedAfterCreate": "The requirement was created, but the pipeline failed to start: {{message}}. Click Start again to retry for the same requirement.",
+      "noAgent": "No usable coding agent configuration was found. Set one up in Settings → Agents."
     },
     "columns": {
       "confirm": "Needs your confirmation",

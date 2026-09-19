@@ -159,7 +159,11 @@ export function WorkbenchComposerContainer({
     ? t('workbench.composer.noProject')
     : reposQuery.isSuccess && repos.length === 0
       ? t('workbench.composer.noRepo')
-      : null;
+      : // profiles 为 null 是还没加载完；加载完仍拿不到执行器配置才提示，
+        // 否则「开始」被禁用却不知道为什么。
+        profiles !== null && !executorConfig
+        ? t('workbench.composer.noAgent')
+        : null;
 
   return (
     <WorkbenchComposer

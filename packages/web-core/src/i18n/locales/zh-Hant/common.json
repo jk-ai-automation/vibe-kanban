@@ -890,7 +890,8 @@
       "noRepo": "先在 設定 → 儲存庫 裡新增一個儲存庫",
       "noProject": "先新增一個專案",
       "error": "啟動失敗：{{message}}",
-      "startFailedAfterCreate": "需求已建立，但啟動流水線失敗：{{message}}。再次點「開始」只會為這條需求重試啟動。"
+      "startFailedAfterCreate": "需求已建立，但啟動流水線失敗：{{message}}。再次點「開始」只會為這條需求重試啟動。",
+      "noAgent": "未偵測到可用的編碼代理設定，請到 設定 → 代理 裡設定。"
     },
     "columns": {
       "confirm": "需要你確認",

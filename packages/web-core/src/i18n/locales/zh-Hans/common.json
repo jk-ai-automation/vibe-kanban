@@ -890,7 +890,8 @@
       "noRepo": "先在 设置 → 仓库 里添加一个仓库",
       "noProject": "先新建一个项目",
       "error": "启动失败：{{message}}",
-      "startFailedAfterCreate": "需求已创建，但启动流水线失败：{{message}}。再次点「开始」只会为这条需求重试启动。"
+      "startFailedAfterCreate": "需求已创建，但启动流水线失败：{{message}}。再次点「开始」只会为这条需求重试启动。",
+      "noAgent": "未检测到可用的编码代理配置，请到 设置 → 代理 里配置。"
     },
     "columns": {
       "confirm": "需要你确认",
