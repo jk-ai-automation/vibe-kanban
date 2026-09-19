@@ -889,7 +889,8 @@
       "submitting": "Starting…",
       "noRepo": "Add a repository in Settings → Repositories first",
       "noProject": "Create a project first",
-      "error": "Failed to start: {{message}}"
+      "error": "Failed to start: {{message}}",
+      "startFailedAfterCreate": "The requirement was created, but the pipeline failed to start: {{message}}. Click Start again to retry for the same requirement."
     },
     "columns": {
       "confirm": "Needs your confirmation",

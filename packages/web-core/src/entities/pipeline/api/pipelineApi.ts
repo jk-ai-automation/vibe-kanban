@@ -44,6 +44,13 @@ export const PIPELINE_API_PATHS = {
 } as const;
 
 export class PipelineApiError extends Error {
+  /**
+   * 工作台「开始」是两步：建需求 → 启动流水线。第二步失败时为 true，
+   * 此时需求已经存在（`issueId`），重试应只启动流水线，不能再建一条。
+   */
+  issueCreated = false;
+  issueId: string | null = null;
+
   constructor(
     public readonly status: number,
     message: string
@@ -153,11 +160,33 @@ export async function createIssue(payload: CreateIssueRequest): Promise<void> {
   }
 }
 
-/** 工作台「开始」：先建需求（前端生成 id），再启动流水线。 */
+/**
+ * 工作台「开始」：先建需求（前端生成 id），再启动流水线。
+ *
+ * 传 `reuseIssueId` 表示上次需求已建好、只是启动失败，这次只启动流水线。
+ * 启动失败时抛出的 `PipelineApiError` 带 `issueCreated = true` 与 `issueId`。
+ */
 export async function createIssueAndStartPipeline(args: {
   issue: CreateIssueRequest & { id: string };
   pipeline: StartPipelineRequest;
+  reuseIssueId?: string | null;
 }): Promise<IssuePipelineView> {
-  await createIssue(args.issue);
-  return startPipeline(args.issue.id, args.pipeline);
+  const issueId = args.reuseIssueId ?? args.issue.id;
+  if (!args.reuseIssueId) {
+    await createIssue(args.issue);
+  }
+  try {
+    return await startPipeline(issueId, args.pipeline);
+  } catch (error) {
+    const wrapped =
+      error instanceof PipelineApiError
+        ? error
+        : new PipelineApiError(
+            0,
+            error instanceof Error ? error.message : String(error)
+          );
+    wrapped.issueCreated = true;
+    wrapped.issueId = issueId;
+    throw wrapped;
+  }
 }

@@ -156,6 +156,45 @@ describe('信封解析', () => {
 });
 
 describe('createIssueAndStartPipeline', () => {
+  it('需求建好但启动失败：抛出带 issueCreated 的错误，保留后端 message', async () => {
+    responses.push(
+      json({ txid: 0 }),
+      json(
+        {
+          success: false,
+          data: null,
+          error_data: null,
+          message: '已有未结束的运行',
+        },
+        409
+      )
+    );
+    await expect(
+      createIssueAndStartPipeline({
+        issue: ISSUE_REQUEST,
+        pipeline: PIPELINE_REQUEST,
+      })
+    ).rejects.toMatchObject({
+      name: 'PipelineApiError',
+      status: 409,
+      message: '已有未结束的运行',
+      issueCreated: true,
+      issueId: 'i1',
+    });
+  });
+
+  it('重试时传 reuseIssueId：只启动流水线，不再建需求', async () => {
+    responses.push(envelope({ run: { id: 'r1', issue_id: 'i1' } }));
+    await createIssueAndStartPipeline({
+      issue: ISSUE_REQUEST,
+      pipeline: PIPELINE_REQUEST,
+      reuseIssueId: 'i1',
+    });
+    expect(calls.map((c) => [c.init.method, c.path])).toEqual([
+      ['POST', '/api/local/issues/i1/pipeline'],
+    ]);
+  });
+
   it('先建需求再启动流水线，需求 id 贯穿两步', async () => {
     responses.push(
       json({ txid: 0 }),
