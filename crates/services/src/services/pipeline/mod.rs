@@ -2,7 +2,9 @@
 //! 对外只暴露 [`PipelineService`]（任务 15 起）；其余子模块是它的纯函数零件。
 
 pub mod artifacts;
+pub mod engine;
 pub mod gates;
+pub mod launcher;
 pub mod prompt;
 pub mod template;
 pub mod transition;
