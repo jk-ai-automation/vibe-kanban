@@ -2,8 +2,8 @@ import type { PipelineRun, PipelineStageRun } from 'shared/types';
 import type { CreateIssueRequest } from 'shared/remote-types';
 import {
   isManualStop,
-  stageRound,
   toMillis,
+  toNumber,
 } from '@/entities/pipeline/model/progress';
 import { splitMessageToTitleDescription } from '@/shared/lib/string';
 
@@ -36,6 +36,25 @@ export interface WeeklyStats {
   firstPassRate: number | null;
 }
 
+/**
+ * 一次通过率用的尝试序号：扣掉本运行本阶段更早的「用户手动停止」。
+ * 与轮次（`stageRound`，只数失败）不同：打回、回流重跑也算没有一次通过。
+ */
+function attemptExcludingManualStops(
+  stages: readonly PipelineStageRun[],
+  stage: PipelineStageRun
+): number {
+  const attempt = toNumber(stage.attempt) ?? 1;
+  const manualStopsBefore = stages.filter(
+    (other) =>
+      other.id !== stage.id &&
+      other.stage_key === stage.stage_key &&
+      (toNumber(other.attempt) ?? 0) < attempt &&
+      isManualStop(other)
+  ).length;
+  return attempt - manualStopsBefore;
+}
+
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
@@ -66,7 +85,9 @@ export function weeklyStats(
   const firstPass = delivered.filter((run) => {
     const runStages = stages.filter((stage) => stage.run_id === run.id);
     return runStages.every(
-      (stage) => isManualStop(stage) || stageRound(runStages, stage) <= 1
+      (stage) =>
+        isManualStop(stage) ||
+        attemptExcludingManualStops(runStages, stage) <= 1
     );
   }).length;
   return {

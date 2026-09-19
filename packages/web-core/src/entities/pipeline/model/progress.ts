@@ -101,23 +101,26 @@ export function isManualStop(stage: Pick<PipelineStageRun, 'error'>): boolean {
 }
 
 /**
- * 这次尝试是本阶段的第几轮：尝试序号减去本运行、本阶段更早的
- * 「用户手动停止」尝试数，至少为 1。
+ * 这次尝试是本阶段的第几轮，与后端 `PipelineStageRuns::count_failed` 一致：
+ * 本运行、本阶段、序号更早的尝试里 `status = failed` 且不是「用户手动停止」
+ * 的个数 + 1。人工打回（rejected）、回流后重跑前的 passed 都不计。
+ * 当前尝试本身失败时，结果正好是计入它之后的失败数。
  */
 export function stageRound(
   stages: readonly PipelineStageRun[],
   stage: PipelineStageRun
 ): number {
   const attempt = toNumber(stage.attempt) ?? 1;
-  const manualStopsBefore = stages.filter(
+  const failedBefore = stages.filter(
     (other) =>
       other.id !== stage.id &&
       other.run_id === stage.run_id &&
       other.stage_key === stage.stage_key &&
       (toNumber(other.attempt) ?? 0) < attempt &&
-      isManualStop(other)
+      other.status === 'failed' &&
+      !isManualStop(other)
   ).length;
-  return Math.max(1, attempt - manualStopsBefore);
+  return failedBefore + 1;
 }
 
 function currentCellState(
@@ -186,8 +189,8 @@ export interface PipelineStatusInfo {
   /** 模板里的人工关卡名（如「需求确认」）；没有模板或不是人工关卡为 null。 */
   gateLabel: string | null;
   /**
-   * 当前阶段的轮次（`stageRound`：尝试序号扣掉更早的「用户手动停止」），
-   * 至少为 1。
+   * 当前阶段的轮次（`stageRound`：更早的非手动停止失败数 + 1，同后端
+   * `count_failed`），至少为 1。
    */
   attempt: number;
   /**

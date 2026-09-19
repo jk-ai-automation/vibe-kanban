@@ -111,11 +111,23 @@ describe('gateBarState', () => {
     });
   });
 
-  it('自动阶段：带轮次', () => {
+  it('自动阶段：带轮次（此前 1 次失败 → 第 2 轮，同后端 count_failed）', () => {
     const view = makeView({
       run: makeRun({ current_stage_key: 'develop' }),
       stages: [
-        makeStage({ stage_key: 'develop', attempt: 2, gate_kind: 'auto' }),
+        makeStage({
+          id: 'd1',
+          stage_key: 'develop',
+          attempt: 1,
+          gate_kind: 'auto',
+          status: 'failed',
+        }),
+        makeStage({
+          id: 'd2',
+          stage_key: 'develop',
+          attempt: 2,
+          gate_kind: 'auto',
+        }),
       ],
     });
     expect(gateBarState(view)).toEqual({
@@ -139,21 +151,22 @@ describe('gateBarState', () => {
     expect(kind('cancelled')).toBe('cancelled');
   });
 
-  it('失败时带上轮次，便于显示「第 3/3 轮」', () => {
+  it('失败时带上轮次，便于显示「第 3/3 轮」（三次失败尝试都计入，同后端 count_failed）', () => {
     const view = makeView({
       run: makeRun({
         status: 'failed',
         current_stage_key: 'review',
         updated_at: at(9),
       }),
-      stages: [
+      stages: [1, 2, 3].map((attempt) =>
         makeStage({
+          id: `rv${attempt}`,
           stage_key: 'review',
-          attempt: 3,
+          attempt,
           status: 'failed',
           gate_kind: 'auto',
-        }),
-      ],
+        })
+      ),
     });
     expect(gateBarState(view)).toEqual({
       kind: 'failed',

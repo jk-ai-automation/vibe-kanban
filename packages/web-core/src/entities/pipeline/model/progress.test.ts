@@ -187,10 +187,24 @@ describe('pipelineStatus + pipelineStatusText', () => {
     );
   });
 
-  it('自动阶段第 2 轮：显示轮次', () => {
+  it('自动阶段第 2 轮（此前有 1 次失败尝试，轮次 = 失败数 + 1，同后端 count_failed）', () => {
     const run = makeRun({ current_stage_key: 'develop' });
     const info = pipelineStatus(
-      [makeStage({ stage_key: 'develop', attempt: 2, gate_kind: 'auto' })],
+      [
+        makeStage({
+          id: 'd1',
+          stage_key: 'develop',
+          attempt: 1,
+          gate_kind: 'auto',
+          status: 'failed',
+        }),
+        makeStage({
+          id: 'd2',
+          stage_key: 'develop',
+          attempt: 2,
+          gate_kind: 'auto',
+        }),
+      ],
       STANDARD_TEMPLATE,
       run
     );
@@ -287,7 +301,7 @@ describe('轮次不计「用户手动停止」（后端 MANUAL_STOP_ERROR 不计
     expect(pipelineStatus(stages, STANDARD_TEMPLATE, run).attempt).toBe(2);
   });
 
-  it('只扣本运行、本阶段、更早的手动停止', () => {
+  it('只数本运行、本阶段、更早的失败尝试（手动停止不计）', () => {
     const current = develop(3, { status: 'running' });
     const stages = [
       develop(1, { run_id: 'other', error: MANUAL_STOP_ERROR }),
@@ -300,8 +314,41 @@ describe('轮次不计「用户手动停止」（后端 MANUAL_STOP_ERROR 不计
       }),
       current,
     ];
-    expect(stageRound(stages, current)).toBe(3);
+    expect(stageRound(stages, current)).toBe(1);
     expect(isManualStop(develop(1, { error: MANUAL_STOP_ERROR }))).toBe(true);
     expect(isManualStop(develop(1, { error: '别的原因' }))).toBe(false);
+  });
+});
+
+describe('stageRound 与后端 count_failed 对齐', () => {
+  const develop = (attempt: number, extra: Record<string, unknown> = {}) =>
+    makeStage({
+      id: `d${attempt}`,
+      stage_key: 'develop',
+      gate_kind: 'auto',
+      attempt,
+      status: 'failed',
+      ...extra,
+    });
+
+  it('测试回流后开发重跑：之前开发尝试是 passed，不算失败，仍是第 1 轮', () => {
+    const stages = [
+      develop(1, { status: 'passed' }),
+      develop(2, { status: 'running' }),
+    ];
+    expect(stageRound(stages, stages[1])).toBe(1);
+  });
+
+  it('被打回（rejected）不计入轮次', () => {
+    const stages = [
+      develop(1, { status: 'rejected' }),
+      develop(2, { status: 'running' }),
+    ];
+    expect(stageRound(stages, stages[1])).toBe(1);
+  });
+
+  it('当前尝试本身失败：按计入后的失败数显示', () => {
+    const stages = [develop(1), develop(2), develop(3)];
+    expect(stageRound(stages, stages[2])).toBe(3);
   });
 });
