@@ -7,7 +7,6 @@ use db::{
         workspace::Workspace,
     },
 };
-use serde_json::json;
 use sqlx::{Error as SqlxError, Sqlite, SqlitePool, decode::Decode, sqlite::SqliteOperation};
 use tokio::sync::RwLock;
 use utils::msg_store::MsgStore;
@@ -126,20 +125,31 @@ fn removal_patch(preupdate: &sqlx::sqlite::PreupdateHookResult<'_>) -> Option<js
     }
 }
 
-/// 钩子任务共用的上下文。
+/// 推送消费者共用的上下文。
 #[derive(Clone)]
 struct HookContext {
     msg_store: Arc<MsgStore>,
-    entry_count: Arc<RwLock<usize>>,
     /// 反查用的库（不装钩子）。
     db: DBService,
     barrier_pool: SqlitePool,
-    /// 推送串行化（全局一把，tokio Mutex 先来先得）：各次推送按过屏障的顺序排队。
-    publish_order: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(test)]
     probe: Option<Arc<HookProbe>>,
 }
 
+impl HookContext {
+    fn new(msg_store: Arc<MsgStore>, db: DBService) -> Self {
+        Self {
+            msg_store,
+            barrier_pool: commit_barrier_pool(&db.pool),
+            db,
+            #[cfg(test)]
+            probe: None,
+        }
+    }
+}
+
 /// 测试探针：统计过屏障的次数，并可在推送前人为延迟。
+#[cfg(test)]
 #[derive(Default)]
 struct HookProbe {
     barrier_count: std::sync::atomic::AtomicUsize,
@@ -179,9 +189,12 @@ impl EventService {
     }
 
     /// Creates the hook function that should be used with DBService::new_with_after_connect
+    ///
+    /// 必须在 tokio 运行时内调用：这里会启动推送消费者任务。`_entry_count` 只为兼容调用方保留
+    /// （旧的 `/entries` 兜底格式已删除）。
     pub fn create_hook(
         msg_store: Arc<MsgStore>,
-        entry_count: Arc<RwLock<usize>>,
+        _entry_count: Arc<RwLock<usize>>,
         db_service: DBService,
     ) -> impl for<'a> Fn(
         &'a mut sqlx::sqlite::SqliteConnection,
@@ -190,19 +203,15 @@ impl EventService {
     > + Send
     + Sync
     + 'static {
-        Self::create_hook_inner(msg_store, entry_count, db_service, None)
+        Self::hook_from_context(HookContext::new(msg_store, db_service))
     }
 
-    /// 同 [`Self::create_hook`]；`probe` 只给测试用（统计屏障次数、人为延迟推送）。
-    ///
-    /// 流程：preupdate / update 钩子只把变更记进本连接的缓冲；commit hook 触发时整体取走，
-    /// spawn 一个任务，过一次提交屏障后在推送锁内推送（先删除，再按行去重反查）；
-    /// rollback hook 清空缓冲，回滚掉的写入不推任何补丁。
-    fn create_hook_inner(
+    /// 同 [`Self::create_hook`]，但带测试探针（统计屏障次数、人为延迟推送）。
+    #[cfg(test)]
+    fn create_hook_with_probe(
         msg_store: Arc<MsgStore>,
-        entry_count: Arc<RwLock<usize>>,
         db_service: DBService,
-        probe: Option<Arc<HookProbe>>,
+        probe: Arc<HookProbe>,
     ) -> impl for<'a> Fn(
         &'a mut sqlx::sqlite::SqliteConnection,
     ) -> std::pin::Pin<
@@ -210,19 +219,33 @@ impl EventService {
     > + Send
     + Sync
     + 'static {
-        let context = HookContext {
-            msg_store,
-            entry_count,
-            barrier_pool: commit_barrier_pool(&db_service.pool),
-            db: db_service,
-            publish_order: Arc::new(tokio::sync::Mutex::new(())),
-            probe,
-        };
+        let mut context = HookContext::new(msg_store, db_service);
+        context.probe = Some(probe);
+        Self::hook_from_context(context)
+    }
+
+    /// 流程：preupdate / update 钩子只把变更记进本连接的缓冲；commit hook 触发时整体取走，
+    /// 送进无界通道；唯一的消费者任务按通道顺序串行推送（等提交屏障 → 先删除 → 按行去重
+    /// 反查）。rollback hook 清空缓冲，回滚掉的写入不推任何补丁。
+    ///
+    /// 顺序：commit hook 在提交过程中、仍持有写锁时触发，各连接的提交被写锁互斥，所以
+    /// 通道里的顺序就是提交顺序。消费者在所有发送端（即各连接上的钩子）drop 后自然退出；
+    /// 运行时关闭后 send 失败只丢弃，不 panic。
+    fn hook_from_context(
+        context: HookContext,
+    ) -> impl for<'a> Fn(
+        &'a mut sqlx::sqlite::SqliteConnection,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sqlx::Error>> + Send + 'a>,
+    > + Send
+    + Sync
+    + 'static {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<PendingChanges>();
+        tokio::spawn(Self::publish_loop(context, receiver));
         move |conn: &mut sqlx::sqlite::SqliteConnection| {
-            let context = context.clone();
+            let sender = sender.clone();
             Box::pin(async move {
                 let mut handle = conn.lock_handle().await?;
-                let runtime_handle = tokio::runtime::Handle::current();
                 // 每个连接一份缓冲：同一连接上的钩子回调是串行的，不同连接互不干扰。
                 let pending: PendingBuffer = Arc::default();
 
@@ -259,8 +282,9 @@ impl EventService {
                     let pending = pending.clone();
                     move || {
                         let batch = std::mem::take(&mut *lock_pending(&pending));
-                        if !batch.is_empty() {
-                            runtime_handle.spawn(Self::publish_committed(context.clone(), batch));
+                        // 接收端只在运行时关闭时消失，此时丢弃即可。
+                        if !batch.is_empty() && sender.send(batch).is_err() {
+                            tracing::debug!("变更推送消费者已退出，丢弃本次提交的推送");
                         }
                         // true = 不否决提交。
                         true
@@ -276,25 +300,41 @@ impl EventService {
         }
     }
 
-    /// 推送一次提交攒下的变更：过一次屏障（确认写者已提交，随即释放写锁）→ 在推送锁内
-    /// 先推删除 → 按行去重反查并推送。
+    /// 推送消费者：按提交顺序逐批推送。
+    async fn publish_loop(
+        context: HookContext,
+        mut receiver: tokio::sync::mpsc::UnboundedReceiver<PendingChanges>,
+    ) {
+        while let Some(batch) = receiver.recv().await {
+            Self::publish_batch(&context, batch).await;
+        }
+    }
+
+    /// 推送一次提交攒下的变更：等提交屏障 → 先推删除 → 按行去重反查并推送。
     ///
-    /// 一致性：同一行最终一致——每次反查都在各自的提交之后，推送又串行，最后一个推送读到的
-    /// 是所有提交之后的数据。不保证同一次推送内的多个读（含 find_by_id_with_status、
-    /// push_workspace_update_for_session 这类二次查询）是同一快照：推送期间别的写者可以提交，
-    /// 读到的只会更新，不会更旧。
-    async fn publish_committed(context: HookContext, batch: PendingChanges) {
-        if let Err(e) = wait_for_commit(&context.barrier_pool).await {
+    /// 屏障只作「写者已提交」的同步点，拿到写锁即释放，反查期间不占写锁。
+    /// 一致性：同一行最终一致——每次反查都在各自的提交之后，推送串行且按提交顺序，
+    /// 最后一个推送读到的是所有提交之后的数据。不保证同一次推送内的多个读（含
+    /// find_by_id_with_status、push_workspace_update_for_session 这类二次查询）是同一快照：
+    /// 推送期间别的写者可以提交，读到的只会更新，不会更旧。
+    async fn publish_batch(context: &HookContext, batch: PendingChanges) {
+        let changes = batch.deduped_changes();
+        let committed = wait_for_commit(&context.barrier_pool).await;
+        // commit hook 已触发，提交大概率成功：屏障失败时删除照推，只丢弃需要反查的变更。
+        for patch in batch.removals {
+            context.msg_store.push_patch(patch);
+        }
+        if let Err(e) = committed {
             tracing::error!(
-                "等待写事务提交失败，丢弃本次提交的 {} 条删除与 {} 条变更推送，\
+                "等待写事务提交失败，丢弃本次提交的 {} 条变更推送，\
                  客户端需重连后才能恢复这些行的状态: {}",
-                batch.removals.len(),
-                batch.changes.len(),
+                changes.len(),
                 e
             );
             return;
         }
-        let _publish_guard = context.publish_order.lock().await;
+
+        #[cfg(test)]
         if let Some(probe) = &context.probe {
             probe
                 .barrier_count
@@ -307,13 +347,8 @@ impl EventService {
             }
         }
 
-        // 先删后改：同一事务里删掉再按同一 id 重插的行，最终状态是 add。
-        let changes = batch.deduped_changes();
-        for patch in batch.removals {
-            context.msg_store.push_patch(patch);
-        }
         for (table, rowid, change) in changes {
-            Self::push_row_change(&context, table, rowid, change).await;
+            Self::push_row_change(context, table, rowid, change).await;
         }
     }
 
@@ -419,9 +454,6 @@ impl EventService {
         };
 
         let is_insert = change == RowChange::Insert;
-        let db_op: &str = if is_insert { "insert" } else { "update" };
-
-        // Handle operations with direct patches
         match &record_type {
             RecordTypes::Scratch(scratch) => {
                 let patch = if is_insert {
@@ -430,7 +462,6 @@ impl EventService {
                     scratch_patch::replace(scratch)
                 };
                 msg_store.push_patch(patch);
-                return;
             }
             RecordTypes::Workspace(workspace) => {
                 // Emit workspace patch with status
@@ -444,10 +475,6 @@ impl EventService {
                     };
                     msg_store.push_patch(patch);
                 }
-                return;
-            }
-            RecordTypes::DeletedWorkspace { .. } => {
-                return;
             }
             RecordTypes::ExecutionProcess(process) => {
                 let patch = if is_insert {
@@ -469,7 +496,6 @@ impl EventService {
                         err
                     );
                 }
-                return;
             }
             RecordTypes::Issue(issue) => {
                 let patch = if is_insert {
@@ -478,7 +504,6 @@ impl EventService {
                     issue_patch::replace(issue)
                 };
                 msg_store.push_patch(patch);
-                return;
             }
             RecordTypes::ProjectStatus(status) => {
                 let patch = if is_insert {
@@ -487,7 +512,6 @@ impl EventService {
                     project_status_patch::replace(status)
                 };
                 msg_store.push_patch(patch);
-                return;
             }
             RecordTypes::IssueComment(comment) => {
                 let patch = if is_insert {
@@ -496,7 +520,6 @@ impl EventService {
                     issue_comment_patch::replace(comment)
                 };
                 msg_store.push_patch(patch);
-                return;
             }
             RecordTypes::PipelineRun(run) => {
                 let patch = if is_insert {
@@ -505,7 +528,6 @@ impl EventService {
                     pipeline_run_patch::replace(run)
                 };
                 msg_store.push_patch(patch);
-                return;
             }
             RecordTypes::PipelineStageRun(stage_run) => {
                 let patch = if is_insert {
@@ -514,36 +536,17 @@ impl EventService {
                     pipeline_stage_run_patch::replace(stage_run)
                 };
                 msg_store.push_patch(patch);
-                return;
             }
-            // 删除已由 preupdate 推过 remove，这里不再走旧的 entries 兜底格式。
-            RecordTypes::DeletedPipelineRun { .. }
-            | RecordTypes::DeletedPipelineStageRun { .. } => {
-                return;
-            }
-            _ => {}
+            // 反查不到行（提交后又被别的事务删掉）：删除已由 preupdate 推过 remove，这里不推。
+            RecordTypes::DeletedWorkspace { .. }
+            | RecordTypes::DeletedExecutionProcess { .. }
+            | RecordTypes::DeletedScratch { .. }
+            | RecordTypes::DeletedIssue { .. }
+            | RecordTypes::DeletedProjectStatus { .. }
+            | RecordTypes::DeletedIssueComment { .. }
+            | RecordTypes::DeletedPipelineRun { .. }
+            | RecordTypes::DeletedPipelineStageRun { .. } => {}
         }
-
-        // Fallback: use the old entries format for other record types
-        let next_entry_count = {
-            let mut entry_count = context.entry_count.write().await;
-            *entry_count += 1;
-            *entry_count
-        };
-
-        let event_patch: EventPatch = EventPatch {
-            op: "add".to_string(),
-            path: format!("/entries/{next_entry_count}"),
-            value: EventPatchInner {
-                db_op: db_op.to_string(),
-                record: record_type,
-            },
-        };
-
-        let patch =
-            serde_json::from_value(json!([serde_json::to_value(event_patch).unwrap()])).unwrap();
-
-        msg_store.push_patch(patch);
     }
 
     pub fn msg_store(&self) -> &Arc<MsgStore> {
@@ -592,14 +595,9 @@ mod tests {
             .expect("初始化钩子查询用的 DBService 失败");
 
         let msg_store = Arc::new(MsgStore::new());
-        let entry_count = Arc::new(RwLock::new(0usize));
         let probe = Arc::new(super::HookProbe::default());
-        let hook = EventService::create_hook_inner(
-            msg_store.clone(),
-            entry_count,
-            hook_query_db,
-            Some(probe.clone()),
-        );
+        let hook =
+            EventService::create_hook_with_probe(msg_store.clone(), hook_query_db, probe.clone());
 
         let db = DBService::new_at_path_with_after_connect(&path, journal_mode, hook)
             .await
@@ -1320,5 +1318,97 @@ mod tests {
             patch_path(op) == issue_path && matches!(op, PatchOperation::Add(_))
         })
         .await;
+    }
+
+    #[tokio::test]
+    async fn 跨事务删除后用同一_id_重新插入_最终存在() {
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+        let issue_path = format!("/issues/{issue_id}");
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+        let_hooks_settle().await;
+        let from = fixture.msg_store.get_history().len();
+
+        sqlx::query("DELETE FROM issues WHERE id = ?1")
+            .bind(issue_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO issues (id, project_id, issue_number, simple_id, status_id, title) \
+             VALUES (?1, ?2, 99, 'RE-99', ?3, '重新插入')",
+        )
+        .bind(issue_id)
+        .bind(project_id)
+        .bind(status_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let_hooks_settle().await;
+
+        let ops: Vec<_> = patches_since(&fixture.msg_store, from)
+            .into_iter()
+            .filter(|op| patch_path(op) == issue_path)
+            .collect();
+        assert!(
+            matches!(ops.first(), Some(PatchOperation::Remove(_))),
+            "先 remove，实际: {ops:?}"
+        );
+        assert!(
+            matches!(ops.last(), Some(PatchOperation::Add(_))),
+            "最后应是 add，行最终存在，实际: {ops:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn 多事务交替更新同一行_最后一个补丁是最终值() {
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+        let issue_path = format!("/issues/{issue_id}");
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+
+        const ROUNDS: usize = 40;
+        for round in 0..ROUNDS {
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::query("UPDATE issues SET title = ?2 WHERE id = ?1")
+                .bind(issue_id)
+                .bind(format!("第{round}轮-中间"))
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE issues SET title = ?2 WHERE id = ?1")
+                .bind(issue_id)
+                .bind(format!("第{round}轮"))
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+        let final_title = format!("第{}轮", ROUNDS - 1);
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == issue_path
+                && matches!(op, PatchOperation::Replace(r) if r.value["title"] == final_title.as_str())
+        })
+        .await;
+        let_hooks_settle().await;
+
+        let last = patches_since(&fixture.msg_store, 0)
+            .into_iter()
+            .rfind(|op| patch_path(op) == issue_path)
+            .unwrap();
+        let PatchOperation::Replace(last) = last else {
+            panic!("最后一个补丁应是 replace，实际: {last:?}")
+        };
+        assert_eq!(last.value["title"], final_title.as_str());
     }
 }
