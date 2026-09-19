@@ -747,6 +747,12 @@
       "tooltip": "サインインしてプロジェクトを表示",
       "title": "カンバンボード",
       "description": "サインインしてカンバンボードでコーディングエージェントを整理しましょう。"
+    },
+    "sections": {
+      "local": "Local",
+      "remote": "Remote",
+      "projects": "Projects",
+      "export": "Export"
     }
   },
   "errors": {
@@ -760,5 +766,222 @@
     "submitting": "回答を送信中...",
     "answeredCount": "{{count}}件の質問に回答済み",
     "answeredCount_other": "{{count}}件の質問に回答済み"
+  },
+  "nav": {
+    "workbench": "Workbench",
+    "pipeline": "Pipeline",
+    "testing": "Test center",
+    "docs": "Docs",
+    "settings": "Settings",
+    "projectSwitcher": "Switch project",
+    "createProject": "New project",
+    "noProject": "No project yet",
+    "footer": "Personal · local v{{version}}"
+  },
+  "pipeline": {
+    "stage": {
+      "requirement": "Requirement",
+      "spec": "Spec",
+      "test_design": "Test design",
+      "develop": "Develop",
+      "review": "Review",
+      "test": "Test",
+      "deliver": "Deliver"
+    },
+    "gateLabel": {
+      "requirement": "Requirement review",
+      "spec": "Spec review",
+      "test_design": "Test design review"
+    },
+    "column": {
+      "backlog": "Requirements",
+      "todo": "Spec · Cases",
+      "dev": "Develop",
+      "review": "Review",
+      "test": "Test",
+      "done": "Deliver",
+      "humanGate": "Human gate",
+      "auto": "Auto"
+    },
+    "columnEmpty": {
+      "backlog": "Describe a requirement on the workbench and it shows up here",
+      "todo": "Once the requirement is confirmed, AI writes the spec and test cases here",
+      "dev": "Development starts automatically once test cases are confirmed",
+      "review": "AI reviews automatically, usually in under 3 minutes",
+      "test": "Tests run automatically after the review passes",
+      "done": "Delivered automatically once every test passes"
+    },
+    "status": {
+      "waitingGate": "Waiting for you · {{gate}}",
+      "running": "{{stage}} · in progress",
+      "runningRound": "{{stage}} · round {{attempt}}/{{max}}",
+      "paused": "Paused",
+      "failed": "Needs your attention",
+      "completed": "Delivered",
+      "cancelled": "Cancelled"
+    },
+    "cell": {
+      "done": "Done",
+      "running": "In progress",
+      "gate": "Waiting for you",
+      "failed": "Failed",
+      "pending": "Not started",
+      "paused": "Paused",
+      "cancelled": "Cancelled"
+    },
+    "progressLabel": "Pipeline progress: {{summary}}",
+    "drag": {
+      "forwardBlocked": "Cards can't be moved forward: gates decide progress",
+      "pauseFirst": "The pipeline is running. Pause it before sending the card back"
+    },
+    "gate": {
+      "confirm": "Confirm and continue",
+      "reject": "Send back with notes",
+      "rejectPlaceholder": "Describe what needs to change (required)",
+      "rejectSubmit": "Send back",
+      "cancel": "Cancel",
+      "pause": "Pause automation",
+      "resume": "Resume",
+      "autoGate": "Auto gate",
+      "runningHint": "AI is working on: {{stage}}",
+      "round": "Round {{attempt}}/{{max}}",
+      "failedHint": "Automatic fix rounds are used up. Please take over",
+      "pausedHint": "Automation is paused",
+      "completedHint": "Delivered. The PR is not merged automatically",
+      "cancelledHint": "This pipeline was cancelled",
+      "error": "Action failed: {{message}}",
+      "autoCondition": {
+        "checksPassed": "Moves on automatically once lint and unit tests pass",
+        "noBlockingFindings": "Moves on automatically once the review has no blocking findings",
+        "allCasesPassed": "Delivers automatically once every case passes",
+        "artifactsPresent": "Completes once the delivery report is generated"
+      }
+    },
+    "duration": {
+      "seconds": "{{s}}s",
+      "minutesSeconds": "{{m}}m {{s}}s",
+      "hoursMinutes": "{{h}}h {{m}}m"
+    },
+    "time": {
+      "justNow": "just now",
+      "minutesAgo": "{{n}} min ago",
+      "hoursAgo": "{{n}} h ago",
+      "daysAgo": "{{n}} d ago"
+    }
+  },
+  "workbench": {
+    "greeting": {
+      "morning": "Good morning",
+      "afternoon": "Good afternoon",
+      "evening": "Good evening"
+    },
+    "summary": "{{stages}} stages finished automatically today, {{pending}} items waiting for you",
+    "composer": {
+      "label": "Describe a requirement",
+      "placeholder": "Describe a requirement, or paste a PRD / Feishu doc link…",
+      "example": "e.g. Add a minimum order amount check to the order API: below 5 USDT return 400 with ORDER_MIN_NOTIONAL",
+      "repo": "Repository",
+      "branch": "Branch",
+      "template": "Template",
+      "templateStandard": "Standard seven stages",
+      "agent": "Agent",
+      "submit": "Start",
+      "submitting": "Starting…",
+      "noRepo": "Add a repository in Settings → Repositories first",
+      "noProject": "Create a project first",
+      "error": "Failed to start: {{message}}"
+    },
+    "columns": {
+      "confirm": "Needs your confirmation",
+      "running": "Running automatically",
+      "delivered": "Recently delivered"
+    },
+    "empty": {
+      "confirm": "Nothing is waiting for you",
+      "running": "No pipeline is running",
+      "delivered": "Nothing delivered yet"
+    },
+    "card": {
+      "open": "Open"
+    },
+    "weekly": "This week: {{delivered}} delivered · avg cycle {{avg}} min · first-pass rate {{rate}}%",
+    "weeklyEmpty": "This week: nothing delivered yet"
+  },
+  "docs": {
+    "title": "Docs",
+    "emptyTitle": "Specs and requirement documents will show up here",
+    "emptyHint": "Once a pipeline finishes the requirement and spec stages, its documents are filed here by requirement."
+  },
+  "issueDetail": {
+    "breadcrumb": "Pipeline",
+    "fullscreen": "Open full screen",
+    "notFound": "This requirement could not be found",
+    "noPipeline": "No pipeline has been started for this requirement. Start one from the workbench.",
+    "noArtifact": "This stage has no artifact yet",
+    "truncated": "Content is too long; only the first 256 KB is shown",
+    "version": "v{{version}}",
+    "loading": "Loading…",
+    "openWorkspace": "Open workspace",
+    "noWorkspace": "A workspace is created when development starts",
+    "testSummary": "{{passed}} passed · {{failed}} failed · {{total}} total",
+    "reviewEmpty": "No review findings",
+    "parseError": "This artifact could not be parsed; showing the raw content",
+    "tab": {
+      "requirement": "Requirement & acceptance",
+      "spec": "Spec",
+      "cases": "Test cases",
+      "code": "Code changes",
+      "test": "Tests",
+      "delivery": "Delivery report"
+    },
+    "side": {
+      "timeline": "Timeline",
+      "artifacts": "Artifacts",
+      "usage": "Usage",
+      "usageNotReady": "Usage statistics arrive in a later release"
+    },
+    "artifactKind": {
+      "requirement": "Requirement",
+      "spec": "Spec",
+      "plan": "Plan",
+      "test_cases": "Test cases",
+      "trace_matrix": "Trace matrix",
+      "review": "Review",
+      "test_report": "Test report",
+      "delivery_report": "Delivery report"
+    },
+    "testCols": {
+      "case": "Case",
+      "status": "Result",
+      "attribution": "Attribution",
+      "message": "Notes"
+    },
+    "attribution": {
+      "code": "Code defect",
+      "case": "Test case issue"
+    },
+    "caseStatus": {
+      "passed": "Passed",
+      "failed": "Failed",
+      "unknown": "Unknown"
+    },
+    "severity": {
+      "blocker": "Blocker",
+      "major": "Major",
+      "minor": "Minor",
+      "unknown": "Other"
+    },
+    "timeline": {
+      "stageStarted": "{{stage}} started (attempt {{attempt}})",
+      "stagePassed": "{{stage}} finished",
+      "stageFailed": "{{stage}} failed",
+      "stageWaiting": "{{stage}} is waiting for confirmation",
+      "stageRejected": "{{stage}} was sent back",
+      "gateApproved": "You confirmed {{stage}}",
+      "gateRejected": "You sent back {{stage}}",
+      "actorAi": "AI",
+      "actorHuman": "You",
+      "empty": "Nothing has happened yet"
+    }
   }
 }

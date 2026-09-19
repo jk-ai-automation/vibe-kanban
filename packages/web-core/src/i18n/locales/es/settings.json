@@ -292,6 +292,11 @@
           "label": "Habilitar Beta de Workspaces",
           "helper": "Usa la nueva interfaz de workspaces al ver intentos de tareas. Las tareas se abrirán primero en la vista de tareas, y los intentos se abrirán en la nueva vista de workspaces."
         }
+      },
+      "export": {
+        "title": "Data export",
+        "description": "Export project data from the cloud service (available when signed in to a cloud account)",
+        "button": "Open export page"
       }
     },
     "agents": {

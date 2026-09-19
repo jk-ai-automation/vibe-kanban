@@ -300,6 +300,11 @@
           "label": "Enable Workspaces Beta",
           "helper": "Use the new workspaces interface when viewing workspaces. Tasks will open in task view first, and attempts will open in the new workspaces view."
         }
+      },
+      "export": {
+        "title": "Data export",
+        "description": "Export project data from the cloud service (available when signed in to a cloud account)",
+        "button": "Open export page"
       }
     },
     "agents": {

@@ -292,6 +292,11 @@
           "label": "ワークスペースベータを有効化",
           "helper": "タスク試行を表示する際に新しいワークスペースインターフェースを使用します。タスクは最初にタスクビューで開き、試行は新しいワークスペースビューで開きます。"
         }
+      },
+      "export": {
+        "title": "Data export",
+        "description": "Export project data from the cloud service (available when signed in to a cloud account)",
+        "button": "Open export page"
       }
     },
     "agents": {
