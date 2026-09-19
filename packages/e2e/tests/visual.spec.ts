@@ -1,6 +1,16 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 import { VkApi } from '../support/api';
 import { createProjectWithRepo, type E2eProject } from '../support/fixtures';
+
+/** 基线目录（与 playwright.config.ts 的 snapshotPathTemplate 一致）。 */
+const BASELINE_DIR = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '__screenshots__',
+  'visual.spec.ts'
+);
 
 /** 会随时间或运行次数变化的区域：相对时间、问候语与今日统计、版本号、需求编号。 */
 function masks(page: Page) {
@@ -22,7 +32,16 @@ test.describe('@visual 视觉回归：工作台 / 看板 / 详情 × 亮暗 × 1
   let project: E2eProject;
   let issueId: string;
 
-  test.beforeAll(async () => {
+  test.beforeAll(async ({}, testInfo) => {
+    // 还没有提交基线时，普通运行整组跳过（否则每次都因缺基线失败）；
+    // 带 --update-snapshots 运行（CI 的 update_snapshots）才生成基线。
+    const updating =
+      testInfo.config.updateSnapshots === 'all' ||
+      testInfo.config.updateSnapshots === 'changed';
+    testInfo.skip(
+      !updating && !fs.existsSync(BASELINE_DIR),
+      '尚无视觉基线：用 --update-snapshots 在 Linux / CI 上生成后提交'
+    );
     test.setTimeout(3 * 60_000);
     const api = new VkApi();
     project = await createProjectWithRepo(api, '视觉回归');
