@@ -64,6 +64,18 @@ pub fn is_plain_file_name(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\'])
 }
 
+/// 阶段启动前把它声明的旧产出物改名为 `<name>.prev`（已有的 `.prev` 覆盖）：
+/// 本轮判定只看本轮新写的文件，不会把上一轮的旧文件当成结果。不存在的跳过。
+pub fn retire_declared(dir: &Path, declared: &[String]) -> std::io::Result<()> {
+    for name in declared.iter().filter(|name| is_plain_file_name(name)) {
+        let path = dir.join(name);
+        if path.is_file() {
+            std::fs::rename(&path, dir.join(format!("{name}.prev")))?;
+        }
+    }
+    Ok(())
+}
+
 /// 读阶段声明的产出物：存在且非空白的才收进来。非 UTF-8 按有损转换。
 /// 不是纯文件名的声明（模板写了路径）一律不读，防止读到产出物目录之外的文件。
 pub fn read_declared(dir: &Path, declared: &[String]) -> BTreeMap<String, String> {
@@ -157,6 +169,29 @@ mod tests {
         ];
         let read = read_declared(dir.path(), &declared);
         assert_eq!(read.keys().collect::<Vec<_>>(), vec!["spec.md"]);
+    }
+
+    #[test]
+    fn 启动前把本阶段旧产出物改名为_prev() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("review.json"), "新旧").unwrap();
+        std::fs::write(dir.path().join("review.json.prev"), "更旧").unwrap();
+        std::fs::write(dir.path().join("spec.md"), "别的阶段").unwrap();
+        let declared = vec![
+            "review.json".to_string(),
+            "missing.md".to_string(),
+            "../spec.md".to_string(),
+        ];
+        retire_declared(dir.path(), &declared).unwrap();
+        assert!(!dir.path().join("review.json").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("review.json.prev")).unwrap(),
+            "新旧",
+            "已有的 *.prev 被覆盖"
+        );
+        assert!(dir.path().join("spec.md").exists(), "未声明的不动");
+        assert!(!dir.path().join("missing.md.prev").exists());
+        retire_declared(&dir.path().join("none"), &declared).unwrap();
     }
 
     #[test]

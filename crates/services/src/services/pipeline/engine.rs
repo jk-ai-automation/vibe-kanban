@@ -11,14 +11,14 @@ use db::{
     DBService,
     models::{
         db_retry::is_unique_violation,
-        execution_process::{ExecutionProcess, ExecutionProcessRunReason},
+        execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
         issue::Issues,
         local_project_status::StageType,
         pipeline::{
             CreatePipelineRun, CreateStageRun, GateDecisionKind, GateDecisionRequest,
-            IssueArtifacts, IssuePipelineView, PipelineGateDecisions, PipelineRun,
-            PipelineRunStatus, PipelineRuns, PipelineStageKey, PipelineStageRun, PipelineStageRuns,
-            PipelineStageStatus,
+            IssueArtifacts, IssuePipelineView, MANUAL_STOP_ERROR, PipelineGateDecisions,
+            PipelineRun, PipelineRunStatus, PipelineRuns, PipelineStageKey, PipelineStageRun,
+            PipelineStageRuns, PipelineStageStatus,
         },
         workspace::Workspace,
     },
@@ -27,6 +27,7 @@ use executors::profile::ExecutorConfig;
 use sqlx::SqlitePool;
 use thiserror::Error;
 use tokio::sync::Mutex;
+use utils::log_msg::LogMsg;
 use uuid::Uuid;
 
 use super::{
@@ -249,6 +250,14 @@ impl PipelineService {
         if !transition::is_stage_terminal(&process) {
             return Ok(());
         }
+        // 锁外先过滤：不是流水线会话（绝大多数普通工作区进程）直接返回，不去抢全局锁。
+        // 锁内还会再查一次，以锁内结果为准。
+        if PipelineStageRuns::find_running_by_session(self.pool(), process.session_id)
+            .await?
+            .is_none()
+        {
+            return Ok(());
+        }
         let _guard = self.inner.lock.lock().await;
         match self.finish_stage_locked(&process).await {
             Err(e) if is_state_changed(&e) => {
@@ -281,7 +290,22 @@ impl PipelineService {
             self.fail_run(&run, &stage_run, &reason).await?;
             return Ok(());
         };
-        let ok = transition::process_succeeded(process);
+        // 用户手动停止：不重跑、不计轮次，运行暂停等用户「继续」。
+        if process.status == ExecutionProcessStatus::Killed {
+            PipelineStageRuns::set_status(
+                pool,
+                stage_run.id,
+                PipelineStageStatus::Failed,
+                None,
+                Some(MANUAL_STOP_ERROR),
+            )
+            .await?;
+            PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Paused, None).await?;
+            return Ok(());
+        }
+        // setup 脚本成为终点 = 顺序 setup 链断了，智能体没有启动，按失败处理。
+        let setup_broken = process.run_reason == ExecutionProcessRunReason::SetupScript;
+        let ok = !setup_broken && transition::process_succeeded(process);
 
         // 开发阶段：智能体成功后先在同会话跑检查脚本，检查脚本退出后再判关卡。
         if ok
@@ -328,9 +352,21 @@ impl PipelineService {
             .await?;
         }
 
-        let error = (!ok).then(|| describe_process_failure(process));
+        let error = if setup_broken {
+            Some(SETUP_BROKEN.to_string())
+        } else if !ok {
+            Some(self.describe_process_failure(process).await)
+        } else {
+            None
+        };
         let issue = self.load_issue(run.issue_id).await?;
-        let collected = match self.workspace_root(&run).await? {
+        // 进程失败时不读盘入库：失败轮次写了一半的文件不应成为新版本。
+        let root = if ok {
+            self.workspace_root(&run).await?
+        } else {
+            None
+        };
+        let collected = match root {
             Some(root) => {
                 artifacts::ingest_stage_artifacts(
                     pool,
@@ -409,6 +445,24 @@ impl PipelineService {
             return Err(PipelineError::Conflict("流水线已结束".to_string()));
         }
 
+        // 先用比较并交换把阶段从 waiting_gate 关掉，成功后才记决策：重复决策第二次在这里
+        // 得 RowNotFound（对外 409），不会重复记决策；中途出错也不会留下「有决策、阶段仍在等」。
+        let closing = match request.decision {
+            GateDecisionKind::Approve => PipelineStageStatus::Passed,
+            GateDecisionKind::Reject => PipelineStageStatus::Rejected,
+        };
+        let error = match request.decision {
+            GateDecisionKind::Approve => None,
+            GateDecisionKind::Reject => comment,
+        };
+        PipelineStageRuns::set_status_from(
+            pool,
+            stage_run.id,
+            PipelineStageStatus::WaitingGate,
+            closing,
+            error,
+        )
+        .await?;
         PipelineGateDecisions::create(pool, stage_run.id, request.decision, comment, decided_by)
             .await?;
         let template = self.template_for(&run).await?;
@@ -468,19 +522,37 @@ impl PipelineService {
     async fn resume_locked(&self, run_id: Uuid) -> Result<IssuePipelineView, PipelineError> {
         let pool = self.pool();
         let run = self.load_run(run_id).await?;
-        if !matches!(
-            run.status,
-            PipelineRunStatus::Paused | PipelineRunStatus::Failed
-        ) {
+        if run.status.is_finished() {
+            return Err(PipelineError::Conflict(format!(
+                "当前状态 {} 不能继续",
+                run.status.as_str()
+            )));
+        }
+        let latest = PipelineStageRuns::find_latest_for_run(pool, run.id)
+            .await?
+            .ok_or_else(|| PipelineError::Conflict("流水线没有任何阶段记录".to_string()))?;
+        // 正常情况只有 paused / failed 能继续；另外，最后一条尝试已结束（passed / rejected /
+        // failed / skipped）却没有后续尝试，是多步写库中途出错或状态被别的路径改掉后留下的
+        // 卡死态（没有活动尝试，也不会再有回调推进），任何未结束状态都允许继续。
+        let stuck = matches!(
+            latest.status,
+            PipelineStageStatus::Passed
+                | PipelineStageStatus::Rejected
+                | PipelineStageStatus::Failed
+                | PipelineStageStatus::Skipped
+        );
+        if !stuck
+            && !matches!(
+                run.status,
+                PipelineRunStatus::Paused | PipelineRunStatus::Failed
+            )
+        {
             return Err(PipelineError::Conflict(format!(
                 "当前状态 {} 不能继续",
                 run.status.as_str()
             )));
         }
         let template = self.template_for(&run).await?;
-        let latest = PipelineStageRuns::find_latest_for_run(pool, run.id)
-            .await?
-            .ok_or_else(|| PipelineError::Conflict("流水线没有任何阶段记录".to_string()))?;
 
         match latest.status {
             PipelineStageStatus::Pending => {
@@ -500,8 +572,9 @@ impl PipelineService {
                 PipelineRuns::update_status(pool, run.id, PipelineRunStatus::WaitingGate, None)
                     .await?;
             }
-            PipelineStageStatus::Failed if run.status == PipelineRunStatus::Failed => {
-                // 人工处理后再给一次机会：同阶段新尝试，上次失败原因带进提示词。
+            PipelineStageStatus::Failed => {
+                // 人工处理后再给一次机会：同阶段新尝试，上次失败原因带进提示词
+                // （用户手动停止不算失败原因，不回喂）。
                 let run = PipelineRuns::update_status(
                     pool,
                     run.id,
@@ -509,14 +582,52 @@ impl PipelineService {
                     Some(latest.stage_key),
                 )
                 .await?;
-                self.enter_stage(&run, &template, latest.stage_key, latest.error.clone())
+                let feedback = latest
+                    .error
+                    .clone()
+                    .filter(|error| error != MANUAL_STOP_ERROR);
+                self.enter_stage(&run, &template, latest.stage_key, feedback)
                     .await?;
             }
-            other => {
-                return Err(PipelineError::Conflict(format!(
-                    "最后一个阶段状态是 {}，无法继续",
-                    other.as_str()
-                )));
+            PipelineStageStatus::Skipped => {
+                // 卡死态：尝试被跳过但运行未结束，同阶段重新开一次尝试。
+                let run = PipelineRuns::update_status(
+                    pool,
+                    run.id,
+                    PipelineRunStatus::Running,
+                    Some(latest.stage_key),
+                )
+                .await?;
+                self.enter_stage(&run, &template, latest.stage_key, None)
+                    .await?;
+            }
+            PipelineStageStatus::Passed | PipelineStageStatus::Rejected => {
+                // 卡死态：按转移规则重新推导——通过则进入下一阶段或完成，打回则同阶段新尝试。
+                let run =
+                    PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Running, None)
+                        .await?;
+                let next = if latest.status == PipelineStageStatus::Passed {
+                    transition::gate_decision_transition(
+                        &template,
+                        latest.stage_key,
+                        GateDecisionKind::Approve,
+                        None,
+                    )
+                } else {
+                    Transition::Rerun {
+                        stage: latest.stage_key,
+                        feedback: latest.error.clone().unwrap_or_default(),
+                    }
+                };
+                self.apply(
+                    &run,
+                    &latest,
+                    &template,
+                    next,
+                    PipelineStageStatus::Rejected,
+                    None,
+                )
+                .await?;
             }
         }
         self.view_for_run_id(run_id).await
@@ -765,6 +876,8 @@ impl PipelineService {
         let root = self.inner.launcher.prepare_workspace(workspace_id).await?;
         let dir = artifacts::artifacts_dir(&root, &issue.simple_id);
         tokio::fs::create_dir_all(&dir).await?;
+        // 本阶段声明的旧产出物改名为 *.prev：本轮判定只认本轮新写的文件。
+        artifacts::retire_declared(&dir, &stage.artifacts)?;
         let existing = artifacts::list_existing(&dir);
         let feedback = PipelineStageRuns::feedback(pool, stage_run.id).await?;
         let prompt = prompt::build_stage_prompt(&StagePromptInput {
@@ -790,6 +903,26 @@ impl PipelineService {
         )
         .await?;
         Ok(())
+    }
+
+    /// 进程失败原因。检查脚本附日志末尾（读不到日志就只写状态与退出码）。
+    async fn describe_process_failure(&self, process: &FinishedProcess) -> String {
+        let summary = describe_exit(process);
+        if process.run_reason != ExecutionProcessRunReason::PipelineStep {
+            return summary;
+        }
+        let tail = crate::services::execution_process::load_raw_log_messages(
+            self.pool(),
+            process.execution_process_id,
+        )
+        .await
+        .and_then(|messages| log_tail(&messages, CHECK_LOG_TAIL_LINES));
+        match tail {
+            Some(tail) => {
+                format!("{summary}\n检查脚本输出末尾（最多 {CHECK_LOG_TAIL_LINES} 行）：\n{tail}")
+            }
+            None => summary,
+        }
     }
 
     async fn fail_run(
@@ -887,16 +1020,45 @@ fn run_reason_label(run_reason: &ExecutionProcessRunReason) -> &'static str {
     }
 }
 
-fn describe_process_failure(process: &FinishedProcess) -> String {
+/// 检查脚本失败时回喂的日志行数上限。
+const CHECK_LOG_TAIL_LINES: usize = 50;
+
+const SETUP_BROKEN: &str = "setup 脚本后智能体未启动";
+
+fn status_label(status: &ExecutionProcessStatus) -> &'static str {
+    match status {
+        ExecutionProcessStatus::Running => "仍在运行",
+        ExecutionProcessStatus::Completed => "已结束",
+        ExecutionProcessStatus::Failed => "失败",
+        ExecutionProcessStatus::Killed => "被终止",
+    }
+}
+
+fn describe_exit(process: &FinishedProcess) -> String {
     format!(
-        "{} 进程未成功结束（状态 {:?}，退出码 {}）",
+        "{} 进程未成功结束（状态：{}，退出码 {}）",
         run_reason_label(&process.run_reason),
-        process.status,
+        status_label(&process.status),
         process
             .exit_code
             .map(|code| code.to_string())
             .unwrap_or_else(|| "无".to_string())
     )
+}
+
+/// 日志末尾最多 `max_lines` 行（stdout 与 stderr 按到达顺序拼接）。没有输出时 None。
+fn log_tail(messages: &[LogMsg], max_lines: usize) -> Option<String> {
+    let text: String = messages
+        .iter()
+        .filter_map(|message| match message {
+            LogMsg::Stdout(chunk) | LogMsg::Stderr(chunk) => Some(chunk.as_str()),
+            _ => None,
+        })
+        .collect();
+    let lines: Vec<&str> = text.lines().collect();
+    let tail = &lines[lines.len().saturating_sub(max_lines)..];
+    let joined = tail.join("\n");
+    (!joined.trim().is_empty()).then_some(joined)
 }
 
 fn summarize(verdict: &StageVerdict) -> String {
@@ -905,7 +1067,55 @@ fn summarize(verdict: &StageVerdict) -> String {
         StageVerdict::Pass => "自动判定通过".to_string(),
         StageVerdict::Fail { reason } => reason.clone(),
         StageVerdict::FailBackTo { stage, reason } => {
-            format!("{reason}（退回 {}）", stage.as_str())
+            format!("{reason}（退回「{}」）", stage.display_name())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 日志末尾只取最后若干行且跳过非文本消息() {
+        let messages = vec![
+            LogMsg::Stdout("a\nb\n".to_string()),
+            LogMsg::Ready,
+            LogMsg::Stderr("c\nd".to_string()),
+            LogMsg::Finished,
+        ];
+        assert_eq!(log_tail(&messages, 2).as_deref(), Some("c\nd"));
+        assert_eq!(log_tail(&messages, 50).as_deref(), Some("a\nb\nc\nd"));
+        assert_eq!(log_tail(&[LogMsg::Ready], 50), None);
+    }
+
+    #[test]
+    fn 失败原因用中文状态() {
+        let process = FinishedProcess {
+            execution_process_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            run_reason: ExecutionProcessRunReason::PipelineStep,
+            status: ExecutionProcessStatus::Failed,
+            exit_code: Some(2),
+            has_next_action: false,
+            chain_continues: false,
+        };
+        assert_eq!(
+            describe_exit(&process),
+            "检查脚本 进程未成功结束（状态：失败，退出码 2）"
+        );
+    }
+
+    #[test]
+    fn 回流摘要用阶段中文名() {
+        let text = summarize(&StageVerdict::FailBackTo {
+            stage: PipelineStageKey::Develop,
+            reason: "测试失败 1 条".to_string(),
+        });
+        assert!(
+            text.contains(PipelineStageKey::Develop.display_name()),
+            "{text}"
+        );
+        assert!(!text.contains("develop"), "{text}");
     }
 }

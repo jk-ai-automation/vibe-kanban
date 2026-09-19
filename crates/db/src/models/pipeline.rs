@@ -15,6 +15,9 @@ use super::db_retry::retry_on_busy;
 /// 产出物入库上限：超过部分只留在磁盘（设计 §5）。
 pub const MAX_ARTIFACT_BYTES: usize = 256 * 1024;
 
+/// 用户手动停止执行进程时阶段尝试的 error。这样的失败不计入 max_rounds 轮次。
+pub const MANUAL_STOP_ERROR: &str = "用户手动停止";
+
 /// 截断后追加在库内内容末尾的标记。
 pub const TRUNCATION_MARKER: &str =
     "\n\n……（内容超过 256 KB，库里只保留前 256 KB；完整内容见工作区产出物目录）\n";
@@ -729,7 +732,8 @@ impl PipelineStageRuns {
             .await
     }
 
-    /// 同运行同阶段 status = failed 的尝试数（人工打回是 rejected，不计入）。
+    /// 同运行同阶段 status = failed 的尝试数（人工打回是 rejected，不计入；
+    /// error 为 [`MANUAL_STOP_ERROR`] 的「用户手动停止」也不计入）。
     pub async fn count_failed(
         pool: &SqlitePool,
         run_id: Uuid,
@@ -737,10 +741,12 @@ impl PipelineStageRuns {
     ) -> Result<i64, sqlx::Error> {
         sqlx::query_scalar(
             "SELECT COUNT(*) FROM pipeline_stage_runs \
-             WHERE run_id = ?1 AND stage_key = ?2 AND status = 'failed'",
+             WHERE run_id = ?1 AND stage_key = ?2 AND status = 'failed' \
+               AND (error IS NULL OR error <> ?3)",
         )
         .bind(run_id)
         .bind(stage_key)
+        .bind(MANUAL_STOP_ERROR)
         .fetch_one(pool)
         .await
     }
@@ -806,6 +812,36 @@ impl PipelineStageRuns {
         })
         .await?;
         Ok(())
+    }
+
+    /// 只在尝试当前是 `from` 时改成 `status`（比较并交换）；`error` 为 None 时保持原值。
+    /// 当前状态不是 `from`（或尝试不存在）时不改任何数据，返回 `sqlx::Error::RowNotFound`。
+    /// finished_at 规则同 [`Self::set_status`]。
+    pub async fn set_status_from(
+        pool: &SqlitePool,
+        id: Uuid,
+        from: PipelineStageStatus,
+        status: PipelineStageStatus,
+        error: Option<&str>,
+    ) -> Result<PipelineStageRun, sqlx::Error> {
+        let sql = format!(
+            "UPDATE pipeline_stage_runs SET status = ?3, error = COALESCE(?4, error), \
+             finished_at = CASE WHEN ?3 IN ('waiting_gate', 'passed', 'rejected', 'failed', 'skipped') \
+                                THEN COALESCE(finished_at, ?5) ELSE finished_at END \
+             WHERE id = ?1 AND status = ?2 \
+             RETURNING {STAGE_COLUMNS}"
+        );
+        retry_on_busy(|| async {
+            sqlx::query_as::<_, PipelineStageRun>(&sql)
+                .bind(id)
+                .bind(from)
+                .bind(status)
+                .bind(error)
+                .bind(Utc::now())
+                .fetch_one(pool)
+                .await
+        })
+        .await
     }
 
     /// 改尝试状态。summary / error 为 None 时保持原值。
@@ -1296,6 +1332,84 @@ mod tests {
         .unwrap();
         assert!(failed.finished_at.is_some(), "进入 failed 写结束时间");
         assert_eq!(failed.error.as_deref(), Some("进程退出码 1"));
+    }
+
+    #[tokio::test]
+    async fn 用户手动停止的失败不计入失败次数() {
+        let test_db = TestDb::new().await;
+        let issue = 准备需求(&test_db, "手动停止计数").await;
+        let run = PipelineRuns::create(test_db.pool(), &建运行参数(&issue))
+            .await
+            .unwrap();
+        let pool = test_db.pool();
+        for error in [Some(MANUAL_STOP_ERROR), Some("进程退出码 1"), None] {
+            let stage = PipelineStageRuns::create(
+                pool,
+                &建阶段参数(
+                    &run,
+                    PipelineStageKey::Develop,
+                    PipelineStageStatus::Running,
+                ),
+            )
+            .await
+            .unwrap();
+            PipelineStageRuns::set_status(pool, stage.id, PipelineStageStatus::Failed, None, error)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            PipelineStageRuns::count_failed(pool, run.id, PipelineStageKey::Develop)
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn 按预期状态改写_不符时不改数据并返回_row_not_found() {
+        let test_db = TestDb::new().await;
+        let issue = 准备需求(&test_db, "预期状态").await;
+        let run = PipelineRuns::create(test_db.pool(), &建运行参数(&issue))
+            .await
+            .unwrap();
+        let pool = test_db.pool();
+        let stage = PipelineStageRuns::create(
+            pool,
+            &建阶段参数(&run, PipelineStageKey::Spec, PipelineStageStatus::Running),
+        )
+        .await
+        .unwrap();
+        PipelineStageRuns::set_status(pool, stage.id, PipelineStageStatus::WaitingGate, None, None)
+            .await
+            .unwrap();
+
+        let passed = PipelineStageRuns::set_status_from(
+            pool,
+            stage.id,
+            PipelineStageStatus::WaitingGate,
+            PipelineStageStatus::Passed,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(passed.status, PipelineStageStatus::Passed);
+        assert!(passed.finished_at.is_some());
+
+        let again = PipelineStageRuns::set_status_from(
+            pool,
+            stage.id,
+            PipelineStageStatus::WaitingGate,
+            PipelineStageStatus::Rejected,
+            Some("意见"),
+        )
+        .await;
+        assert!(matches!(again, Err(sqlx::Error::RowNotFound)));
+        let unchanged = PipelineStageRuns::find_by_id(pool, stage.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.status, PipelineStageStatus::Passed);
+        assert_eq!(unchanged.error, None);
     }
 
     #[tokio::test]

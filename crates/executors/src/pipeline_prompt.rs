@@ -117,7 +117,8 @@ pub fn qa_markers(requirement: &str) -> Vec<QaMarker> {
 }
 
 /// 在产出物目录里写出「必须产出」的每个文件。已存在的旧文件先改名为 `*.prev`
-/// ——模拟器靠「有没有旧文件」判断是不是第一次（契约 §5）。
+/// （引擎启动前通常已改过，这里幂等补做）——模拟器靠「有没有 `*.prev`」判断是不是
+/// 第一次（契约 §5）。
 /// 只接受纯文件名，带路径分隔符或 `..` 的跳过。
 pub fn write_mock_artifacts(prompt: &PipelinePrompt) -> std::io::Result<Vec<PathBuf>> {
     std::fs::create_dir_all(&prompt.artifacts_dir)?;
@@ -128,10 +129,13 @@ pub fn write_mock_artifacts(prompt: &PipelinePrompt) -> std::io::Result<Vec<Path
             continue;
         }
         let path = prompt.artifacts_dir.join(name);
-        let first = !path.exists();
-        if !first {
-            std::fs::rename(&path, prompt.artifacts_dir.join(format!("{name}.prev")))?;
+        let prev = prompt.artifacts_dir.join(format!("{name}.prev"));
+        // 引擎在每次启动前已把本阶段的旧产出物改名为 *.prev；这里只在旧文件仍在时补做
+        // 同样的改名（幂等），然后以「有没有 *.prev」判断是不是第一次。
+        if path.exists() {
+            std::fs::rename(&path, &prev)?;
         }
+        let first = !prev.exists();
         std::fs::write(
             &path,
             mock_artifact_content(name, first, &markers, &prompt.requirement),
@@ -365,6 +369,38 @@ mod tests {
         );
         let second_review = std::fs::read_to_string(artifacts_dir.join("review.json")).unwrap();
         assert_eq!(second_review, r#"{"findings":[]}"#, "第二次起为空");
+    }
+
+    #[test]
+    fn 引擎已把旧文件改名为_prev_时按第二次处理() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts_dir = dir.path().join(".vk/runs/VK-8");
+        let parsed = PipelinePrompt {
+            requirement: "VK-8 评审 [qa:review-blocker-once]".to_string(),
+            artifacts_dir: artifacts_dir.clone(),
+            required: vec!["review.json".to_string()],
+        };
+        write_mock_artifacts(&parsed).unwrap();
+        let first = std::fs::read_to_string(artifacts_dir.join("review.json")).unwrap();
+        assert!(first.contains("\"blocker\""));
+
+        // 引擎在重跑前把本阶段声明的产出物改名为 *.prev，目录里不再有 review.json。
+        std::fs::rename(
+            artifacts_dir.join("review.json"),
+            artifacts_dir.join("review.json.prev"),
+        )
+        .unwrap();
+        write_mock_artifacts(&parsed).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(artifacts_dir.join("review.json")).unwrap(),
+            r#"{"findings":[]}"#,
+            "有 *.prev 就不是第一次"
+        );
+        assert_eq!(
+            std::fs::read_to_string(artifacts_dir.join("review.json.prev")).unwrap(),
+            first,
+            "目录里没有旧文件时不动 *.prev"
+        );
     }
 
     #[test]
