@@ -22,7 +22,6 @@ use db::{
             PipelineRunStatus, PipelineRuns, PipelineStageKey, PipelineStageRuns,
             PipelineStageStatus,
         },
-        session::{CreateSession, Session},
     },
     test_support::TestDb,
 };
@@ -41,7 +40,9 @@ use uuid::Uuid;
 use super::{
     FinishedProcess, PipelineError, PipelineExitEvent, PipelineService, StartPipelineInput,
     artifacts,
-    test_support::{FakeLaunch, FakeLaunchKind, FakeLauncher, 准备工作区, 准备需求},
+    test_support::{
+        FakeLaunch, FakeLaunchKind, FakeLauncher, 准备工作区, 准备需求, 落进程
+    },
     transition::stage_column,
 };
 
@@ -845,6 +846,10 @@ async fn 重跑时智能体没写新文件判缺产出物而不是沿用旧文�
         std::fs::read_to_string(s.产出物目录().join("requirement.md.prev")).unwrap(),
         old
     );
+    assert!(s.launcher.last().prompt.contains(&format!(
+        "本阶段上一版：{}（供参考修改）",
+        s.产出物目录().join("requirement.md.prev").display()
+    )));
     s.结束最近一次启动(true).await;
     let view = s.视图().await;
     assert_eq!(
@@ -863,17 +868,6 @@ async fn 退出事件读真实进程行_顺序_setup_链断按失败_并行_setu
     s.启动().await.unwrap();
     let launch = s.launcher.last();
     let pool = s.test_db.pool();
-    Session::create(
-        pool,
-        &CreateSession {
-            executor: None,
-            name: None,
-        },
-        launch.session_id,
-        s.workspace_id,
-    )
-    .await
-    .unwrap();
     let setup = |next: Option<Box<ExecutorAction>>| {
         ExecutorAction::new(
             ExecutorActionType::ScriptRequest(ScriptRequest {
@@ -1056,18 +1050,97 @@ async fn 半写留下的卡死态可以继续_打回则同阶段新尝试() {
 }
 
 #[tokio::test]
-async fn cleanup_脚本也是阶段终点() {
+async fn cleanup_脚本也是阶段终点_阶段记录改回智能体进程() {
     let s = 场景::新建("cleanup 终点").await;
     s.启动().await.unwrap();
-    let launch = s.launcher.last();
+    let agent = s.launcher.last();
+    let cleanup = FakeLaunch {
+        execution_process_id: 落进程(
+            s.test_db.pool(),
+            agent.session_id,
+            ExecutionProcessRunReason::CleanupScript,
+        )
+        .await
+        .unwrap(),
+        ..agent.clone()
+    };
     s.结束为(
-        &launch,
+        &cleanup,
         ExecutionProcessRunReason::CleanupScript,
         ExecutionProcessStatus::Completed,
         Some(0),
     )
     .await;
     assert_eq!(s.当前().await, (Requirement, WaitingGate));
+    assert_eq!(
+        s.视图().await.stages[0].execution_process_id,
+        Some(agent.execution_process_id),
+        "C7：智能体阶段结束后指向会话内最近的编码智能体进程"
+    );
+}
+
+#[tokio::test]
+async fn 智能体阶段不认检查脚本进程() {
+    let s = 场景::新建("认领").await;
+    s.启动().await.unwrap();
+    let agent = s.launcher.last();
+    let stray = FakeLaunch {
+        execution_process_id: 落进程(
+            s.test_db.pool(),
+            agent.session_id,
+            ExecutionProcessRunReason::PipelineStep,
+        )
+        .await
+        .unwrap(),
+        ..agent.clone()
+    };
+    s.结束为(
+        &stray,
+        ExecutionProcessRunReason::PipelineStep,
+        ExecutionProcessStatus::Completed,
+        Some(0),
+    )
+    .await;
+    assert_eq!(s.当前().await, (Requirement, Running));
+}
+
+#[tokio::test]
+async fn 检查阶段只认记录的检查进程() {
+    let s = 场景::新建("检查认领").await;
+    s.写仓库模板(
+        "version: 1\nstages:\n  - key: develop\n    skill: vk-develop\n    checks: [\"cargo test\"]\n    gate: { auto: checks_passed }\n  - key: review\n    skill: vk-review\n    artifacts: [review.json]\n    gate: { auto: no_blocking_findings }\n",
+    );
+    s.启动().await.unwrap();
+    let agent = s.launcher.last();
+    s.结束(&agent, true).await;
+    let checks = s.launcher.last();
+    assert_eq!(checks.kind, FakeLaunchKind::Checks);
+
+    // 晚到/重复的智能体终点事件：忽略，不会再起一次检查。
+    s.结束(&agent, true).await;
+    // 同会话里别的检查进程：忽略。
+    let other = FakeLaunch {
+        execution_process_id: 落进程(
+            s.test_db.pool(),
+            agent.session_id,
+            ExecutionProcessRunReason::PipelineStep,
+        )
+        .await
+        .unwrap(),
+        ..checks.clone()
+    };
+    s.结束(&other, false).await;
+    assert_eq!(s.当前().await, (Develop, Running));
+    assert_eq!(s.launcher.launches().len(), 2);
+
+    s.结束(&checks, true).await;
+    assert_eq!(s.当前().await, (Review, Running));
+    let develop = &s.视图().await.stages[0];
+    assert_eq!(
+        develop.execution_process_id,
+        Some(checks.execution_process_id),
+        "C7：检查脚本结束后保留指向检查进程"
+    );
 }
 
 #[tokio::test]

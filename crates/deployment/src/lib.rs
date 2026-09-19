@@ -25,6 +25,7 @@ use services::services::{
     filesystem::{FilesystemError, FilesystemService},
     filesystem_watcher::FilesystemWatcherError,
     local_auth::runtime::LocalAuthRuntime,
+    pipeline::PipelineService,
     queued_message::QueuedMessageService,
     remote_client::RemoteClient,
     repo::RepoService,
@@ -100,6 +101,9 @@ pub trait Deployment: Clone + Send + Sync + 'static {
     fn filesystem(&self) -> &FilesystemService;
 
     fn events(&self) -> &EventService;
+
+    /// 交付流水线引擎（设计 §6）。
+    fn pipeline(&self) -> &PipelineService;
 
     fn file_search_cache(&self) -> &Arc<FileSearchCache>;
 

@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -47,6 +47,7 @@ use services::services::{
     diff_stream::{self, DiffStreamHandle},
     file::FileService,
     notification::NotificationService,
+    pipeline::PipelineExitEvent,
     queued_message::QueuedMessageService,
     remote_client::RemoteClient,
     remote_sync,
@@ -85,6 +86,14 @@ pub struct LocalContainerService {
     queued_message_service: QueuedMessageService,
     notification_service: NotificationService,
     remote_client: Option<RemoteClient>,
+    /// 流水线引擎的退出通知通道；部署装配时设置一次（`set_pipeline_exit_notifier`）。
+    pipeline_exit_tx: Arc<OnceLock<tokio::sync::mpsc::UnboundedSender<PipelineExitEvent>>>,
+}
+
+/// 流水线检查脚本（run_reason = pipelinestep）收尾时不自动提交、不发「Workspace Complete」
+/// 通知、不消费排队消息：它只是引擎判关卡用的一步，阶段结果由引擎处理。
+fn is_pipeline_check(run_reason: &ExecutionProcessRunReason) -> bool {
+    matches!(run_reason, ExecutionProcessRunReason::PipelineStep)
 }
 
 impl LocalContainerService {
@@ -125,11 +134,23 @@ impl LocalContainerService {
             queued_message_service,
             notification_service,
             remote_client,
+            pipeline_exit_tx: Arc::new(OnceLock::new()),
         };
 
         container.spawn_workspace_cleanup();
 
         container
+    }
+
+    /// 接上流水线引擎：之后每个执行进程收尾都会发一条 [`PipelineExitEvent`]。
+    /// 只能设置一次；重复设置记警告并忽略。
+    pub fn set_pipeline_exit_notifier(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<PipelineExitEvent>,
+    ) {
+        if self.pipeline_exit_tx.set(tx).is_err() {
+            tracing::warn!("流水线退出通知已经接过，忽略重复设置");
+        }
     }
 
     fn map_workspace_manager_error(err: WorkspaceError) -> ContainerError {
@@ -546,7 +567,12 @@ impl LocalContainerService {
                 tracing::error!("Failed to update execution process completion: {}", e);
             }
 
+            // 这个进程收尾时是否接着起了同会话的下一个进程（next_action 或排队续聊）。
+            // 流水线引擎靠它判断「阶段链是否走完」，见 services::pipeline::transition::is_stage_terminal。
+            let mut chain_continues = false;
+
             if let Ok(ctx) = ExecutionProcess::load_context(&db.pool, exec_id).await {
+                let pipeline_check = is_pipeline_check(&ctx.execution_process.run_reason);
                 // Update executor session summary if available
                 if let Err(e) = container.update_executor_session_summary(&exec_id).await {
                     tracing::warn!("Failed to update executor session summary: {}", e);
@@ -565,9 +591,10 @@ impl LocalContainerService {
                     ExecutionProcessStatus::Running
                 );
 
-                let mut already_finalized = false;
+                // 流水线检查脚本：跳过提交与收尾，已视为收尾完成。
+                let mut already_finalized = pipeline_check;
 
-                if success || cleanup_done {
+                if (success || cleanup_done) && !pipeline_check {
                     // Commit changes (if any) and get feedback about whether changes were made
                     let changes_committed = match container.try_commit_changes(&ctx).await {
                         Ok(committed) => committed,
@@ -593,9 +620,21 @@ impl LocalContainerService {
                     };
 
                     if should_start_next {
+                        let has_next_action = ctx
+                            .execution_process
+                            .executor_action()
+                            .ok()
+                            .and_then(|action| action.next_action())
+                            .is_some();
                         // If the process exited successfully, start the next action
-                        if let Err(e) = container.try_start_next_action(&ctx).await {
-                            tracing::error!("Failed to start next action after completion: {}", e);
+                        match container.try_start_next_action(&ctx).await {
+                            Ok(()) => chain_continues = has_next_action,
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to start next action after completion: {}",
+                                    e
+                                );
+                            }
                         }
                     } else {
                         tracing::info!(
@@ -658,6 +697,7 @@ impl LocalContainerService {
                                 container.finalize_task(&ctx).await;
                             } else {
                                 started_queued_follow_up = true;
+                                chain_continues = true;
                             }
                         } else {
                             // Execution failed or was killed - discard the queued message and finalize
@@ -726,14 +766,17 @@ impl LocalContainerService {
                             );
                         }
 
-                        if let Err(e) = container
+                        match container
                             .start_queued_follow_up(&ctx, &queued_msg.data)
                             .await
                         {
-                            tracing::error!(
-                                "Failed to start queued follow-up from setup script completion: {}",
-                                e
-                            );
+                            Ok(_) => chain_continues = true,
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to start queued follow-up from setup script completion: {}",
+                                    e
+                                );
+                            }
                         }
                     }
                 }
@@ -809,6 +852,16 @@ impl LocalContainerService {
                 let _ = child.start_kill();
             }
             child_store.write().await.remove(&exec_id);
+
+            // 通知流水线引擎（设计 §6.2 第 4 步）。放在最后：提交、next_action、
+            // HEAD 记录都已完成，日志落盘任务也已等待结束（上面的 db_stream_handle，
+            // 最多 5 秒），引擎读到的是最终状态与完整日志。
+            if let Some(tx) = container.pipeline_exit_tx.get() {
+                let _ = tx.send(PipelineExitEvent {
+                    execution_process_id: exec_id,
+                    chain_continues,
+                });
+            }
         })
     }
 
@@ -1642,5 +1695,27 @@ fn success_exit_status() -> std::process::ExitStatus {
     {
         use std::os::windows::process::ExitStatusExt;
         ExitStatusExt::from_raw(0)
+    }
+}
+
+#[cfg(test)]
+mod pipeline_hook_tests {
+    use db::models::execution_process::ExecutionProcessRunReason;
+
+    use super::is_pipeline_check;
+
+    /// 退出钩子本身要真实子进程与 git 仓库，没有夹具；这里只钉「哪些进程跳过提交与收尾」。
+    #[test]
+    fn 只有流水线检查脚本跳过提交与收尾() {
+        assert!(is_pipeline_check(&ExecutionProcessRunReason::PipelineStep));
+        for other in [
+            ExecutionProcessRunReason::SetupScript,
+            ExecutionProcessRunReason::CleanupScript,
+            ExecutionProcessRunReason::ArchiveScript,
+            ExecutionProcessRunReason::CodingAgent,
+            ExecutionProcessRunReason::DevServer,
+        ] {
+            assert!(!is_pipeline_check(&other), "{other:?}");
+        }
     }
 }

@@ -12,6 +12,10 @@ pub const ARTIFACTS_DIR_LABEL: &str = "产出物目录（绝对路径）：";
 pub const REQUIRED_ARTIFACTS_LABEL: &str = "必须产出：";
 pub const PREVIOUS_ARTIFACTS_LABEL: &str = "上一阶段产出：";
 pub const FEEDBACK_LABEL: &str = "上一次被打回的意见：";
+/// 重跑某阶段且存在 `<name>.prev` 时，每个旧版本一行：`本阶段上一版：<绝对路径>（供参考修改）`。
+/// 模拟器不解析这一行。
+pub const PREVIOUS_VERSION_LABEL: &str = "本阶段上一版：";
+pub const PREVIOUS_VERSION_HINT: &str = "（供参考修改）";
 pub const NONE_VALUE: &str = "无";
 pub const ARTIFACT_SEPARATOR: &str = ", ";
 

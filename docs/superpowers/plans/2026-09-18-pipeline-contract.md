@@ -8,6 +8,7 @@
 >
 > **修订记录**
 > - 2026-09-18 计划 A 核实代码后补充（名称与字段不变）：C1 快照接口响应形状；C2 `i64` 字段在 TS 里是 `number`；C3 develop 的 checks 定义；C4 路由表参数名；C5「未结束」与暂停/继续/取消的状态约束；C6 `stages` 排序；C7 `execution_process_id` 含义；C8 `IssueArtifact` 平铺的 ts 属性；C9 模拟器流水线模式。详见计划 A §3。
+> - 2026-09-19 计划 A 第 5 批审查后修订：C5 补「继续」的卡死态恢复与「用户手动停止」；C7 改为分条规则（并行 setup 启动时记录智能体进程、智能体链结束回写会话内最近智能体进程、检查脚本结束后保留检查进程、回调认领规则）；C13 路由契约测试对尚不存在的前端文件跳过扫描。
 
 ## 1. 类型（Rust 定义，ts-rs 生成到 `shared/types.ts`）
 
@@ -46,7 +47,7 @@ pub struct PipelineStageRun {
     pub status: PipelineStageStatus,
     pub gate_kind: GateKind,
     pub session_id: Option<Uuid>,
-    pub execution_process_id: Option<Uuid>,  // （C7）启动时是会话首个进程（可能是 setup），智能体结束后改为智能体进程，检查脚本运行期间指向检查进程
+    pub execution_process_id: Option<Uuid>,  // （C7）见下方「C7 规则」
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     pub summary: Option<String>,
@@ -122,6 +123,13 @@ pub struct PendingPipelineItem {
 }
 ```
 
+**C7 规则（`PipelineStageRun.execution_process_id`，2026-09-19 修订）**：
+
+1. 启动时：容器启动会话后返回的进程。顺序 setup 模式（有任一仓库的 setup 不并行）是链首的 setup 进程；并行 setup 模式（含没有 setup 脚本）是编码智能体进程（并行 setup 进程各自独立，不记录）。
+2. 智能体链结束（编码智能体或其后的 cleanup 脚本是终点）：改为**会话内最近一个编码智能体进程**。
+3. 开发阶段有 `checks` 时：检查脚本启动后指向检查进程；检查脚本结束后**保留指向检查进程**（关卡判定依据是它的退出码与输出；智能体对话可由 `session_id` 找到）。
+4. 退出回调认领：记录的是检查进程时，只接受该进程的终点事件；否则只接受编码智能体、cleanup 脚本、带 next_action 的 setup 脚本（链断）作为终点。
+
 ## 2. 接口
 
 全部挂在 `crates/server/src/routes/local_projects/` 的 `/local` 下（因此完整前缀是 `/api/local`），并登记进该模块的 `RouteRegistry` 契约表。响应统一用现有的 `ApiResponse<T>` 包装。
@@ -144,7 +152,8 @@ pub struct PendingPipelineItem {
 **（C5）** 状态约束：
 - 「未结束的运行」= `status` 不是 `completed` / `cancelled`。`failed` 可以继续，算未结束；要对同一需求重新启动，先取消。
 - `pause`：只允许 `running`、`waiting_gate`；正在跑的进程不杀，阶段结束后不再调度（下一阶段建成 `pending`）。
-- `resume`：只允许 `paused`、`failed`。`failed` 继续时在失败的阶段开一次新尝试，上次失败原因进提示词。
+- `resume`：允许 `paused`、`failed`。最后一条尝试是 `failed` 时在该阶段开一次新尝试，上次失败原因进提示词（「用户手动停止」不回喂）。另外，最后一条尝试已结束（`passed`/`rejected`/`failed`/`skipped`）却没有后续尝试的卡死态，在任何未结束状态下都可继续：`passed` 按通过推导进入下一阶段或完成，`rejected` 同阶段新尝试并带意见，`failed`/`skipped` 同阶段新尝试（2026-09-19 修订）。
+- 用户手动停止执行进程（进程 `killed`）：该尝试置 `failed`（error「用户手动停止」，不计入 `max_rounds`），运行置 `paused`。
 - `cancel`：允许所有未结束状态；最后一条尝试若是 `pending`/`running`/`waiting_gate` 则置 `skipped`。
 - `gate`：`reject` 的 `comment` 去掉首尾空白后不能为空。
 

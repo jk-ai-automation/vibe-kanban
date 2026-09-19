@@ -15,6 +15,7 @@ use api_types::{
 use async_trait::async_trait;
 use db::{
     models::{
+        execution_process::{CreateExecutionProcess, ExecutionProcess, ExecutionProcessRunReason},
         issue::Issues,
         local_project::{DEFAULT_ORGANIZATION_ID, DEFAULT_USER_ID, LocalProjects},
         local_project_status::{ProjectStatuses, StageType},
@@ -22,11 +23,16 @@ use db::{
             CreatePipelineRun, CreateStageRun, GateKind, PipelineRun, PipelineRuns,
             PipelineStageKey, PipelineStageRun, PipelineStageRuns, PipelineStageStatus,
         },
+        session::{CreateSession, Session},
         workspace::{CreateWorkspace, Workspace},
     },
     test_support::TestDb,
 };
 use executors::{
+    actions::{
+        ExecutorAction, ExecutorActionType,
+        script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
+    },
     pipeline_prompt::{parse_pipeline_prompt, write_mock_artifacts},
     profile::ExecutorConfig,
 };
@@ -205,7 +211,7 @@ impl StageLauncher for FakeLauncher {
 
     async fn start_agent_session(
         &self,
-        _workspace_id: Uuid,
+        workspace_id: Uuid,
         _executor_config: &ExecutorConfig,
         prompt: String,
         run_setup: bool,
@@ -222,10 +228,28 @@ impl StageLauncher for FakeLauncher {
         {
             write_mock_artifacts(&parsed)?;
         }
+        let session_id = Uuid::new_v4();
+        Session::create(
+            &self.pool,
+            &CreateSession {
+                executor: None,
+                name: None,
+            },
+            session_id,
+            workspace_id,
+        )
+        .await
+        .map_err(|e| PipelineError::Launch(e.to_string()))?;
+        let execution_process_id = 落进程(
+            &self.pool,
+            session_id,
+            ExecutionProcessRunReason::CodingAgent,
+        )
+        .await?;
         Ok(self.record(FakeLaunch {
             kind: FakeLaunchKind::Agent,
-            session_id: Uuid::new_v4(),
-            execution_process_id: Uuid::new_v4(),
+            session_id,
+            execution_process_id,
             prompt,
             run_setup,
         }))
@@ -237,10 +261,16 @@ impl StageLauncher for FakeLauncher {
         session_id: Uuid,
         script: String,
     ) -> Result<LaunchedStep, PipelineError> {
+        let execution_process_id = 落进程(
+            &self.pool,
+            session_id,
+            ExecutionProcessRunReason::PipelineStep,
+        )
+        .await?;
         Ok(self.record(FakeLaunch {
             kind: FakeLaunchKind::Checks,
             session_id,
-            execution_process_id: Uuid::new_v4(),
+            execution_process_id,
             prompt: script,
             run_setup: false,
         }))
@@ -249,4 +279,39 @@ impl StageLauncher for FakeLauncher {
     async fn stop_workspace(&self, workspace_id: Uuid) {
         self.stopped.lock().unwrap().push(workspace_id);
     }
+}
+
+/// 在会话里落一条执行进程（状态 running），返回 id。假启动器与测试共用，
+/// 让引擎按 run_reason 认领、按会话回查智能体进程时读到真实行。
+pub(crate) async fn 落进程(
+    pool: &SqlitePool,
+    session_id: Uuid,
+    run_reason: ExecutionProcessRunReason,
+) -> Result<Uuid, PipelineError> {
+    let context = match run_reason {
+        ExecutionProcessRunReason::PipelineStep => ScriptContext::PipelineCheck,
+        ExecutionProcessRunReason::CleanupScript => ScriptContext::CleanupScript,
+        _ => ScriptContext::SetupScript,
+    };
+    let action = ExecutorAction::new(
+        ExecutorActionType::ScriptRequest(ScriptRequest {
+            script: "true".to_string(),
+            language: ScriptRequestLanguage::Bash,
+            context,
+            working_dir: None,
+        }),
+        None,
+    );
+    let process = ExecutionProcess::create(
+        pool,
+        &CreateExecutionProcess {
+            session_id,
+            executor_action: action,
+            run_reason,
+        },
+        Uuid::new_v4(),
+        &[],
+    )
+    .await?;
+    Ok(process.id)
 }

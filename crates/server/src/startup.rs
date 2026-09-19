@@ -160,6 +160,13 @@ pub async fn initialize_deployment(
         .cleanup_orphan_executions()
         .await
         .map_err(DeploymentError::from)?;
+    // 流水线：上次没跑完的阶段（进程已随服务退出、刚被标为失败）记失败转人工。
+    // 必须在 cleanup_orphan_executions 之后、开始对外服务（可能启动新进程）之前。
+    match deployment.pipeline().recover_interrupted().await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!("流水线：{n} 个阶段因服务重启被中断，已转人工处理"),
+        Err(e) => tracing::warn!("流水线：恢复中断阶段失败: {e}"),
+    }
     deployment
         .container()
         .backfill_before_head_commits()

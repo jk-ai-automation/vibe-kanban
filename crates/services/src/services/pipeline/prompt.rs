@@ -3,8 +3,9 @@
 use std::path::Path;
 
 use executors::pipeline_prompt::{
-    ARTIFACTS_DIR_LABEL, FEEDBACK_LABEL, PREVIOUS_ARTIFACTS_LABEL, REQUIRED_ARTIFACTS_LABEL,
-    REQUIREMENT_LABEL, SKILL_PREFIX, format_artifact_list,
+    ARTIFACTS_DIR_LABEL, FEEDBACK_LABEL, PREVIOUS_ARTIFACTS_LABEL, PREVIOUS_VERSION_HINT,
+    PREVIOUS_VERSION_LABEL, REQUIRED_ARTIFACTS_LABEL, REQUIREMENT_LABEL, SKILL_PREFIX,
+    format_artifact_list,
 };
 
 pub const AUTOMATION_NOTICE: &str =
@@ -18,6 +19,8 @@ pub struct StagePromptInput<'a> {
     pub required: &'a [String],
     /// 产出物目录里已有的文件（不含 `*.prev`）。
     pub existing: &'a [String],
+    /// 本阶段声明的产出物里，目录中存在 `<name>.prev` 旧版本的文件名（重跑时）。
+    pub previous_versions: &'a [String],
     /// 打回意见或上次失败原因。
     pub feedback: Option<&'a str>,
 }
@@ -42,6 +45,12 @@ pub fn build_stage_prompt(input: &StagePromptInput<'_>) -> String {
         "{PREVIOUS_ARTIFACTS_LABEL}{}",
         format_artifact_list(input.existing)
     ));
+    for name in input.previous_versions {
+        lines.push(format!(
+            "{PREVIOUS_VERSION_LABEL}{}{PREVIOUS_VERSION_HINT}",
+            input.artifacts_dir.join(format!("{name}.prev")).display()
+        ));
+    }
     if let Some(feedback) = input.feedback.map(str::trim).filter(|f| !f.is_empty()) {
         lines.push(format!("{FEEDBACK_LABEL}{feedback}"));
     }
@@ -79,8 +88,29 @@ mod tests {
             artifacts_dir: Path::new("/abs/ws/.vk/runs/VK-12"),
             required,
             existing,
+            previous_versions: &[],
             feedback,
         }
+    }
+
+    #[test]
+    fn 重跑时每个旧版本一行且模拟器解析不受影响() {
+        let required = vec!["spec.md".to_string(), "plan.md".to_string()];
+        let previous = vec!["spec.md".to_string()];
+        let prompt = build_stage_prompt(&StagePromptInput {
+            previous_versions: &previous,
+            ..输入(&required, &[], Some("补充"))
+        });
+        assert!(
+            prompt.contains(
+                "上一阶段产出：无\n本阶段上一版：/abs/ws/.vk/runs/VK-12/spec.md.prev（供参考修改）\n上一次被打回的意见：补充"
+            ),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("plan.md.prev"));
+        let parsed = parse_pipeline_prompt(&prompt).unwrap();
+        assert_eq!(parsed.required, required);
+        assert_eq!(parsed.artifacts_dir, Path::new("/abs/ws/.vk/runs/VK-12"));
     }
 
     #[test]
@@ -136,6 +166,7 @@ mod tests {
             artifacts_dir: dir,
             required: &required,
             existing: &[],
+            previous_versions: &[],
             feedback: None,
         });
         let parsed = parse_pipeline_prompt(&prompt).expect("引擎提示词必须能被模拟器解析");

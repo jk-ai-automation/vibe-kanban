@@ -280,6 +280,14 @@ impl PipelineService {
             // 不是流水线的会话，或阶段已被取消/中断。
             return Ok(());
         };
+        if !self.claims(&stage_run, process).await? {
+            tracing::debug!(
+                execution_process_id = %process.execution_process_id,
+                stage_run_id = %stage_run.id,
+                "不是本阶段当前执行链的终点进程，忽略"
+            );
+            return Ok(());
+        }
         let run = self.load_run(stage_run.run_id).await?;
         if run.status.is_finished() {
             return Ok(());
@@ -343,13 +351,25 @@ impl PipelineService {
             return Ok(());
         }
 
-        if process.run_reason == ExecutionProcessRunReason::CodingAgent {
-            PipelineStageRuns::set_execution_process(
+        // 智能体阶段的终点（智能体或 cleanup）：记录改为会话内最近一个编码智能体进程（C7）。
+        // 检查脚本结束时保留指向检查进程（判定依据是它的退出码与输出）。
+        if matches!(
+            process.run_reason,
+            ExecutionProcessRunReason::CodingAgent | ExecutionProcessRunReason::CleanupScript
+        ) {
+            let agent = ExecutionProcess::find_latest_id_by_session_and_run_reason(
                 pool,
-                stage_run.id,
-                process.execution_process_id,
+                process.session_id,
+                &ExecutionProcessRunReason::CodingAgent,
             )
-            .await?;
+            .await?
+            .or(
+                (process.run_reason == ExecutionProcessRunReason::CodingAgent)
+                    .then_some(process.execution_process_id),
+            );
+            if let Some(agent) = agent {
+                PipelineStageRuns::set_execution_process(pool, stage_run.id, agent).await?;
+            }
         }
 
         let error = if setup_broken {
@@ -879,6 +899,12 @@ impl PipelineService {
         // 本阶段声明的旧产出物改名为 *.prev：本轮判定只认本轮新写的文件。
         artifacts::retire_declared(&dir, &stage.artifacts)?;
         let existing = artifacts::list_existing(&dir);
+        let previous_versions: Vec<String> = stage
+            .artifacts
+            .iter()
+            .filter(|name| dir.join(format!("{name}.prev")).is_file())
+            .cloned()
+            .collect();
         let feedback = PipelineStageRuns::feedback(pool, stage_run.id).await?;
         let prompt = prompt::build_stage_prompt(&StagePromptInput {
             skill: &stage.skill,
@@ -887,6 +913,7 @@ impl PipelineService {
             artifacts_dir: &dir,
             required: &stage.artifacts,
             existing: &existing,
+            previous_versions: &previous_versions,
             feedback: feedback.as_deref(),
         });
         let run_setup = !PipelineStageRuns::any_launched(pool, run.id).await?;
@@ -903,6 +930,34 @@ impl PipelineService {
         )
         .await?;
         Ok(())
+    }
+
+    /// 这个终点进程是否属于本阶段当前的执行链。
+    ///
+    /// - 阶段记录的进程是检查脚本（run_reason = pipelinestep）：只认这一个进程。
+    /// - 否则处在智能体链上：只认编码智能体、cleanup 脚本、带 next_action 的 setup 脚本
+    ///   （链断）。其余（晚到的检查脚本、并行 setup 等）忽略。
+    async fn claims(
+        &self,
+        stage_run: &PipelineStageRun,
+        process: &FinishedProcess,
+    ) -> Result<bool, PipelineError> {
+        let recorded_check = match stage_run.execution_process_id {
+            Some(id) => ExecutionProcess::find_by_id(self.pool(), id)
+                .await?
+                .filter(|recorded| recorded.run_reason == ExecutionProcessRunReason::PipelineStep)
+                .map(|recorded| recorded.id),
+            None => None,
+        };
+        Ok(match recorded_check {
+            Some(check_id) => process.execution_process_id == check_id,
+            None => match process.run_reason {
+                ExecutionProcessRunReason::CodingAgent
+                | ExecutionProcessRunReason::CleanupScript => true,
+                ExecutionProcessRunReason::SetupScript => process.has_next_action,
+                _ => false,
+            },
+        })
     }
 
     /// 进程失败原因。检查脚本附日志末尾（读不到日志就只写状态与退出码）。
