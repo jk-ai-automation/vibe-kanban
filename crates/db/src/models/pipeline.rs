@@ -64,6 +64,19 @@ impl PipelineStageKey {
         Self::ALL.into_iter().find(|key| key.as_str() == value)
     }
 
+    /// 阶段中文名，给提示词、失败原因等面向用户的文案用。
+    pub fn display_name(self) -> &'static str {
+        match self {
+            PipelineStageKey::Requirement => "需求",
+            PipelineStageKey::Spec => "设计规格",
+            PipelineStageKey::TestDesign => "用例设计",
+            PipelineStageKey::Develop => "开发",
+            PipelineStageKey::Review => "评审",
+            PipelineStageKey::Test => "测试",
+            PipelineStageKey::Deliver => "交付",
+        }
+    }
+
     /// 在标准顺序里的位置，从 0 开始。
     pub fn order(self) -> usize {
         Self::ALL
@@ -177,6 +190,18 @@ impl ArtifactKind {
             "test-report.json" => Some(ArtifactKind::TestReport),
             "delivery-report.md" => Some(ArtifactKind::DeliveryReport),
             _ => None,
+        }
+    }
+
+    /// 契约 §4：产出这种文件的阶段。
+    pub fn stage(self) -> PipelineStageKey {
+        match self {
+            ArtifactKind::Requirement => PipelineStageKey::Requirement,
+            ArtifactKind::Spec | ArtifactKind::Plan => PipelineStageKey::Spec,
+            ArtifactKind::TestCases | ArtifactKind::TraceMatrix => PipelineStageKey::TestDesign,
+            ArtifactKind::Review => PipelineStageKey::Review,
+            ArtifactKind::TestReport => PipelineStageKey::Test,
+            ArtifactKind::DeliveryReport => PipelineStageKey::Deliver,
         }
     }
 }

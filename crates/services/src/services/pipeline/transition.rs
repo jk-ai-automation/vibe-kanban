@@ -111,8 +111,8 @@ fn rerun_or_fail(
     if failed_attempts >= max_rounds {
         Transition::FailRun {
             reason: format!(
-                "阶段 {} 已累计失败 {} 次（上限 {}），转人工处理。最后一次原因：{}",
-                current.as_str(),
+                "阶段「{}」已累计失败 {} 次（上限 {}），转人工处理。最后一次原因：{}",
+                current.display_name(),
                 failed_attempts,
                 max_rounds,
                 reason
@@ -165,6 +165,11 @@ pub fn stage_column(key: PipelineStageKey) -> StageType {
 
 /// 进入阶段时新尝试与运行的状态（行为总表「进入阶段 | 运行 paused」、契约修订 C12）：
 /// 运行暂停中 → 新尝试建成 pending、运行保持 paused、不启动；否则新尝试 running、运行 running。
+///
+/// 前提：只对**未结束**的运行（非 completed / cancelled）调用，结束的运行不应再进入阶段，
+/// 这里不做判断。`run_status` 必须是调用前从库里**重新读出**的运行状态（决策或退出处理期间
+/// 用户可能刚暂停），不能用处理开始时手里的旧快照。failed 的运行由「继续」先改回 running
+/// 再进入阶段；若直接传入 failed，按未暂停处理。
 pub fn entered_stage_statuses(
     run_status: PipelineRunStatus,
 ) -> (PipelineStageStatus, PipelineRunStatus) {
@@ -262,9 +267,29 @@ mod tests {
         else {
             panic!("第 3 次失败应转人工");
         };
-        assert!(
-            reason.contains("review") && reason.contains("3"),
-            "{reason}"
+        assert_eq!(
+            reason,
+            "阶段「评审」已累计失败 3 次（上限 3），转人工处理。最后一次原因：评审发现 1 个阻断项"
+        );
+    }
+
+    #[test]
+    fn 阶段中文名() {
+        let names: Vec<_> = PipelineStageKey::ALL
+            .iter()
+            .map(|key| key.display_name())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "需求",
+                "设计规格",
+                "用例设计",
+                "开发",
+                "评审",
+                "测试",
+                "交付"
+            ]
         );
     }
 
@@ -383,7 +408,7 @@ mod tests {
         };
         assert!(matches!(
             next_transition(&t, PipelineStageKey::Test, &verdict, 3),
-            Transition::FailRun { reason } if reason.contains("test")
+            Transition::FailRun { reason } if reason.starts_with("阶段「测试」")
         ));
     }
 

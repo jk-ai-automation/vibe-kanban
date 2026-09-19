@@ -48,6 +48,15 @@ impl AutoGate {
             AutoGate::ArtifactsPresent => "artifacts_present",
         }
     }
+
+    /// 判定要读的产出物；模板解析时要求本阶段声明了它，否则判定必然失败。
+    pub fn required_artifact(self) -> Option<&'static str> {
+        match self {
+            AutoGate::NoBlockingFindings => Some("review.json"),
+            AutoGate::AllCasesPassed => Some("test-report.json"),
+            AutoGate::ChecksPassed | AutoGate::ArtifactsPresent => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,8 +117,10 @@ impl PipelineTemplate {
         self.stages.iter().find(|stage| stage.key == key)
     }
 
-    pub fn first_stage(&self) -> &StageTemplate {
-        &self.stages[0]
+    /// 首阶段。`parse_template_yaml` 保证非空，但从 `template_json` 直接反序列化的快照
+    /// 不经过校验，所以返回 Option，由调用方处理空模板，杜绝 panic。
+    pub fn first_stage(&self) -> Option<&StageTemplate> {
+        self.stages.first()
     }
 
     pub fn next_stage(&self, key: PipelineStageKey) -> Option<&StageTemplate> {
@@ -162,6 +173,24 @@ pub enum TemplateError {
     EmptyHumanLabel(String),
     #[error("阶段 {stage} 的 max_rounds 必须在 1 到 10 之间，实际 {value}")]
     BadMaxRounds { stage: String, value: i64 },
+    #[error("阶段 {stage} 的产出物 {file} 重复声明")]
+    DuplicateArtifact { stage: String, file: String },
+    #[error("产出物 {file} 属于阶段 {owner}，不能写在阶段 {stage} 里")]
+    ArtifactStageMismatch {
+        stage: String,
+        file: String,
+        owner: String,
+    },
+    #[error("阶段 {stage} 的自动关卡 {rule} 依赖产出物 {file}，请在 artifacts 里声明")]
+    GateNeedsArtifact {
+        stage: String,
+        rule: String,
+        file: String,
+    },
+    #[error("阶段 {0} 的 skill 不能为空")]
+    EmptySkill(String),
+    #[error("阶段 {0} 的 checks 里有空命令")]
+    EmptyCheck(String),
 }
 
 pub fn builtin_template() -> PipelineTemplate {
@@ -297,9 +326,29 @@ pub fn parse_template_yaml(text: &str) -> Result<PipelineTemplate, TemplateError
         }
         last_order = Some(key.order());
 
-        for file in &raw_stage.artifacts {
-            if ArtifactKind::from_file_name(file).is_none() {
+        if raw_stage.skill.trim().is_empty() {
+            return Err(TemplateError::EmptySkill(name));
+        }
+        if raw_stage.checks.iter().any(|check| check.trim().is_empty()) {
+            return Err(TemplateError::EmptyCheck(name));
+        }
+
+        for (index, file) in raw_stage.artifacts.iter().enumerate() {
+            let Some(kind) = ArtifactKind::from_file_name(file) else {
                 return Err(TemplateError::UnknownArtifact {
+                    stage: name.clone(),
+                    file: file.clone(),
+                });
+            };
+            if kind.stage() != key {
+                return Err(TemplateError::ArtifactStageMismatch {
+                    stage: name.clone(),
+                    file: file.clone(),
+                    owner: kind.stage().as_str().to_string(),
+                });
+            }
+            if raw_stage.artifacts[..index].contains(file) {
+                return Err(TemplateError::DuplicateArtifact {
                     stage: name.clone(),
                     file: file.clone(),
                 });
@@ -336,6 +385,17 @@ pub fn parse_template_yaml(text: &str) -> Result<PipelineTemplate, TemplateError
                 })?,
             },
         };
+
+        if let Some(rule) = gate.auto_rule()
+            && let Some(file) = rule.required_artifact()
+            && !raw_stage.artifacts.iter().any(|name| name == file)
+        {
+            return Err(TemplateError::GateNeedsArtifact {
+                stage: name,
+                rule: rule.as_str().to_string(),
+                file: file.to_string(),
+            });
+        }
 
         let max_rounds = raw_stage
             .retry
@@ -480,7 +540,10 @@ stages:
     #[test]
     fn 下一阶段与首阶段() {
         let template = builtin_template();
-        assert_eq!(template.first_stage().key, PipelineStageKey::Requirement);
+        assert_eq!(
+            template.first_stage().map(|s| s.key),
+            Some(PipelineStageKey::Requirement)
+        );
         assert_eq!(
             template.next_stage(PipelineStageKey::Test).map(|s| s.key),
             Some(PipelineStageKey::Deliver)
@@ -611,5 +674,102 @@ stages:
         let json = serde_json::to_string(&template).unwrap();
         let back: PipelineTemplate = serde_json::from_str(&json).unwrap();
         assert_eq!(back, template);
+    }
+
+    #[test]
+    fn 快照里阶段为空时首阶段为_none_不会_panic() {
+        // template_json 是 serde 直接反序列化的，不经过 parse_template_yaml 的非空校验。
+        let empty: PipelineTemplate =
+            serde_json::from_str(r#"{"key":"repo","version":1,"stages":[]}"#).unwrap();
+        assert!(empty.first_stage().is_none());
+    }
+
+    #[test]
+    fn 自动关卡依赖的产出物必须在本阶段声明() {
+        断言错误(
+            "version: 1\nstages:\n  - key: review\n    skill: vk-review\n    gate: { auto: no_blocking_findings }\n",
+            |e| {
+                matches!(e, TemplateError::GateNeedsArtifact { stage, file, .. }
+                    if stage == "review" && file == "review.json")
+            },
+        );
+        断言错误(
+            "version: 1\nstages:\n  - key: test\n    skill: atp-run\n    gate: { auto: all_cases_passed }\n",
+            |e| {
+                matches!(e, TemplateError::GateNeedsArtifact { stage, file, .. }
+                    if stage == "test" && file == "test-report.json")
+            },
+        );
+        // review.json 只属于评审阶段，所以 all_cases_passed 放到评审阶段也缺 test-report.json。
+        断言错误(
+            "version: 1\nstages:\n  - key: review\n    skill: vk-review\n    artifacts: [review.json]\n    gate: { auto: all_cases_passed }\n",
+            |e| matches!(e, TemplateError::GateNeedsArtifact { file, .. } if file == "test-report.json"),
+        );
+    }
+
+    #[test]
+    fn 关卡缺产出物的仓库模板回落内置模板并给警告() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".vibe")).unwrap();
+        std::fs::write(
+            dir.path().join(REPO_TEMPLATE_PATH),
+            "version: 1\nstages:\n  - key: review\n    skill: vk-review\n    gate: { auto: no_blocking_findings }\n",
+        )
+        .unwrap();
+        let (template, warning) = load_template(dir.path());
+        assert_eq!(template, builtin_template());
+        let warning = warning.expect("应给出警告");
+        assert!(warning.contains("review.json"), "{warning}");
+    }
+
+    #[test]
+    fn 产出物重复或不属于本阶段时拒绝() {
+        断言错误(
+            "version: 1\nstages:\n  - key: spec\n    skill: x\n    artifacts: [spec.md, plan.md, spec.md]\n",
+            |e| {
+                matches!(e, TemplateError::DuplicateArtifact { stage, file }
+                    if stage == "spec" && file == "spec.md")
+            },
+        );
+        断言错误(
+            "version: 1\nstages:\n  - key: spec\n    skill: x\n    artifacts: [requirement.md]\n",
+            |e| {
+                matches!(e, TemplateError::ArtifactStageMismatch { stage, file, owner }
+                    if stage == "spec" && file == "requirement.md" && owner == "requirement")
+            },
+        );
+        断言错误(
+            "version: 1\nstages:\n  - key: develop\n    skill: x\n    artifacts: [review.json]\n",
+            |e| matches!(e, TemplateError::ArtifactStageMismatch { .. }),
+        );
+    }
+
+    #[test]
+    fn 技能为空或检查命令为空时拒绝() {
+        断言错误(
+            "version: 1\nstages:\n  - key: spec\n    skill: \"\"\n",
+            |e| matches!(e, TemplateError::EmptySkill(stage) if stage == "spec"),
+        );
+        断言错误(
+            "version: 1\nstages:\n  - key: spec\n    skill: \"  \"\n",
+            |e| matches!(e, TemplateError::EmptySkill(_)),
+        );
+        断言错误(
+            "version: 1\nstages:\n  - key: develop\n    skill: x\n    checks: [\"cargo test\", \" \"]\n",
+            |e| matches!(e, TemplateError::EmptyCheck(stage) if stage == "develop"),
+        );
+    }
+
+    #[test]
+    fn 内置模板每个阶段的产出物都属于本阶段() {
+        for stage in builtin_template().stages {
+            for file in &stage.artifacts {
+                assert_eq!(
+                    ArtifactKind::from_file_name(file).map(ArtifactKind::stage),
+                    Some(stage.key),
+                    "{file}"
+                );
+            }
+        }
     }
 }

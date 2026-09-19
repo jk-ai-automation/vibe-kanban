@@ -3,12 +3,23 @@
 use std::collections::BTreeMap;
 
 use db::models::pipeline::PipelineStageKey;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::DeserializeOwned};
 
 use super::template::{AutoGate, StageGate, StageTemplate};
 
 pub const REVIEW_FILE: &str = "review.json";
 pub const TEST_REPORT_FILE: &str = "test-report.json";
+
+/// 非判定字段宽松解析：类型不符（如 `"line": "12-15"`）当 None，不让整份报告判非法。
+/// 判定所需字段（severity、total、failed、status、attribution）不用它，保持严格。
+fn lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewReport {
@@ -19,18 +30,19 @@ pub struct ReviewReport {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewFinding {
     pub severity: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub file: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub line: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TestReport {
     pub total: i64,
-    pub passed: i64,
+    #[serde(default, deserialize_with = "lenient")]
+    pub passed: Option<i64>,
     pub failed: i64,
     #[serde(default)]
     pub cases: Vec<TestCaseResult>,
@@ -38,12 +50,19 @@ pub struct TestReport {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TestCaseResult {
-    pub id: String,
+    #[serde(default, deserialize_with = "lenient")]
+    pub id: Option<String>,
     pub status: String,
     #[serde(default)]
     pub attribution: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub message: Option<String>,
+}
+
+impl TestCaseResult {
+    fn is_passed(&self) -> bool {
+        self.status == "passed"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,36 +198,60 @@ pub fn check_all_cases_passed(text: &str) -> StageVerdict {
             };
         }
     };
+    if report.failed < 0 {
+        return StageVerdict::Fail {
+            reason: format!(
+                "{TEST_REPORT_FILE} 不是合法的测试报告：failed 不能为负数（{}）",
+                report.failed
+            ),
+        };
+    }
     if report.total <= 0 {
         return StageVerdict::Fail {
             reason: "测试报告里没有任何用例（total = 0）".to_string(),
         };
     }
-    if report.failed == 0 {
+    // failed 字段与用例明细取较严的一方：明细里有 failed 的用例，即使 failed 写 0 也不通过。
+    let failed_cases = report
+        .cases
+        .iter()
+        .filter(|case| case.status == "failed")
+        .count() as i64;
+    let failed = report.failed.max(failed_cases);
+    if failed == 0 {
         return StageVerdict::Pass;
     }
     let details = report
         .cases
         .iter()
-        .filter(|case| case.status != "passed")
-        .map(|case| format!("{}：{}", case.id, case.message.as_deref().unwrap_or("失败")))
+        .filter(|case| !case.is_passed())
+        .map(|case| {
+            format!(
+                "{}：{}",
+                case.id.as_deref().unwrap_or("（无编号）"),
+                case.message.as_deref().unwrap_or("失败")
+            )
+        })
         .collect::<Vec<_>>()
         .join("；");
+    let summary = format!("测试失败 {failed} 条（共 {} 条）", report.total);
     StageVerdict::FailBackTo {
         stage: dispatch_test_failure(&report),
-        reason: format!(
-            "测试失败 {} 条（共 {} 条）：{details}",
-            report.failed, report.total
-        ),
+        reason: if details.is_empty() {
+            summary
+        } else {
+            format!("{summary}：{details}")
+        },
     }
 }
 
-/// 测试归因分派（设计 §6.3、契约 §4）：任一 `attribution == "case"` → 回到用例设计
-/// （重新走人工关卡）；否则 → 回到开发。
+/// 测试归因分派（设计 §6.3、契约 §4）：没通过的用例里任一 `attribution == "case"` →
+/// 回到用例设计（重新走人工关卡）；否则 → 回到开发。已通过用例的归因不参与分派。
 pub fn dispatch_test_failure(report: &TestReport) -> PipelineStageKey {
     let any_case = report
         .cases
         .iter()
+        .filter(|case| !case.is_passed())
         .any(|case| case.attribution.as_deref() == Some("case"));
     if any_case {
         PipelineStageKey::TestDesign
@@ -480,6 +523,120 @@ mod tests {
                 &产出(&[("spec.md", "# 规格"), ("plan.md", "# 计划")])
             ),
             StageVerdict::Pass
+        );
+    }
+
+    #[test]
+    fn 评审非判定字段类型不符时宽松解析() {
+        assert_eq!(
+            check_no_blocking_findings(
+                r#"{"findings":[{"severity":"major","file":3,"line":"12-15","message":["x"]}]}"#
+            ),
+            StageVerdict::Pass
+        );
+        assert_eq!(
+            check_no_blocking_findings(
+                r#"{"findings":[{"severity":"blocker","file":"a.rs","line":"12-15","message":"越界"}]}"#
+            ),
+            StageVerdict::Fail {
+                reason: "评审发现 1 个阻断项：a.rs 越界".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn 评审判定字段严格() {
+        for text in [
+            r#"{"findings":[{"file":"a.rs"}]}"#,
+            r#"{"findings":[{"severity":1}]}"#,
+        ] {
+            assert!(
+                matches!(
+                    check_no_blocking_findings(text),
+                    StageVerdict::Fail { ref reason } if reason.contains("不是合法")
+                ),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn 测试用例非判定字段类型不符时宽松解析() {
+        let verdict = check_all_cases_passed(
+            r#"{"total":2,"passed":1,"failed":1,"cases":[{"id":7,"status":"failed","attribution":"code","message":{"a":1}}]}"#,
+        );
+        assert_eq!(
+            verdict,
+            StageVerdict::FailBackTo {
+                stage: PipelineStageKey::Develop,
+                reason: "测试失败 1 条（共 2 条）：（无编号）：失败".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn 测试报告判定字段严格() {
+        for text in [
+            r#"{"total":"3","passed":3,"failed":0,"cases":[]}"#,
+            r#"{"total":3,"passed":3,"cases":[]}"#,
+            r#"{"total":1,"passed":0,"failed":1,"cases":[{"id":"TC-1","status":0}]}"#,
+            r#"{"total":1,"passed":0,"failed":1,"cases":[{"id":"TC-1","status":"failed","attribution":1}]}"#,
+        ] {
+            assert!(
+                matches!(
+                    check_all_cases_passed(text),
+                    StageVerdict::Fail { ref reason } if reason.contains("不是合法")
+                ),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn 归因分派只看没通过的用例() {
+        let verdict = check_all_cases_passed(
+            r#"{"total":2,"passed":1,"failed":1,"cases":[{"id":"TC-1","status":"passed","attribution":"case"},{"id":"TC-2","status":"failed","attribution":"code"}]}"#,
+        );
+        assert!(matches!(
+            verdict,
+            StageVerdict::FailBackTo {
+                stage: PipelineStageKey::Develop,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn 用例标记失败但_failed_为零时仍判失败() {
+        let verdict = check_all_cases_passed(
+            r#"{"total":2,"passed":2,"failed":0,"cases":[{"id":"TC-1","status":"passed"},{"id":"TC-2","status":"failed","attribution":"case","message":"预期错"}]}"#,
+        );
+        assert_eq!(
+            verdict,
+            StageVerdict::FailBackTo {
+                stage: PipelineStageKey::TestDesign,
+                reason: "测试失败 1 条（共 2 条）：TC-2：预期错".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn failed_为负数时报告非法() {
+        assert!(matches!(
+            check_all_cases_passed(r#"{"total":2,"passed":2,"failed":-1,"cases":[]}"#),
+            StageVerdict::Fail { reason } if reason.contains("failed")
+        ));
+    }
+
+    #[test]
+    fn 有失败但没有用例明细时原因不以冒号结尾() {
+        let verdict = check_all_cases_passed(r#"{"total":3,"passed":1,"failed":2,"cases":[]}"#);
+        assert_eq!(
+            verdict,
+            StageVerdict::FailBackTo {
+                stage: PipelineStageKey::Develop,
+                reason: "测试失败 2 条（共 3 条）".to_string()
+            }
         );
     }
 }

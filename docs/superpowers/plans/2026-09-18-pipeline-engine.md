@@ -6787,7 +6787,11 @@ impl PipelineService {
             tracing::warn!(issue_id = %input.issue.id, "{warning}");
         }
 
-        let first = template.first_stage().clone();
+        // first_stage() 返回 Option（批 3 审查：杜绝空模板 panic）；load_template 的结果非空，这里只是兜底。
+        let first = template
+            .first_stage()
+            .cloned()
+            .ok_or_else(|| PipelineError::BadRequest("流水线模板没有任何阶段".to_string()))?;
         let run = PipelineRuns::create(
             pool,
             &CreatePipelineRun {
@@ -7198,9 +7202,11 @@ impl PipelineService {
                     None,
                 )
                 .await?;
-                if run.status != PipelineRunStatus::Paused {
-                    PipelineRuns::update_status(pool, run.id, PipelineRunStatus::WaitingGate, None)
-                        .await?;
+                // 必须用重新读出的运行状态：`run` 是处理开始时的快照，期间用户可能刚暂停。
+                let current = self.load_run(run.id).await?.status;
+                let next_status = transition::waiting_gate_run_status(current);
+                if next_status != current {
+                    PipelineRuns::update_status(pool, run.id, next_status, None).await?;
                 }
             }
             Transition::Advance { to } => {
@@ -7266,7 +7272,10 @@ impl PipelineService {
             PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Failed, None).await?;
             return Ok(());
         };
-        let paused = self.load_run(run.id).await?.status == PipelineRunStatus::Paused;
+        // 必须传重新读出的运行状态（C12：暂停中的关卡决策、退出处理期间用户刚暂停），
+        // 不能用参数 `run` 这个旧快照。调用方保证运行未结束（entered_stage_statuses 的前提）。
+        let current = self.load_run(run.id).await?.status;
+        let (stage_status, run_status) = transition::entered_stage_statuses(current);
         let stage_run = PipelineStageRuns::create(
             pool,
             &CreateStageRun {
@@ -7274,29 +7283,15 @@ impl PipelineService {
                 project_id: run.project_id,
                 stage_key: key,
                 gate_kind: stage.gate.kind(),
-                status: if paused {
-                    PipelineStageStatus::Pending
-                } else {
-                    PipelineStageStatus::Running
-                },
+                status: stage_status,
                 feedback,
             },
         )
         .await?;
-        let run = PipelineRuns::update_status(
-            pool,
-            run.id,
-            if paused {
-                PipelineRunStatus::Paused
-            } else {
-                PipelineRunStatus::Running
-            },
-            Some(key),
-        )
-        .await?;
+        let run = PipelineRuns::update_status(pool, run.id, run_status, Some(key)).await?;
         self.move_issue(run.issue_id, transition::stage_column(key))
             .await;
-        if !paused {
+        if stage_status == PipelineStageStatus::Running {
             self.launch(&run, &stage_run, template).await;
         }
         Ok(())
@@ -7390,11 +7385,14 @@ impl PipelineService {
     // 内部：读取
     // ------------------------------------------------------------------
 
-    /// 运行启动时存下的模板快照；损坏时退回内置模板。
+    /// 运行启动时存下的模板快照；损坏或阶段为空时退回内置模板。
     async fn template_for(&self, run: &PipelineRun) -> Result<PipelineTemplate, PipelineError> {
         let internals = PipelineRuns::internals(self.pool(), run.id).await?;
         Ok(internals
-            .and_then(|internals| serde_json::from_str(&internals.template_json).ok())
+            .and_then(|internals| {
+                serde_json::from_str::<PipelineTemplate>(&internals.template_json).ok()
+            })
+            .filter(|template| !template.stages.is_empty())
             .unwrap_or_else(template::builtin_template))
     }
 
@@ -8238,6 +8236,34 @@ async fn 服务重启后中断的阶段记失败且旧回调被忽略() {
     assert_eq!(s.当前().await, (Requirement, Failed));
 }
 
+/// 预期行为（批 3 审查确认）：服务重启被标 failed 的中断尝试**计入**本阶段失败次数。
+/// `count_failed` 只按尝试状态计数，不区分失败原因；人工打回是 rejected，不计入。
+#[tokio::test]
+async fn 服务重启被标_failed_的中断尝试计入失败次数() {
+    let s = 场景::新建("重启计数").await;
+    s.启动().await.unwrap();
+    s.service.recover_interrupted().await.unwrap();
+    let run_id = s.视图().await.run.id;
+    s.service.resume(run_id).await.unwrap();
+
+    // 第 2 次尝试失败：累计 2 次（含中断那次）< 3，同阶段重跑。
+    s.结束最近一次启动(false).await;
+    let view = s.视图().await;
+    assert_eq!(
+        场景::尝试(&view, Requirement),
+        vec![(1, Failed), (2, Failed), (3, Running)]
+    );
+
+    // 第 3 次尝试失败：累计 3 次 = 上限，运行失败转人工。
+    s.结束最近一次启动(false).await;
+    let view = s.视图().await;
+    assert_eq!(view.run.status, PipelineRunStatus::Failed);
+    assert_eq!(
+        场景::尝试(&view, Requirement),
+        vec![(1, Failed), (2, Failed), (3, Failed)]
+    );
+}
+
 #[tokio::test]
 async fn 非终点事件与无关会话被忽略() {
     let s = 场景::新建("忽略").await;
@@ -8333,7 +8359,7 @@ async fn 仓库模板损坏时回落内置模板并记警告() {
 - [ ] **Step 3: 运行，确认全部通过**
 
 Run: `cargo test -p services pipeline::tests`
-Expected: `test result: ok. 19 passed; 0 failed`
+Expected: `test result: ok. 20 passed; 0 failed`
 
 若有失败，按 `superpowers:systematic-debugging` 排查：先看失败断言对应 §1.3 行为总表的哪一行，再对照 `engine.rs` 的 `apply` / `enter_stage`；**不要改测试去迁就实现**，除非能证明测试与 §1.3 矛盾（那种情况同时改 §1.3）。
 
