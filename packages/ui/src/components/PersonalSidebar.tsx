@@ -1,5 +1,5 @@
-import type { ReactNode } from "react";
-import { useTranslation } from "react-i18next";
+import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   BookOpenIcon,
   CaretDownIcon,
@@ -9,23 +9,23 @@ import {
   KanbanIcon,
   PlusIcon,
   type Icon,
-} from "@phosphor-icons/react";
-import { cn } from "../lib/cn";
+} from '@phosphor-icons/react';
+import { cn } from '../lib/cn';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "./Dropdown";
+} from './Dropdown';
 
 /** 与 `web-core/src/shared/lib/routes/personalRoutes.ts` 的同名类型逐字一致。 */
 export type PersonalNavKey =
-  | "workbench"
-  | "pipeline"
-  | "testing"
-  | "docs"
-  | "settings";
+  | 'workbench'
+  | 'pipeline'
+  | 'testing'
+  | 'docs'
+  | 'settings';
 
 export interface PersonalSidebarProject {
   id: string;
@@ -50,11 +50,11 @@ export interface PersonalSidebarProps {
 }
 
 const NAV_ITEMS: { key: PersonalNavKey; labelKey: string; icon: Icon }[] = [
-  { key: "workbench", labelKey: "nav.workbench", icon: HouseIcon },
-  { key: "pipeline", labelKey: "nav.pipeline", icon: KanbanIcon },
-  { key: "testing", labelKey: "nav.testing", icon: FlaskIcon },
-  { key: "docs", labelKey: "nav.docs", icon: BookOpenIcon },
-  { key: "settings", labelKey: "nav.settings", icon: GearIcon },
+  { key: 'workbench', labelKey: 'nav.workbench', icon: HouseIcon },
+  { key: 'pipeline', labelKey: 'nav.pipeline', icon: KanbanIcon },
+  { key: 'testing', labelKey: 'nav.testing', icon: FlaskIcon },
+  { key: 'docs', labelKey: 'nav.docs', icon: BookOpenIcon },
+  { key: 'settings', labelKey: 'nav.settings', icon: GearIcon },
 ];
 
 /**
@@ -76,7 +76,7 @@ export function PersonalSidebar({
   userSlot,
   className,
 }: PersonalSidebarProps) {
-  const { t } = useTranslation("common");
+  const { t } = useTranslation('common');
   const activeProject =
     projects.find((project) => project.id === activeProjectId) ?? null;
 
@@ -84,20 +84,20 @@ export function PersonalSidebar({
     <div
       data-testid="personal-sidebar"
       className={cn(
-        "flex h-full min-h-0 w-52 flex-col gap-base overflow-y-auto",
-        "border-r border-border bg-secondary p-base",
-        className,
+        'flex h-full min-h-0 w-52 flex-col gap-base overflow-y-auto',
+        'border-r border-border bg-secondary p-base',
+        className
       )}
     >
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            aria-label={t("nav.projectSwitcher")}
+            aria-label={t('nav.projectSwitcher')}
             className={cn(
-              "flex w-full items-center gap-half rounded-sm px-half py-half",
-              "text-left text-sm text-high hover:bg-primary",
-              "focus:outline-none focus-visible:ring-1 focus-visible:ring-brand",
+              'flex w-full items-center gap-half rounded-sm px-half py-half',
+              'text-left text-sm text-high hover:bg-primary',
+              'focus:outline-none focus-visible:ring-1 focus-visible:ring-brand'
             )}
           >
             <span
@@ -110,7 +110,7 @@ export function PersonalSidebar({
               }
             />
             <span className="min-w-0 flex-1 truncate">
-              {activeProject?.name ?? t("nav.noProject")}
+              {activeProject?.name ?? t('nav.noProject')}
             </span>
             <CaretDownIcon
               className="size-icon-xs shrink-0 text-low"
@@ -136,7 +136,7 @@ export function PersonalSidebar({
           ))}
           {projects.length > 0 && <DropdownMenuSeparator />}
           <DropdownMenuItem icon={PlusIcon} onSelect={onCreateProject}>
-            {t("nav.createProject")}
+            {t('nav.createProject')}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -149,27 +149,27 @@ export function PersonalSidebar({
               <button
                 type="button"
                 onClick={() => onNavigate(item.key)}
-                aria-current={isActive ? "page" : undefined}
+                aria-current={isActive ? 'page' : undefined}
                 className={cn(
-                  "flex w-full items-center gap-half rounded-sm px-half py-half",
-                  "text-sm transition-colors",
-                  "focus:outline-none focus-visible:ring-1 focus-visible:ring-brand",
+                  'flex w-full items-center gap-half rounded-sm px-half py-half',
+                  'text-sm transition-colors',
+                  'focus:outline-none focus-visible:ring-1 focus-visible:ring-brand',
                   isActive
-                    ? "bg-primary font-medium text-high"
-                    : "text-normal hover:bg-primary",
+                    ? 'bg-primary font-medium text-high'
+                    : 'text-normal hover:bg-primary'
                 )}
               >
                 <item.icon
                   className={cn(
-                    "size-icon-sm shrink-0",
-                    isActive ? "text-high" : "text-low",
+                    'size-icon-sm shrink-0',
+                    isActive ? 'text-high' : 'text-low'
                   )}
                   weight="bold"
                 />
                 <span className="flex-1 truncate text-left">
                   {t(item.labelKey)}
                 </span>
-                {item.key === "workbench" && pendingCount > 0 && (
+                {item.key === 'workbench' && pendingCount > 0 && (
                   <span className="rounded-sm bg-brand px-1 font-ibm-plex-mono text-xs text-on-brand">
                     {pendingCount}
                   </span>
@@ -184,7 +184,7 @@ export function PersonalSidebar({
         {userSlot}
         {appVersion && (
           <p data-testid="nav-footer" className="m-0 truncate text-xs text-low">
-            {t("nav.footer", { version: appVersion })}
+            {t('nav.footer', { version: appVersion })}
           </p>
         )}
       </div>
