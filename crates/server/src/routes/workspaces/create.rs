@@ -4,6 +4,7 @@ use axum::{Json, extract::State, response::Json as ResponseJson};
 use db::models::{
     requests::{
         CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, CreateWorkspaceApiRequest,
+        WorkspaceRepoInput,
     },
     workspace::{CreateWorkspace, Workspace},
 };
@@ -11,6 +12,7 @@ use deployment::Deployment;
 use services::services::container::ContainerService;
 use utils::response::ApiResponse;
 use uuid::Uuid;
+use workspace_manager::ManagedWorkspace;
 
 use crate::{
     DeploymentImpl,
@@ -47,6 +49,31 @@ pub(crate) async fn create_workspace_record(
     .await?;
 
     Ok(workspace)
+}
+
+/// 建工作区记录并挂上仓库（不建 worktree、不启动执行）。
+/// `create_and_start_workspace` 与流水线启动接口共用。
+pub(crate) async fn create_workspace_with_repos(
+    deployment: &DeploymentImpl,
+    name: Option<String>,
+    repos: &[WorkspaceRepoInput],
+    created_by_user_id: Uuid,
+) -> Result<ManagedWorkspace, ApiError> {
+    let mut managed_workspace = deployment
+        .workspace_manager()
+        .load_managed_workspace(
+            create_workspace_record(deployment, name, created_by_user_id).await?,
+        )
+        .await?;
+
+    for repo in repos {
+        managed_workspace
+            .add_repository(repo, deployment.git())
+            .await
+            .map_err(ApiError::from)?;
+    }
+
+    Ok(managed_workspace)
 }
 
 pub async fn create_workspace(
@@ -273,17 +300,8 @@ pub async fn create_and_start_workspace(
         ));
     }
 
-    let mut managed_workspace = deployment
-        .workspace_manager()
-        .load_managed_workspace(create_workspace_record(&deployment, name, current_user.id).await?)
-        .await?;
-
-    for repo in &repos {
-        managed_workspace
-            .add_repository(repo, deployment.git())
-            .await
-            .map_err(ApiError::from)?;
-    }
+    let managed_workspace =
+        create_workspace_with_repos(&deployment, name, &repos, current_user.id).await?;
 
     if let Some(ids) = &attachment_ids {
         managed_workspace.associate_attachments(ids).await?;
