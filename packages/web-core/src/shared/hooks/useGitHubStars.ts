@@ -24,10 +24,15 @@ async function fetchGitHubStars(): Promise<number | null> {
   }
 }
 
-export function useGitHubStars() {
+/**
+ * 个人版不显示 GitHub 徽标（设计文档 §8.1），调用方传 `enabled: false`
+ * 连请求也不发。默认开启，团队版与云端构建行为不变。
+ */
+export function useGitHubStars(options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['github-stars'],
     queryFn: fetchGitHubStars,
+    enabled: options.enabled ?? true,
     refetchInterval: 10 * 60 * 1000,
     staleTime: 10 * 60 * 1000,
     retry: false,

@@ -26,10 +26,12 @@ async function fetchDiscordOnlineCount(): Promise<number | null> {
   }
 }
 
-export function useDiscordOnlineCount() {
+/** 同 `useGitHubStars`：个人版传 `enabled: false`。 */
+export function useDiscordOnlineCount(options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['discord-online-count'],
     queryFn: fetchDiscordOnlineCount,
+    enabled: options.enabled ?? true,
     refetchInterval: 10 * 60 * 1000,
     staleTime: 10 * 60 * 1000,
     retry: false,
