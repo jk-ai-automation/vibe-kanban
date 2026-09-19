@@ -21,6 +21,11 @@ import {
   resolveLocalMutationUrl,
   resolveLocalShapeEndpoint,
 } from '@/shared/lib/local/localEndpoints';
+import {
+  PIPELINE_RUNS_SHAPE,
+  PIPELINE_STAGE_RUNS_SHAPE,
+} from '@/entities/pipeline/api/pipelineShapes';
+import { patchToWrites } from '@/shared/lib/local/localCollections';
 
 describe('数据源开关', () => {
   beforeEach(() => {
@@ -123,5 +128,43 @@ describe('resolveLocalMutationUrl', () => {
 
   it('个人版不支持的写操作返回 null', () => {
     expect(resolveLocalMutationUrl(PULL_REQUEST_ISSUE_MUTATION)).toBeNull();
+  });
+});
+
+describe('流水线集合（契约 §3）', () => {
+  it('pipeline_runs：REST 快照 + 订阅需求流', () => {
+    expect(
+      resolveLocalShapeEndpoint(PIPELINE_RUNS_SHAPE, { project_id: 'p1' })
+    ).toEqual({
+      kind: 'rest',
+      path: '/api/local/pipeline_runs?project_id=p1',
+      wsPath: '/api/issues/streams/ws?project_id=p1',
+    });
+  });
+
+  it('pipeline_stage_runs：同一条需求流', () => {
+    expect(
+      resolveLocalShapeEndpoint(PIPELINE_STAGE_RUNS_SHAPE, { project_id: 'p1' })
+    ).toEqual({
+      kind: 'rest',
+      path: '/api/local/pipeline_stage_runs?project_id=p1',
+      wsPath: '/api/issues/streams/ws?project_id=p1',
+    });
+  });
+
+  it('缺 project_id 时是空集合', () => {
+    expect(resolveLocalShapeEndpoint(PIPELINE_RUNS_SHAPE, {})).toEqual({
+      kind: 'empty',
+      table: 'pipeline_runs',
+    });
+  });
+
+  it('推送路径 /pipeline_runs/{id} 能落成集合写操作', () => {
+    expect(
+      patchToWrites(
+        [{ op: 'replace', path: '/pipeline_runs/r1', value: { id: 'r1' } }],
+        'pipeline_runs'
+      )
+    ).toEqual([{ type: 'update', value: { id: 'r1' } }]);
   });
 });

@@ -12,6 +12,9 @@ const ISSUE_STREAM_TABLES = new Set([
   'issues',
   'project_statuses',
   'issue_comments',
+  // 流水线状态与需求走同一条流（契约 §3）
+  'pipeline_runs',
+  'pipeline_stage_runs',
 ]);
 
 /** 前端表名 → 本地 REST 资源段。 */
@@ -24,6 +27,8 @@ const REST_RESOURCE: Record<string, string> = {
   issue_comments: 'issue_comments',
   workspaces: 'workspaces',
   pull_requests: 'pull_requests',
+  pipeline_runs: 'pipeline_runs',
+  pipeline_stage_runs: 'pipeline_stage_runs',
 };
 
 /** 每个表在个人版里允许的过滤参数。其他参数一律丢弃。 */
@@ -36,6 +41,8 @@ const ALLOWED_PARAM: Record<string, string | null> = {
   issue_comments: 'issue_id',
   workspaces: 'project_id',
   pull_requests: 'project_id',
+  pipeline_runs: 'project_id',
+  pipeline_stage_runs: 'project_id',
 };
 
 /** mutation.name → 本地写接口。null 表示个人版不支持该写操作。 */
