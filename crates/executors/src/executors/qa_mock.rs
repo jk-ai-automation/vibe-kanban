@@ -1,8 +1,9 @@
 //! QA Mode: Mock executor for testing
 //!
 //! This module provides a mock executor that:
-//! 1. Performs random file operations (create, delete, modify)
-//! 2. Streams 10 mock log entries over 10 seconds
+//! 1. Performs random file operations (create, delete, modify); for pipeline prompts
+//!    (contract §5 / C9) it only writes the declared artifacts instead
+//! 2. Streams 10 mock log entries over 10 seconds (1 second in pipeline mode)
 //! 3. Outputs logs in ClaudeJson format for compatibility with existing log normalization
 
 use std::{path::Path, process::Stdio, sync::Arc};
@@ -43,8 +44,8 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
     ) -> Result<SpawnedChild, ExecutorError> {
         info!("QA Mock Executor: spawning mock execution");
 
-        // 1. Perform file operations before spawning the log output process
-        perform_file_operations(current_dir).await;
+        // 1. Perform file operations (or write pipeline artifacts) before spawning the log output process
+        let pipeline_mode = apply_side_effects(current_dir, prompt).await;
 
         // 2. Generate mock logs and write to temp file to avoid shell escaping issues
         let logs = generate_mock_logs(prompt);
@@ -58,12 +59,7 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
             .map_err(|e| ExecutorError::Io(std::io::Error::other(e)))?;
 
         // 3. Create shell script that reads file and outputs with delays
-        // Using IFS= read -r to preserve exact content (no word splitting, no backslash interpretation)
-        let script = format!(
-            r#"while IFS= read -r line; do echo "$line"; sleep 1; done < "{}"; rm -f "{}""#,
-            log_file.display(),
-            log_file.display()
-        );
+        let script = mock_log_script(&log_file, pipeline_mode);
 
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c")
@@ -119,6 +115,38 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
             permission_policy: Some(crate::model_selector::PermissionPolicy::Auto),
         }
     }
+}
+
+/// 流水线提示词（带「产出物目录」行，契约 §5 / C9）：只写约定产出物，不做随机删改
+/// ——随机删改会波及工作区里的 `.vk/` 产出物。普通提示词：沿用原来的随机文件操作。
+/// 返回是否是流水线模式。
+async fn apply_side_effects(current_dir: &Path, prompt: &str) -> bool {
+    match crate::pipeline_prompt::parse_pipeline_prompt(prompt) {
+        Some(parsed) => {
+            match crate::pipeline_prompt::write_mock_artifacts(&parsed) {
+                Ok(paths) => info!("QA Mock: 写出流水线产出物 {:?}", paths),
+                Err(e) => warn!("QA Mock: 写流水线产出物失败: {}", e),
+            }
+            true
+        }
+        None => {
+            perform_file_operations(current_dir).await;
+            false
+        }
+    }
+}
+
+/// 逐行输出日志的 shell 脚本。流水线模式每行 0.1 秒：七个阶段按原来的 1 秒/行
+/// 要 70 秒以上，端到端测试太慢。
+/// Using IFS= read -r to preserve exact content (no word splitting, no backslash interpretation)
+fn mock_log_script(log_file: &Path, pipeline_mode: bool) -> String {
+    let line_delay = if pipeline_mode { "0.1" } else { "1" };
+    format!(
+        r#"while IFS= read -r line; do echo "$line"; sleep {}; done < "{}"; rm -f "{}""#,
+        line_delay,
+        log_file.display(),
+        log_file.display()
+    )
 }
 
 /// Perform random file operations in the worktree
@@ -450,5 +478,48 @@ mod tests {
         } else {
             panic!("Expected Assistant variant");
         }
+    }
+
+    #[tokio::test]
+    async fn 流水线提示词只写产出物不做随机改动() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("repo");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("a.md"), "a").unwrap();
+        std::fs::write(work.join("b.md"), "b").unwrap();
+        let artifacts = dir.path().join(".vk/runs/VK-1");
+        let prompt = format!(
+            "使用技能 vk-requirement。\n需求：VK-1 示例\n产出物目录（绝对路径）：{}\n必须产出：requirement.md\n",
+            artifacts.display()
+        );
+
+        assert!(apply_side_effects(&work, &prompt).await);
+        assert!(artifacts.join("requirement.md").exists());
+        assert_eq!(std::fs::read_to_string(work.join("a.md")).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(work.join("b.md")).unwrap(), "b");
+        assert_eq!(
+            std::fs::read_dir(&work).unwrap().count(),
+            2,
+            "流水线模式不应新建 qa_created_*.txt"
+        );
+    }
+
+    #[tokio::test]
+    async fn 普通提示词仍走随机文件操作() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!apply_side_effects(dir.path(), "随便改点东西").await);
+        let created = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().starts_with("qa_created_"));
+        assert!(created, "普通模式行为不变：会新建 qa_created_*.txt");
+    }
+
+    #[test]
+    fn 流水线模式日志每行间隔零点一秒() {
+        let script = mock_log_script(Path::new("/tmp/x.jsonl"), true);
+        assert!(script.contains("sleep 0.1;"), "{script}");
+        let script = mock_log_script(Path::new("/tmp/x.jsonl"), false);
+        assert!(script.contains("sleep 1;"), "{script}");
     }
 }
