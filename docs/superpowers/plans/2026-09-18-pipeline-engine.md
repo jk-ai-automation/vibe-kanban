@@ -9598,3 +9598,5 @@ EOF
 3. 每个阶段结束都会发一次「Workspace Complete」系统通知（`crates/services/src/services/container.rs:238-270`），流水线运行时略吵，后续可在 `finalize_task` 里对流水线会话降噪。
 4. 交付阶段自动提 PR（设计 §9.2）、预算熔断（U5）。
 5. `template_warning` 目前只落库与打日志，界面不可见；需要展示时再在契约里加字段。
+6. 进入 `deliver` 阶段即把需求移到「交付（done）」列（`Issues::move_to_stage` 同时写 `completed_at`）；若交付阶段随后失败（轮次用尽，运行 failed），看板会出现「需求已完成、但流水线运行失败」的组合。U2 不改，后续可改为交付通过后才进 done 列，或在卡片上叠加运行失败标记。
+7. 引擎用一把全局异步锁串行所有状态变更；锁内会调用启动器，包括 `ensure_container_exists`（可能创建 git worktree）与取消时的 `try_stop`（最长约 5 秒）。这期间其他运行的回调、关卡决策、暂停/继续都会被阻塞。多运行并行时可改为按运行分锁，或把启动放到锁外（需另行处理启动与回调的顺序）。
