@@ -17,7 +17,9 @@ import { Route as AppWorkspacesRouteImport } from './routes/_app.workspaces'
 import { Route as AppTestingRouteImport } from './routes/_app.testing'
 import { Route as AppNotificationsRouteImport } from './routes/_app.notifications'
 import { Route as AppMembersRouteImport } from './routes/_app.members'
+import { Route as AppHomeRouteImport } from './routes/_app.home'
 import { Route as AppExportRouteImport } from './routes/_app.export'
+import { Route as AppDocsRouteImport } from './routes/_app.docs'
 import { Route as WorkspacesWorkspaceIdVscodeRouteImport } from './routes/workspaces.$workspaceId.vscode'
 import { Route as AppWorkspacesElectricTestRouteImport } from './routes/_app.workspaces_.electric-test'
 import { Route as AppWorkspacesCreateRouteImport } from './routes/_app.workspaces_.create'
@@ -29,6 +31,7 @@ import { Route as AppProjectsProjectIdIssuesIssueIdRouteImport } from './routes/
 import { Route as AppHostsHostIdWorkspacesCreateRouteImport } from './routes/_app.hosts.$hostId.workspaces_.create'
 import { Route as AppHostsHostIdWorkspacesWorkspaceIdRouteImport } from './routes/_app.hosts.$hostId.workspaces_.$workspaceId'
 import { Route as AppProjectsProjectIdWorkspacesCreateDraftIdRouteImport } from './routes/_app.projects.$projectId_.workspaces.create.$draftId'
+import { Route as AppProjectsProjectIdIssuesIssueIdDetailRouteImport } from './routes/_app.projects.$projectId_.issues.$issueId_.detail'
 import { Route as AppProjectsProjectIdIssuesIssueIdWorkspacesWorkspaceIdRouteImport } from './routes/_app.projects.$projectId_.issues.$issueId_.workspaces.$workspaceId'
 import { Route as AppProjectsProjectIdIssuesIssueIdWorkspacesCreateDraftIdRouteImport } from './routes/_app.projects.$projectId_.issues.$issueId_.workspaces.create.$draftId'
 import { Route as AppProjectsProjectIdHostsHostIdWorkspacesCreateDraftIdRouteImport } from './routes/_app.projects.$projectId_.hosts.$hostId.workspaces.create.$draftId'
@@ -74,9 +77,19 @@ const AppMembersRoute = AppMembersRouteImport.update({
   path: '/members',
   getParentRoute: () => AppRoute,
 } as any)
+const AppHomeRoute = AppHomeRouteImport.update({
+  id: '/home',
+  path: '/home',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppExportRoute = AppExportRouteImport.update({
   id: '/export',
   path: '/export',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppDocsRoute = AppDocsRouteImport.update({
+  id: '/docs',
+  path: '/docs',
   getParentRoute: () => AppRoute,
 } as any)
 const WorkspacesWorkspaceIdVscodeRoute =
@@ -143,6 +156,12 @@ const AppProjectsProjectIdWorkspacesCreateDraftIdRoute =
     path: '/projects/$projectId/workspaces/create/$draftId',
     getParentRoute: () => AppRoute,
   } as any)
+const AppProjectsProjectIdIssuesIssueIdDetailRoute =
+  AppProjectsProjectIdIssuesIssueIdDetailRouteImport.update({
+    id: '/projects/$projectId_/issues/$issueId_/detail',
+    path: '/projects/$projectId/issues/$issueId/detail',
+    getParentRoute: () => AppRoute,
+  } as any)
 const AppProjectsProjectIdIssuesIssueIdWorkspacesWorkspaceIdRoute =
   AppProjectsProjectIdIssuesIssueIdWorkspacesWorkspaceIdRouteImport.update({
     id: '/projects/$projectId_/issues/$issueId_/workspaces/$workspaceId',
@@ -181,7 +200,9 @@ const AppProjectsProjectIdIssuesIssueIdHostsHostIdWorkspacesCreateDraftIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
+  '/docs': typeof AppDocsRoute
   '/export': typeof AppExportRoute
+  '/home': typeof AppHomeRoute
   '/members': typeof AppMembersRoute
   '/notifications': typeof AppNotificationsRoute
   '/testing': typeof AppTestingRoute
@@ -197,6 +218,7 @@ export interface FileRoutesByFullPath {
   '/hosts/$hostId/workspaces/create': typeof AppHostsHostIdWorkspacesCreateRoute
   '/projects/$projectId/issues/$issueId': typeof AppProjectsProjectIdIssuesIssueIdRoute
   '/hosts/$hostId/workspaces/$workspaceId/vscode': typeof HostsHostIdWorkspacesWorkspaceIdVscodeRoute
+  '/projects/$projectId/issues/$issueId/detail': typeof AppProjectsProjectIdIssuesIssueIdDetailRoute
   '/projects/$projectId/workspaces/create/$draftId': typeof AppProjectsProjectIdWorkspacesCreateDraftIdRoute
   '/projects/$projectId/issues/$issueId/workspaces/$workspaceId': typeof AppProjectsProjectIdIssuesIssueIdWorkspacesWorkspaceIdRoute
   '/projects/$projectId/hosts/$hostId/workspaces/create/$draftId': typeof AppProjectsProjectIdHostsHostIdWorkspacesCreateDraftIdRoute
@@ -207,7 +229,9 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
+  '/docs': typeof AppDocsRoute
   '/export': typeof AppExportRoute
+  '/home': typeof AppHomeRoute
   '/members': typeof AppMembersRoute
   '/notifications': typeof AppNotificationsRoute
   '/testing': typeof AppTestingRoute
@@ -223,6 +247,7 @@ export interface FileRoutesByTo {
   '/hosts/$hostId/workspaces/create': typeof AppHostsHostIdWorkspacesCreateRoute
   '/projects/$projectId/issues/$issueId': typeof AppProjectsProjectIdIssuesIssueIdRoute
   '/hosts/$hostId/workspaces/$workspaceId/vscode': typeof HostsHostIdWorkspacesWorkspaceIdVscodeRoute
+  '/projects/$projectId/issues/$issueId/detail': typeof AppProjectsProjectIdIssuesIssueIdDetailRoute
   '/projects/$projectId/workspaces/create/$draftId': typeof AppProjectsProjectIdWorkspacesCreateDraftIdRoute
   '/projects/$projectId/issues/$issueId/workspaces/$workspaceId': typeof AppProjectsProjectIdIssuesIssueIdWorkspacesWorkspaceIdRoute
   '/projects/$projectId/hosts/$hostId/workspaces/create/$draftId': typeof AppProjectsProjectIdHostsHostIdWorkspacesCreateDraftIdRoute
@@ -235,7 +260,9 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/_app': typeof AppRouteWithChildren
   '/onboarding': typeof OnboardingRoute
+  '/_app/docs': typeof AppDocsRoute
   '/_app/export': typeof AppExportRoute
+  '/_app/home': typeof AppHomeRoute
   '/_app/members': typeof AppMembersRoute
   '/_app/notifications': typeof AppNotificationsRoute
   '/_app/testing': typeof AppTestingRoute
@@ -251,6 +278,7 @@ export interface FileRoutesById {
   '/_app/hosts/$hostId/workspaces_/create': typeof AppHostsHostIdWorkspacesCreateRoute
   '/_app/projects/$projectId_/issues/$issueId': typeof AppProjectsProjectIdIssuesIssueIdRoute
   '/hosts/$hostId/workspaces/$workspaceId/vscode': typeof HostsHostIdWorkspacesWorkspaceIdVscodeRoute
+  '/_app/projects/$projectId_/issues/$issueId_/detail': typeof AppProjectsProjectIdIssuesIssueIdDetailRoute
   '/_app/projects/$projectId_/workspaces/create/$draftId': typeof AppProjectsProjectIdWorkspacesCreateDraftIdRoute
   '/_app/projects/$projectId_/issues/$issueId_/workspaces/$workspaceId': typeof AppProjectsProjectIdIssuesIssueIdWorkspacesWorkspaceIdRoute
   '/_app/projects/$projectId_/hosts/$hostId/workspaces/create/$draftId': typeof AppProjectsProjectIdHostsHostIdWorkspacesCreateDraftIdRoute
@@ -263,7 +291,9 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/onboarding'
+    | '/docs'
     | '/export'
+    | '/home'
     | '/members'
     | '/notifications'
     | '/testing'
@@ -279,6 +309,7 @@ export interface FileRouteTypes {
     | '/hosts/$hostId/workspaces/create'
     | '/projects/$projectId/issues/$issueId'
     | '/hosts/$hostId/workspaces/$workspaceId/vscode'
+    | '/projects/$projectId/issues/$issueId/detail'
     | '/projects/$projectId/workspaces/create/$draftId'
     | '/projects/$projectId/issues/$issueId/workspaces/$workspaceId'
     | '/projects/$projectId/hosts/$hostId/workspaces/create/$draftId'
@@ -289,7 +320,9 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/onboarding'
+    | '/docs'
     | '/export'
+    | '/home'
     | '/members'
     | '/notifications'
     | '/testing'
@@ -305,6 +338,7 @@ export interface FileRouteTypes {
     | '/hosts/$hostId/workspaces/create'
     | '/projects/$projectId/issues/$issueId'
     | '/hosts/$hostId/workspaces/$workspaceId/vscode'
+    | '/projects/$projectId/issues/$issueId/detail'
     | '/projects/$projectId/workspaces/create/$draftId'
     | '/projects/$projectId/issues/$issueId/workspaces/$workspaceId'
     | '/projects/$projectId/hosts/$hostId/workspaces/create/$draftId'
@@ -316,7 +350,9 @@ export interface FileRouteTypes {
     | '/'
     | '/_app'
     | '/onboarding'
+    | '/_app/docs'
     | '/_app/export'
+    | '/_app/home'
     | '/_app/members'
     | '/_app/notifications'
     | '/_app/testing'
@@ -332,6 +368,7 @@ export interface FileRouteTypes {
     | '/_app/hosts/$hostId/workspaces_/create'
     | '/_app/projects/$projectId_/issues/$issueId'
     | '/hosts/$hostId/workspaces/$workspaceId/vscode'
+    | '/_app/projects/$projectId_/issues/$issueId_/detail'
     | '/_app/projects/$projectId_/workspaces/create/$draftId'
     | '/_app/projects/$projectId_/issues/$issueId_/workspaces/$workspaceId'
     | '/_app/projects/$projectId_/hosts/$hostId/workspaces/create/$draftId'
@@ -407,11 +444,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppMembersRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/home': {
+      id: '/_app/home'
+      path: '/home'
+      fullPath: '/home'
+      preLoaderRoute: typeof AppHomeRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/export': {
       id: '/_app/export'
       path: '/export'
       fullPath: '/export'
       preLoaderRoute: typeof AppExportRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/docs': {
+      id: '/_app/docs'
+      path: '/docs'
+      fullPath: '/docs'
+      preLoaderRoute: typeof AppDocsRouteImport
       parentRoute: typeof AppRoute
     }
     '/workspaces/$workspaceId/vscode': {
@@ -491,6 +542,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppProjectsProjectIdWorkspacesCreateDraftIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/projects/$projectId_/issues/$issueId_/detail': {
+      id: '/_app/projects/$projectId_/issues/$issueId_/detail'
+      path: '/projects/$projectId/issues/$issueId/detail'
+      fullPath: '/projects/$projectId/issues/$issueId/detail'
+      preLoaderRoute: typeof AppProjectsProjectIdIssuesIssueIdDetailRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/projects/$projectId_/issues/$issueId_/workspaces/$workspaceId': {
       id: '/_app/projects/$projectId_/issues/$issueId_/workspaces/$workspaceId'
       path: '/projects/$projectId/issues/$issueId/workspaces/$workspaceId'
@@ -530,7 +588,9 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppDocsRoute: typeof AppDocsRoute
   AppExportRoute: typeof AppExportRoute
+  AppHomeRoute: typeof AppHomeRoute
   AppMembersRoute: typeof AppMembersRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
   AppTestingRoute: typeof AppTestingRoute
@@ -543,6 +603,7 @@ interface AppRouteChildren {
   AppHostsHostIdWorkspacesWorkspaceIdRoute: typeof AppHostsHostIdWorkspacesWorkspaceIdRoute
   AppHostsHostIdWorkspacesCreateRoute: typeof AppHostsHostIdWorkspacesCreateRoute
   AppProjectsProjectIdIssuesIssueIdRoute: typeof AppProjectsProjectIdIssuesIssueIdRoute
+  AppProjectsProjectIdIssuesIssueIdDetailRoute: typeof AppProjectsProjectIdIssuesIssueIdDetailRoute
   AppProjectsProjectIdWorkspacesCreateDraftIdRoute: typeof AppProjectsProjectIdWorkspacesCreateDraftIdRoute
   AppProjectsProjectIdIssuesIssueIdWorkspacesWorkspaceIdRoute: typeof AppProjectsProjectIdIssuesIssueIdWorkspacesWorkspaceIdRoute
   AppProjectsProjectIdHostsHostIdWorkspacesCreateDraftIdRoute: typeof AppProjectsProjectIdHostsHostIdWorkspacesCreateDraftIdRoute
@@ -552,7 +613,9 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppDocsRoute: AppDocsRoute,
   AppExportRoute: AppExportRoute,
+  AppHomeRoute: AppHomeRoute,
   AppMembersRoute: AppMembersRoute,
   AppNotificationsRoute: AppNotificationsRoute,
   AppTestingRoute: AppTestingRoute,
@@ -567,6 +630,8 @@ const AppRouteChildren: AppRouteChildren = {
   AppHostsHostIdWorkspacesCreateRoute: AppHostsHostIdWorkspacesCreateRoute,
   AppProjectsProjectIdIssuesIssueIdRoute:
     AppProjectsProjectIdIssuesIssueIdRoute,
+  AppProjectsProjectIdIssuesIssueIdDetailRoute:
+    AppProjectsProjectIdIssuesIssueIdDetailRoute,
   AppProjectsProjectIdWorkspacesCreateDraftIdRoute:
     AppProjectsProjectIdWorkspacesCreateDraftIdRoute,
   AppProjectsProjectIdIssuesIssueIdWorkspacesWorkspaceIdRoute:

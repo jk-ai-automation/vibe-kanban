@@ -1,15 +1,19 @@
 import { useEffect } from 'react';
+import { useRouter } from '@tanstack/react-router';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { getFirstProjectDestination } from '@/shared/lib/firstProjectDestination';
 import { useOrganizationStore } from '@/shared/stores/useOrganizationStore';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { isLocalMode } from '@/shared/lib/local/dataSource';
+import { isLocalPersonalMode } from '@/shared/lib/local/runtimeMode';
+import { PERSONAL_ROUTES } from '@/shared/lib/routes/personalRoutes';
 
 export function RootRedirectPage() {
   const { config, loading, loginStatus } = useUserSystem();
   const setSelectedOrgId = useOrganizationStore((s) => s.setSelectedOrgId);
   const appNavigation = useAppNavigation();
+  const router = useRouter();
 
   useEffect(() => {
     if (loading || !config) {
@@ -20,6 +24,12 @@ export function RootRedirectPage() {
     void (async () => {
       if (!config.remote_onboarding_acknowledged) {
         appNavigation.goToOnboarding({ replace: true });
+        return;
+      }
+
+      // 个人版进来默认是工作台（设计文档 §12 验收 1）。团队版 / 云端构建走下面原逻辑。
+      if (isLocalPersonalMode()) {
+        router.history.replace(PERSONAL_ROUTES.workbench);
         return;
       }
 
@@ -55,7 +65,14 @@ export function RootRedirectPage() {
     return () => {
       isActive = false;
     };
-  }, [appNavigation, config, loading, loginStatus?.status, setSelectedOrgId]);
+  }, [
+    appNavigation,
+    config,
+    loading,
+    loginStatus?.status,
+    router,
+    setSelectedOrgId,
+  ]);
 
   return (
     <div className="h-screen bg-primary flex items-center justify-center">
