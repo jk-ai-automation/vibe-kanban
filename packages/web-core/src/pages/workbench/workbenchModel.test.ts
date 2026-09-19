@@ -212,3 +212,35 @@ describe('waitingSince（契约 C11：等待起点 = 阶段 finished_at）', () 
     ).toBeNull();
   });
 });
+
+describe('weeklyStats：一次通过不计「用户手动停止」', () => {
+  it('手动停止后续跑通过，仍算一次通过', () => {
+    const now = T0_MS + 60 * 60_000;
+    const runs = [
+      makeRun({
+        id: 'r1',
+        status: 'completed',
+        created_at: at(0),
+        finished_at: at(40),
+      }),
+    ];
+    const stages = [
+      makeStage({
+        id: 'a1',
+        run_id: 'r1',
+        stage_key: 'develop',
+        attempt: 1,
+        status: 'failed',
+        error: '用户手动停止',
+      }),
+      makeStage({
+        id: 'a2',
+        run_id: 'r1',
+        stage_key: 'develop',
+        attempt: 2,
+        status: 'passed',
+      }),
+    ];
+    expect(weeklyStats(runs, stages, now).firstPassRate).toBe(100);
+  });
+});

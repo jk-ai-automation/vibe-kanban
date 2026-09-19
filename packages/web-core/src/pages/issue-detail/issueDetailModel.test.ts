@@ -226,3 +226,47 @@ describe('gateBarState：模板里的判定条件（契约 C10）', () => {
     expect(state.kind === 'auto' && state.gateCondition).toBe('checks_passed');
   });
 });
+
+describe('gateBarState：轮次不计「用户手动停止」', () => {
+  it('轮次用尽失败时，之前的手动停止不占轮次', () => {
+    const view = makeView({
+      run: makeRun({ status: 'failed', current_stage_key: 'review' }),
+      stages: [1, 2, 3, 4].map((attempt) =>
+        makeStage({
+          id: `r${attempt}`,
+          stage_key: 'review',
+          attempt,
+          status: 'failed',
+          gate_kind: 'auto',
+          error: attempt === 2 ? '用户手动停止' : 'blocker',
+        })
+      ),
+    });
+    const state = gateBarState(view);
+    expect(state.kind === 'failed' && state.attempt).toBe(3);
+  });
+
+  it('自动阶段续跑：扣掉手动停止', () => {
+    const view = makeView({
+      run: makeRun({ current_stage_key: 'develop' }),
+      stages: [
+        makeStage({
+          id: 'd1',
+          stage_key: 'develop',
+          attempt: 1,
+          status: 'failed',
+          gate_kind: 'auto',
+          error: '用户手动停止',
+        }),
+        makeStage({
+          id: 'd2',
+          stage_key: 'develop',
+          attempt: 2,
+          gate_kind: 'auto',
+        }),
+      ],
+    });
+    const state = gateBarState(view);
+    expect(state.kind === 'auto' && state.attempt).toBe(1);
+  });
+});

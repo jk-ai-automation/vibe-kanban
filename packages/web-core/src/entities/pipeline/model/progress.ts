@@ -89,6 +89,37 @@ export function latestAttempts(
   return latest;
 }
 
+/**
+ * 「用户手动停止」执行进程时后端写进阶段尝试 `error` 的固定文案。
+ * 来源：`crates/db/src/models/pipeline.rs` 的 `MANUAL_STOP_ERROR`，两边必须逐字一致。
+ * 这种尝试不计入 `max_rounds`（后端 `PipelineStageRuns::count_failed` 排除它）。
+ */
+export const MANUAL_STOP_ERROR = '用户手动停止';
+
+export function isManualStop(stage: Pick<PipelineStageRun, 'error'>): boolean {
+  return stage.error === MANUAL_STOP_ERROR;
+}
+
+/**
+ * 这次尝试是本阶段的第几轮：尝试序号减去本运行、本阶段更早的
+ * 「用户手动停止」尝试数，至少为 1。
+ */
+export function stageRound(
+  stages: readonly PipelineStageRun[],
+  stage: PipelineStageRun
+): number {
+  const attempt = toNumber(stage.attempt) ?? 1;
+  const manualStopsBefore = stages.filter(
+    (other) =>
+      other.id !== stage.id &&
+      other.run_id === stage.run_id &&
+      other.stage_key === stage.stage_key &&
+      (toNumber(other.attempt) ?? 0) < attempt &&
+      isManualStop(other)
+  ).length;
+  return Math.max(1, attempt - manualStopsBefore);
+}
+
 function currentCellState(
   runStatus: PipelineRunStatus,
   stageStatus: PipelineStageStatus | null
@@ -154,7 +185,10 @@ export interface PipelineStatusInfo {
   stageKey: PipelineStageKey;
   /** 模板里的人工关卡名（如「需求确认」）；没有模板或不是人工关卡为 null。 */
   gateLabel: string | null;
-  /** 当前阶段最新一次尝试的序号，至少为 1。 */
+  /**
+   * 当前阶段的轮次（`stageRound`：尝试序号扣掉更早的「用户手动停止」），
+   * 至少为 1。
+   */
   attempt: number;
   /**
    * 当前阶段最多轮次；没有模板、或不是自动关卡阶段时为 null。
@@ -169,10 +203,8 @@ export function pipelineStatus(
   template: TemplateLike,
   run: PipelineRun
 ): PipelineStatusInfo {
-  const latest =
-    latestAttempts(stages.filter((s) => s.run_id === run.id)).get(
-      run.current_stage_key
-    ) ?? null;
+  const runStages = stages.filter((s) => s.run_id === run.id);
+  const latest = latestAttempts(runStages).get(run.current_stage_key) ?? null;
   const templateStage =
     template?.stages?.find((stage) => stage.key === run.current_stage_key) ??
     null;
@@ -181,7 +213,7 @@ export function pipelineStatus(
     tone: currentCellState(run.status, latest?.status ?? null),
     stageKey: run.current_stage_key,
     gateLabel: templateStage?.gate_label ?? null,
-    attempt: Math.max(1, toNumber(latest?.attempt) ?? 1),
+    attempt: latest ? stageRound(runStages, latest) : 1,
     maxRounds:
       templateStage && templateStage.gate_kind === 'auto'
         ? toNumber(templateStage.max_rounds)

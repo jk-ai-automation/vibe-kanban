@@ -6,6 +6,7 @@ import type {
 } from 'shared/types';
 import {
   latestAttempts,
+  stageRound,
   toMillis,
   toNumber,
 } from '@/entities/pipeline/model/progress';
@@ -192,13 +193,11 @@ export function gateBarState(view: IssuePipelineView | null): GateBarState {
   if (!view) return { kind: 'none' };
   const { run } = view;
   const stageKey = run.current_stage_key;
-  const current =
-    latestAttempts(view.stages.filter((s) => s.run_id === run.id)).get(
-      stageKey
-    ) ?? null;
+  const runStages = view.stages.filter((s) => s.run_id === run.id);
+  const current = latestAttempts(runStages).get(stageKey) ?? null;
   const templateStage =
     view.template.stages.find((stage) => stage.key === stageKey) ?? null;
-  const attempt = Math.max(1, toNumber(current?.attempt) ?? 1);
+  const attempt = current ? stageRound(runStages, current) : 1;
   const maxRounds = templateStage ? toNumber(templateStage.max_rounds) : null;
   const gateLabel = templateStage?.gate_label ?? null;
   const waitingHuman =

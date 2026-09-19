@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MANUAL_STOP_ERROR,
+  isManualStop,
   latestAttempts,
   pipelineProgress,
   pipelineStatus,
   pipelineStatusText,
+  stageRound,
   toMillis,
   toNumber,
   type Translate,
@@ -242,5 +245,63 @@ describe('用户手动停止（契约 C5：尝试 failed、运行 paused）', ()
     const info = pipelineStatus(stages, STANDARD_TEMPLATE, run);
     expect(info.tone).toBe('paused');
     expect(pipelineStatusText(info, t)).toBe('pipeline.status.paused');
+  });
+});
+
+describe('轮次不计「用户手动停止」（后端 MANUAL_STOP_ERROR 不计入 max_rounds）', () => {
+  const develop = (attempt: number, extra: Record<string, unknown> = {}) =>
+    makeStage({
+      id: `d${attempt}`,
+      stage_key: 'develop',
+      gate_kind: 'auto',
+      attempt,
+      status: 'failed',
+      ...extra,
+    });
+
+  it('常量与后端逐字一致', () => {
+    expect(MANUAL_STOP_ERROR).toBe('用户手动停止');
+  });
+
+  it('第 2 次尝试是手动停止后的续跑：仍是第 1 轮，不显示轮次', () => {
+    const run = makeRun({ current_stage_key: 'develop' });
+    const stages = [
+      develop(1, { error: MANUAL_STOP_ERROR }),
+      develop(2, { status: 'running' }),
+    ];
+    const info = pipelineStatus(stages, STANDARD_TEMPLATE, run);
+    expect(info.attempt).toBe(1);
+    expect(pipelineStatusText(info, t)).toBe(
+      'pipeline.status.running{"stage":"pipeline.stage.develop"}'
+    );
+  });
+
+  it('失败一次 + 手动停止一次后的第 3 次尝试：第 2 轮', () => {
+    const run = makeRun({ current_stage_key: 'develop' });
+    const stages = [
+      develop(1, { error: '进程退出码 1' }),
+      develop(2, { error: MANUAL_STOP_ERROR }),
+      develop(3, { status: 'running' }),
+    ];
+    expect(stageRound(stages, stages[2])).toBe(2);
+    expect(pipelineStatus(stages, STANDARD_TEMPLATE, run).attempt).toBe(2);
+  });
+
+  it('只扣本运行、本阶段、更早的手动停止', () => {
+    const current = develop(3, { status: 'running' });
+    const stages = [
+      develop(1, { run_id: 'other', error: MANUAL_STOP_ERROR }),
+      makeStage({
+        id: 'r1',
+        stage_key: 'review',
+        attempt: 1,
+        status: 'failed',
+        error: MANUAL_STOP_ERROR,
+      }),
+      current,
+    ];
+    expect(stageRound(stages, current)).toBe(3);
+    expect(isManualStop(develop(1, { error: MANUAL_STOP_ERROR }))).toBe(true);
+    expect(isManualStop(develop(1, { error: '别的原因' }))).toBe(false);
   });
 });

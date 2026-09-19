@@ -1,6 +1,10 @@
 import type { PipelineRun, PipelineStageRun } from 'shared/types';
 import type { CreateIssueRequest } from 'shared/remote-types';
-import { toMillis, toNumber } from '@/entities/pipeline/model/progress';
+import {
+  isManualStop,
+  stageRound,
+  toMillis,
+} from '@/entities/pipeline/model/progress';
 import { splitMessageToTitleDescription } from '@/shared/lib/string';
 
 const byDesc =
@@ -36,7 +40,7 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * 本周统计（草图：交付 7 · 平均周期 52 分 · 一次通过率 71%）。
- * 「一次通过」= 这次运行的所有阶段都只跑了一次。
+ * 「一次通过」= 这次运行的所有阶段都只跑了一轮（「用户手动停止」的尝试不算一轮）。
  */
 export function weeklyStats(
   runs: readonly PipelineRun[],
@@ -59,11 +63,12 @@ export function weeklyStats(
       ((toMillis(run.finished_at) ?? 0) - (toMillis(run.created_at) ?? 0)) /
       60_000
   );
-  const firstPass = delivered.filter((run) =>
-    stages
-      .filter((stage) => stage.run_id === run.id)
-      .every((stage) => (toNumber(stage.attempt) ?? 1) <= 1)
-  ).length;
+  const firstPass = delivered.filter((run) => {
+    const runStages = stages.filter((stage) => stage.run_id === run.id);
+    return runStages.every(
+      (stage) => isManualStop(stage) || stageRound(runStages, stage) <= 1
+    );
+  }).length;
   return {
     delivered: delivered.length,
     avgCycleMinutes: Math.round(
