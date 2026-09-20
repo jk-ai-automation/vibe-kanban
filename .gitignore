@@ -2,6 +2,9 @@
 target/
 **/*.rs.bk
 
+# prepare-db 的临时库（scripts/prepare-db.js 正常结束会删掉；中断时会残留）
+crates/db/prepare_db.sqlite*
+
 # Node.js
 node_modules/
 npm-debug.log*
