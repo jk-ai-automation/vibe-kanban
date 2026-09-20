@@ -533,6 +533,7 @@ export function SharedAppLayout() {
         >
           {isPersonalShell ? (
             <PersonalSidebar
+              testId="personal-sidebar-mobile"
               className="w-full border-r-0"
               projects={orderedProjects}
               activeProjectId={personalProjectId}

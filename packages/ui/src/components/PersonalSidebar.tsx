@@ -46,6 +46,12 @@ export interface PersonalSidebarProps {
   appVersion: string | null;
   /** 用户菜单等底部附加内容。 */
   userSlot?: ReactNode;
+  /**
+   * 根节点的 `data-testid`。移动端抽屉里的那份要传一个不同的值：
+   * 抽屉内容即使收起也留在 DOM 里（`MobileDrawer` 始终挂载 children），
+   * 两份用同一个 testid 会让端到端定位器命中两个元素。
+   */
+  testId?: string;
   className?: string;
 }
 
@@ -74,6 +80,7 @@ export function PersonalSidebar({
   pendingCount,
   appVersion,
   userSlot,
+  testId = 'personal-sidebar',
   className,
 }: PersonalSidebarProps) {
   const { t } = useTranslation('common');
@@ -82,7 +89,7 @@ export function PersonalSidebar({
 
   return (
     <div
-      data-testid="personal-sidebar"
+      data-testid={testId}
       className={cn(
         'flex h-full min-h-0 w-52 flex-col gap-base overflow-y-auto',
         'border-r border-border bg-secondary p-base',
