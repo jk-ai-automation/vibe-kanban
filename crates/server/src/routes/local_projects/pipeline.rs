@@ -13,6 +13,7 @@ use axum::{
 };
 use db::models::{
     issue::Issues,
+    local_project::LocalProjects,
     pipeline::{
         GateDecisionRequest, IssueArtifact, IssueArtifacts, IssuePipelineView, PendingPipelineItem,
         PipelineRuns, PipelineStageRuns, StartPipelineRequest,
@@ -31,8 +32,10 @@ use uuid::Uuid;
 
 use super::{LocalRoutes, ProjectScopedQuery, snapshot};
 use crate::{
-    DeploymentImpl, error::ApiError, middleware::local_session::CurrentUser,
-    routes::workspaces::create::create_workspace_with_repos,
+    DeploymentImpl,
+    error::ApiError,
+    middleware::local_session::CurrentUser,
+    routes::workspaces::{core::perform_workspace_deletion, create::create_workspace_with_repos},
 };
 
 #[derive(Debug, Deserialize)]
@@ -87,13 +90,55 @@ pub(crate) async fn handle_get_issue_pipeline(
         .map_err(map_pipeline_error)
 }
 
+/// 取单个产出物，并沿 产出物 → 需求 → 项目 校验归属。
+///
+/// 本地权限模型：个人版是单用户，团队版下 `local_projects` 里的接口都是「项目内可见」，
+/// 没有按用户过滤的先例（见 `issues.rs` / `statuses.rs` 的 handler），所以这里校验到
+/// 「产出物挂在一条存在的需求上、需求挂在一个存在的项目下」为止：拿 id 乱猜的请求得到
+/// 404 而不是内容。库里开着外键、删需求/项目会级联删产出物，所以这道校验平时是第二道
+/// 防线（外键失效或数据被直接改动时才会命中）。以后若本地引入按用户/项目的可见性，
+/// 在这里接上。
 pub(crate) async fn handle_get_artifact(
     pool: &SqlitePool,
     artifact_id: Uuid,
 ) -> Result<IssueArtifact, ApiError> {
-    IssueArtifacts::find_by_id(pool, artifact_id)
+    let artifact = IssueArtifacts::find_by_id(pool, artifact_id)
         .await?
-        .ok_or(ApiError::NotFound)
+        .ok_or(ApiError::NotFound)?;
+    let issue = Issues::find_by_id(pool, artifact.summary.issue_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if LocalProjects::find_by_id(pool, issue.project_id)
+        .await?
+        .is_none()
+    {
+        return Err(ApiError::NotFound);
+    }
+    Ok(artifact)
+}
+
+/// 启动流水线；失败时回滚刚建好的工作区，失败原因原样返回。
+///
+/// 回滚走的是和「删除工作区」接口同一条路径（[`perform_workspace_deletion`]）：删记录
+/// （需求绑定随行消失）并异步清理 worktree。回滚本身失败只记日志，不掩盖原始错误。
+pub(crate) async fn start_or_rollback<F, Fut>(
+    pipeline: &PipelineService,
+    input: StartPipelineInput,
+    rollback: F,
+) -> Result<IssuePipelineView, ApiError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), ApiError>>,
+{
+    match pipeline.start(input).await {
+        Ok(view) => Ok(view),
+        Err(error) => {
+            if let Err(cleanup_error) = rollback().await {
+                tracing::warn!("流水线启动失败后回滚工作区失败: {cleanup_error}");
+            }
+            Err(map_pipeline_error(error))
+        }
+    }
 }
 
 pub(crate) async fn handle_gate(
@@ -198,17 +243,19 @@ pub(super) async fn start_pipeline(
     .await?;
     Workspace::set_issue_id(pool, managed.workspace.id, Some(issue.id)).await?;
 
-    let view = deployment
-        .pipeline()
-        .start(StartPipelineInput {
+    let workspace = managed.workspace.clone();
+    let view = start_or_rollback(
+        deployment.pipeline(),
+        StartPipelineInput {
             issue,
-            workspace_id: managed.workspace.id,
+            workspace_id: workspace.id,
             repo_root: first_repo.path.clone(),
             executor_config: payload.executor_config,
             template_key: payload.template_key,
-        })
-        .await
-        .map_err(map_pipeline_error)?;
+        },
+        || perform_workspace_deletion(&deployment, workspace.clone(), false, false),
+    )
+    .await?;
     Ok(ResponseJson(ApiResponse::success(view)))
 }
 
@@ -319,6 +366,7 @@ mod tests {
                 PipelineRuns, PipelineStageKey, PipelineStageRun, PipelineStageRuns,
                 PipelineStageStatus, StartPipelineRepo, StartPipelineRequest,
             },
+            workspace::Workspace,
         },
         test_support::TestDb,
     };
@@ -651,6 +699,135 @@ mod tests {
             handle_get_artifact(test_db.pool(), Uuid::new_v4()).await,
             Err(ApiError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn 产出物要挂在存在的需求与项目上() {
+        let test_db = TestDb::new().await;
+        let issue = 准备需求(&test_db).await;
+        let (_, stage) = 准备运行(&test_db, &issue, PipelineStageStatus::Running).await;
+        let summary = IssueArtifacts::insert_version(
+            test_db.pool(),
+            issue.id,
+            stage.id,
+            ArtifactKind::Spec,
+            ".vk/runs/X/spec.md",
+            "# 规格",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            handle_get_artifact(test_db.pool(), summary.id)
+                .await
+                .unwrap()
+                .content,
+            "# 规格"
+        );
+
+        // 不存在的 id：404。
+        assert!(matches!(
+            handle_get_artifact(test_db.pool(), Uuid::new_v4()).await,
+            Err(ApiError::NotFound)
+        ));
+
+        // 项目没了之后，这条产出物不再可读（库里开着外键，删项目会级联删掉需求与产出物；
+        // handler 里沿 产出物 → 需求 → 项目 的校验是第二道防线，外键失效或数据被直接改
+        // 动时仍然返回 404）。
+        sqlx::query("DELETE FROM local_projects WHERE id = ?1")
+            .bind(issue.project_id)
+            .execute(test_db.pool())
+            .await
+            .unwrap();
+        assert!(matches!(
+            handle_get_artifact(test_db.pool(), summary.id).await,
+            Err(ApiError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn 启动失败时回滚工作区_成功时不回滚() {
+        let test_db = TestDb::new().await;
+        let pipeline = 引擎(&test_db);
+        let issue = 准备需求(&test_db).await;
+        let workspace = Workspace::create(
+            test_db.pool(),
+            &db::models::workspace::CreateWorkspace {
+                branch: "vk/pipeline".to_string(),
+                name: None,
+            },
+            Uuid::new_v4(),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        // 该需求已有未结束的运行：start 必然 409。
+        准备运行(&test_db, &issue, PipelineStageStatus::Running).await;
+
+        let input = || StartPipelineInput {
+            issue: issue.clone(),
+            workspace_id: workspace.id,
+            repo_root: std::path::PathBuf::from("/不存在的仓库"),
+            executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
+            template_key: None,
+        };
+        let pool = test_db.pool().clone();
+        let 回滚 = || async {
+            // 生产里是 perform_workspace_deletion（删记录 + 清 worktree），
+            // 这里只做它对数据库的部分。
+            Workspace::delete(&pool, workspace.id).await?;
+            Ok::<(), ApiError>(())
+        };
+
+        let failed = start_or_rollback(&pipeline, input(), 回滚).await;
+        assert!(matches!(failed, Err(ApiError::Conflict(_))), "{failed:?}");
+        assert!(
+            Workspace::find_by_id(test_db.pool(), workspace.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "启动失败后不应留下工作区"
+        );
+
+        // 成功路径不回滚：换一条没有运行的需求。
+        let other = 准备需求(&test_db).await;
+        let workspace2 = Workspace::create(
+            test_db.pool(),
+            &db::models::workspace::CreateWorkspace {
+                branch: "vk/pipeline-2".to_string(),
+                name: None,
+            },
+            Uuid::new_v4(),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        let pool = test_db.pool().clone();
+        let id2 = workspace2.id;
+        let ok = start_or_rollback(
+            &pipeline,
+            StartPipelineInput {
+                issue: other.clone(),
+                workspace_id: id2,
+                repo_root: std::path::PathBuf::from("/不存在的仓库"),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
+                template_key: None,
+            },
+            || async move {
+                Workspace::delete(&pool, id2).await?;
+                Ok::<(), ApiError>(())
+            },
+        )
+        .await
+        .unwrap();
+        // NoopStageLauncher 启动会失败，但那属于「运行已建立、阶段记失败」，不回滚工作区。
+        assert_eq!(ok.run.issue_id, other.id);
+        assert!(
+            Workspace::find_by_id(test_db.pool(), id2)
+                .await
+                .unwrap()
+                .is_some(),
+            "成功建立运行后不应删工作区"
+        );
     }
 
     #[test]
