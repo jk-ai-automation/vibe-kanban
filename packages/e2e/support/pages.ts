@@ -14,6 +14,18 @@ export const GATE_LABELS = {
  */
 export const STAGE_TIMEOUT = 90_000;
 
+/**
+ * 首屏渲染上限。vite dev 第一次进某条路由要现场编译成百上千个模块，
+ * 机器忙时要好几分钟，所以导航一律只等 `domcontentloaded`，再用这个
+ * 超时等待页面里的关键元素出现。
+ */
+export const FIRST_PAINT_TIMEOUT = 180_000;
+
+/** 只等 DOM，不等 load：vite dev 的懒加载模块会把 load 拖很久。 */
+export async function gotoPath(page: Page, path: string): Promise<void> {
+  await page.goto(path, { waitUntil: 'domcontentloaded' });
+}
+
 export function sidebar(page: Page): Locator {
   return page.getByTestId('personal-sidebar');
 }
@@ -22,8 +34,10 @@ export async function openProject(
   page: Page,
   project: E2eProject
 ): Promise<void> {
-  await page.goto(`/projects/${project.projectId}`);
-  await expect(page.getByTestId('kanban-column-header').first()).toBeVisible();
+  await gotoPath(page, `/projects/${project.projectId}`);
+  await expect(page.getByTestId('kanban-column-header').first()).toBeVisible({
+    timeout: FIRST_PAINT_TIMEOUT,
+  });
 }
 
 /** 先进看板（外壳把它记为当前项目），再点「工作台」。 */
@@ -35,10 +49,10 @@ export async function openWorkbench(
   await sidebar(page)
     .getByRole('button', { name: /工作台/ })
     .click();
-  await expect(page).toHaveURL(/\/home$/);
-  await expect(
-    page.getByRole('textbox', { name: '描述一个需求' })
-  ).toBeVisible();
+  await expect(page).toHaveURL(/\/home$/, { timeout: FIRST_PAINT_TIMEOUT });
+  await expect(page.getByRole('textbox', { name: '描述一个需求' })).toBeVisible(
+    { timeout: FIRST_PAINT_TIMEOUT }
+  );
 }
 
 export async function startRequirement(
@@ -90,8 +104,10 @@ export async function openDetail(
   projectId: string,
   issueId: string
 ): Promise<void> {
-  await page.goto(`/projects/${projectId}/issues/${issueId}/detail`);
-  await expect(page.getByTestId('pipeline-stepper')).toBeVisible();
+  await gotoPath(page, `/projects/${projectId}/issues/${issueId}/detail`);
+  await expect(page.getByTestId('pipeline-stepper')).toBeVisible({
+    timeout: FIRST_PAINT_TIMEOUT,
+  });
 }
 
 export function kanbanProgress(page: Page, issueId: string): Locator {

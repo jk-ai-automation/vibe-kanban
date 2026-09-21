@@ -44,6 +44,8 @@ export default defineConfig({
       ],
   use: {
     baseURL: FRONTEND_URL,
+    // vite dev 首次进入某条路由要现场编译大量模块，机器忙时会很久
+    navigationTimeout: 180_000,
     browserName: 'chromium',
     headless: true,
     locale: 'zh-CN',

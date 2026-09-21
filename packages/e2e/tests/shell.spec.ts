@@ -1,11 +1,11 @@
 import { expect, test } from '../support/fixtures';
-import { openProject, sidebar } from '../support/pages';
+import { gotoPath, openProject, sidebar } from '../support/pages';
 
 test('个人版外壳：根路径进工作台，五个中文入口，无横幅、无外网徽标、无 Team/Personal 切换', async ({
   page,
   project,
 }) => {
-  await page.goto('/');
+  await gotoPath(page, '/');
   await expect(page).toHaveURL(/\/home$/);
 
   const nav = sidebar(page);

@@ -1,6 +1,7 @@
 import { expect, test } from '../support/fixtures';
 import {
   GATE_LABELS,
+  gotoPath,
   STAGE_TIMEOUT,
   approveGate,
   kanbanProgress,
@@ -180,7 +181,7 @@ test('暂停与继续：在人工关卡处暂停（关卡仍可决策），刷�
   await page.reload();
   await expect(gateBar).toHaveAttribute('data-kind', 'paused');
   // 工作台待确认栏里不再出现（pending 只含 waiting_gate 与 failed）
-  await page.goto('/home');
+  await gotoPath(page, '/home');
   await expect(workbenchCard(page, 'confirm', title)).toHaveCount(0);
 
   await openDetail(page, project.projectId, issue.id);
