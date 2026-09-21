@@ -224,6 +224,29 @@ impl EventService {
         Self::hook_from_context(context)
     }
 
+    /// 同 [`Self::create_hook`]，但屏障池指向一个打不开的路径：用来测「屏障失败时降级推送」。
+    #[cfg(test)]
+    fn create_hook_with_broken_barrier(
+        msg_store: Arc<MsgStore>,
+        db_service: DBService,
+    ) -> impl for<'a> Fn(
+        &'a mut sqlx::sqlite::SqliteConnection,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sqlx::Error>> + Send + 'a>,
+    > + Send
+    + Sync
+    + 'static {
+        let mut context = HookContext::new(msg_store, db_service);
+        context.barrier_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_lazy_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename("/vk-不存在的目录/commit-barrier.sqlite")
+                    .create_if_missing(false),
+            );
+        Self::hook_from_context(context)
+    }
+
     /// 流程：preupdate / update 钩子只把变更记进本连接的缓冲；commit hook 触发时整体取走，
     /// 送进无界通道；唯一的消费者任务按通道顺序串行推送（等提交屏障 → 先删除 → 按行去重
     /// 反查）。rollback hook 清空缓冲，回滚掉的写入不推任何补丁。
@@ -320,25 +343,28 @@ impl EventService {
     async fn publish_batch(context: &HookContext, batch: PendingChanges) {
         let changes = batch.deduped_changes();
         let committed = wait_for_commit(&context.barrier_pool).await;
-        // commit hook 已触发，提交大概率成功：屏障失败时删除照推，只丢弃需要反查的变更。
         for patch in batch.removals {
             context.msg_store.push_patch(patch);
         }
-        if let Err(e) = committed {
-            tracing::error!(
-                "等待写事务提交失败，丢弃本次提交的 {} 条变更推送，\
-                 客户端需重连后才能恢复这些行的状态: {}",
+        if let Err(e) = &committed {
+            // 降级而不是丢弃：commit hook 已经触发，提交大概率成功；屏障失败（屏障池连不上、
+            // 超过 busy_timeout 等）时照常反查推送，最坏退回改造前的语义——可能读到提交前的
+            // 旧值。丢弃则会让客户端一直停在旧状态，直到重连，比读到旧值更糟。
+            tracing::warn!(
+                "等待写事务提交失败，本次提交的 {} 条变更降级为不过屏障直接反查推送，\
+                 可能读到提交前的值: {}",
                 changes.len(),
                 e
             );
-            return;
         }
 
         #[cfg(test)]
         if let Some(probe) = &context.probe {
-            probe
-                .barrier_count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if committed.is_ok() {
+                probe
+                    .barrier_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             let delay = probe
                 .publish_delay_ms
                 .load(std::sync::atomic::Ordering::SeqCst);
@@ -1226,6 +1252,43 @@ mod tests {
             .filter(|op| patch_path(op) == issue_path)
             .collect();
         assert_eq!(replaces.len(), 1, "同一行只推一次，实际: {replaces:?}");
+    }
+
+    /// 屏障池不可用（连不上、超过 busy_timeout……）时不能丢弃变更：降级为直接反查推送。
+    #[tokio::test]
+    async fn 提交屏障失败时降级为照常反查推送() {
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let path = dir.path().join("broken_barrier.sqlite");
+        let hook_query_db = DBService::new_at_path_with_journal(&path, SqliteJournalMode::Wal)
+            .await
+            .expect("初始化钩子查询用的 DBService 失败");
+        let msg_store = Arc::new(MsgStore::new());
+        let hook = EventService::create_hook_with_broken_barrier(msg_store.clone(), hook_query_db);
+        let db = DBService::new_at_path_with_after_connect(&path, SqliteJournalMode::Wal, hook)
+            .await
+            .expect("装钩子初始化 DBService 失败");
+
+        let (project_id, status_id) = insert_project_and_status(&db.pool).await;
+        let issue_id = insert_issue(&db.pool, project_id, status_id).await;
+        let issue_path = format!("/issues/{issue_id}");
+        wait_for_patch(&msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+
+        sqlx::query("UPDATE issues SET title = '改过的标题' WHERE id = ?1")
+            .bind(issue_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let replaced = wait_for_patch(&msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Replace(_))
+        })
+        .await;
+        let PatchOperation::Replace(op) = replaced else {
+            panic!("应是 replace 补丁");
+        };
+        assert_eq!(op.value["title"], "改过的标题");
     }
 
     #[tokio::test]
