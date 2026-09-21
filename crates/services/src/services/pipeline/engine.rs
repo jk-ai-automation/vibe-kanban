@@ -971,10 +971,13 @@ impl PipelineService {
             process.execution_process_id,
         )
         .await
-        .and_then(|messages| log_tail(&messages, CHECK_LOG_TAIL_LINES));
+        .and_then(|messages| log_tail(&messages, CHECK_LOG_TAIL_LINES, CHECK_LOG_TAIL_BYTES));
         match tail {
             Some(tail) => {
-                format!("{summary}\n检查脚本输出末尾（最多 {CHECK_LOG_TAIL_LINES} 行）：\n{tail}")
+                format!(
+                    "{summary}\n检查脚本输出末尾（最多 {CHECK_LOG_TAIL_LINES} 行 / \
+                     {CHECK_LOG_TAIL_BYTES} 字节）：\n{tail}"
+                )
             }
             None => summary,
         }
@@ -1078,6 +1081,9 @@ fn run_reason_label(run_reason: &ExecutionProcessRunReason) -> &'static str {
 /// 检查脚本失败时回喂的日志行数上限。
 const CHECK_LOG_TAIL_LINES: usize = 50;
 
+/// 回喂日志的字节上限（单条 4KB）。这段文本会落进阶段的 `error` 并被推送给项目订阅者。
+const CHECK_LOG_TAIL_BYTES: usize = 4 * 1024;
+
 const SETUP_BROKEN: &str = "setup 脚本后智能体未启动";
 
 fn status_label(status: &ExecutionProcessStatus) -> &'static str {
@@ -1101,8 +1107,12 @@ fn describe_exit(process: &FinishedProcess) -> String {
     )
 }
 
-/// 日志末尾最多 `max_lines` 行（stdout 与 stderr 按到达顺序拼接）。没有输出时 None。
-fn log_tail(messages: &[LogMsg], max_lines: usize) -> Option<String> {
+/// 日志末尾最多 `max_lines` 行、`max_bytes` 字节（stdout 与 stderr 按到达顺序拼接）。
+/// 超过字节上限时从头截断并注明。没有输出时 None。
+///
+/// 这段文本会写进 `pipeline_stage_runs.error`，经变更钩子广播给项目订阅者（契约 §3），
+/// 所以有上限：既防止把整份构建日志塞进库与推送，也提醒检查脚本不要打印密钥。
+fn log_tail(messages: &[LogMsg], max_lines: usize, max_bytes: usize) -> Option<String> {
     let text: String = messages
         .iter()
         .filter_map(|message| match message {
@@ -1113,7 +1123,18 @@ fn log_tail(messages: &[LogMsg], max_lines: usize) -> Option<String> {
     let lines: Vec<&str> = text.lines().collect();
     let tail = &lines[lines.len().saturating_sub(max_lines)..];
     let joined = tail.join("\n");
-    (!joined.trim().is_empty()).then_some(joined)
+    if joined.trim().is_empty() {
+        return None;
+    }
+    if joined.len() <= max_bytes {
+        return Some(joined);
+    }
+    // 从后往前保留 max_bytes 字节，切在字符边界上。
+    let mut start = joined.len() - max_bytes;
+    while start < joined.len() && !joined.is_char_boundary(start) {
+        start += 1;
+    }
+    Some(format!("（前面已截断）\n{}", &joined[start..]))
 }
 
 fn summarize(verdict: &StageVerdict) -> String {
@@ -1139,9 +1160,27 @@ mod tests {
             LogMsg::Stderr("c\nd".to_string()),
             LogMsg::Finished,
         ];
-        assert_eq!(log_tail(&messages, 2).as_deref(), Some("c\nd"));
-        assert_eq!(log_tail(&messages, 50).as_deref(), Some("a\nb\nc\nd"));
-        assert_eq!(log_tail(&[LogMsg::Ready], 50), None);
+        assert_eq!(log_tail(&messages, 2, 4096).as_deref(), Some("c\nd"));
+        assert_eq!(log_tail(&messages, 50, 4096).as_deref(), Some("a\nb\nc\nd"));
+        assert_eq!(log_tail(&[LogMsg::Ready], 50, 4096), None);
+    }
+
+    #[test]
+    fn 日志末尾超过字节上限时从头截断并注明() {
+        let long = "x".repeat(10_000);
+        let messages = vec![LogMsg::Stdout(long)];
+        let tail = log_tail(&messages, 50, 4096).unwrap();
+        assert!(tail.starts_with("（前面已截断）\n"), "{}", &tail[..40]);
+        assert!(tail.len() <= 4096 + "（前面已截断）\n".len());
+        assert!(tail.ends_with("xxxx"));
+    }
+
+    #[test]
+    fn 截断切在字符边界上() {
+        let messages = vec![LogMsg::Stdout("中".repeat(100))];
+        let tail = log_tail(&messages, 50, 61).unwrap();
+        assert!(tail.contains("中"));
+        assert!(!tail.contains('\u{fffd}'));
     }
 
     #[test]

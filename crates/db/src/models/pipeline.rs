@@ -1334,6 +1334,14 @@ mod tests {
         assert_eq!(failed.error.as_deref(), Some("进程退出码 1"));
     }
 
+    /// 前端按同一段文案判断「这次失败是用户手动停止」（不计轮次、不显示为失败）：
+    /// `packages/web-core/src/entities/pipeline/model/progress.ts` 的 `MANUAL_STOP_ERROR`
+    /// （那边也有对应测试）。改文案要两边一起改。
+    #[test]
+    fn 手动停止文案与前端常量逐字一致() {
+        assert_eq!(MANUAL_STOP_ERROR, "用户手动停止");
+    }
+
     #[tokio::test]
     async fn 用户手动停止的失败不计入失败次数() {
         let test_db = TestDb::new().await;

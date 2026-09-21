@@ -207,12 +207,18 @@ stages:
 |---|---|---|
 | POST | `/api/local/issues/{id}/pipeline` | 启动流水线（参数：仓库、分支、执行器配置、模板 key） |
 | GET | `/api/local/issues/{id}/pipeline` | 当前运行 + 各阶段 + 产出物清单 |
-| GET | `/api/local/pipeline/runs/{id}/artifacts/{kind}` | 取单个产出物内容 |
+| GET | `/api/local/pipeline/artifacts/{id}` | 取单个产出物内容（按产出物 id；契约修订 M6，原先写的 `runs/{id}/artifacts/{kind}` 作废） |
 | POST | `/api/local/pipeline/stage-runs/{id}/gate` | 关卡决策：`{decision, comment}` |
 | POST | `/api/local/pipeline/runs/{id}/pause` \| `/resume` \| `/cancel` | 暂停、继续、取消 |
-| GET | `/api/local/pipeline/pending` | 所有等待人工确认与失败的运行（工作台用） |
+| GET | `/api/local/pipeline/pending` | 所有等待人工确认与失败的运行（工作台用），可带 `project_id` |
+| GET | `/api/local/pipeline_runs?project_id=` | 集合快照：`{ "pipeline_runs": [...] }`，**不包 `ApiResponse`** |
+| GET | `/api/local/pipeline_stage_runs?project_id=` | 集合快照：`{ "pipeline_stage_runs": [...] }`，**不包 `ApiResponse`** |
 
-全部挂在 `local_projects::router()` 的 `/local` 下，自动落进受保护路由。类型在 `crates/api-types` 里定义并注册进 `generate_types.rs`，前端从 `shared/types.ts` 取。
+上表前六行的响应统一包 `ApiResponse`；最后两行是给前端本地集合机制用的快照接口，按本地约定返回 `{ "<表名>": [...] }`（契约 C1）。路径参数在后端路由表里一律登记为 `{id}`（契约 C4）。
+
+全部挂在 `local_projects::router()` 的 `/local` 下，自动落进受保护路由。类型定义在 `crates/db/src/models/pipeline.rs`（与模型同文件），注册进 `generate_types.rs`，前端从 `shared/types.ts` 取。
+
+**阶段失败原因会被广播**：检查脚本失败时，引擎把它的输出末尾（最多 50 行、4KB，超出从头截断并注明）写进 `pipeline_stage_runs.error`，这一行经变更钩子推给订阅该项目的所有客户端。因此 `.vibe/pipeline.yaml` 里的 `checks` 命令不要打印密钥、令牌等敏感信息。
 
 推送：`pipeline_runs`、`pipeline_stage_runs` 加进 `HookTables` 与 issues 流的路径前缀白名单，按 `project_id` 过滤，前端用现有集合机制订阅；产出物内容不推送，由界面按需拉取。
 
