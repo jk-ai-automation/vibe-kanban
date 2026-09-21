@@ -272,6 +272,10 @@ export function useUiPreferencesScratch() {
       // Server has data - apply it to store
       isApplyingServerDataRef.current = true;
       const serverState = scratchDataToStore(scratchData);
+      // 本次会话里已经选定的组织 / 项目不被服务端旧值覆盖：scratch 是异步拉的，
+      // 用户可能已经从路由进了某个项目（`SharedAppLayout` 会写入选中项目），
+      // 晚到的旧值会把选择改回去，工作台随后就会对着上一个项目建需求。
+      const currentSelection = useUiPreferencesStore.getState();
 
       // Merge server state into the store
       useUiPreferencesStore.setState({
@@ -287,8 +291,10 @@ export function useUiPreferencesScratch() {
         workspacePanelStates: serverState.workspacePanelStates,
         workspaceFilters: serverState.workspaceFilters,
         workspaceSort: serverState.workspaceSort,
-        selectedOrgId: serverState.selectedOrgId,
-        selectedProjectId: serverState.selectedProjectId,
+        selectedOrgId:
+          currentSelection.selectedOrgId ?? serverState.selectedOrgId,
+        selectedProjectId:
+          currentSelection.selectedProjectId ?? serverState.selectedProjectId,
         createDraftWorkspaceByDefault:
           serverState.createDraftWorkspaceByDefault,
         kanbanProjectViewSelections: serverState.kanbanProjectViewSelections,
