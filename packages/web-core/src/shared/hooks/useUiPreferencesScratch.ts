@@ -301,12 +301,25 @@ export function useUiPreferencesScratch() {
         kanbanProjectViewPreferences: serverState.kanbanProjectViewPreferences,
       });
 
+      // 保留了本次会话的选择（与服务端旧值不同）时，等状态落定后回存一次，
+      // 否则这次选择只活在内存里：它是在 hydration 之前设的，不会触发下面
+      // 「store 变化 → 保存」的订阅，刷新后又会被服务端旧值顶掉。
+      const keptSelection =
+        (currentSelection.selectedProjectId !== null &&
+          currentSelection.selectedProjectId !==
+            serverState.selectedProjectId) ||
+        (currentSelection.selectedOrgId !== null &&
+          currentSelection.selectedOrgId !== serverState.selectedOrgId);
+
       // Allow a brief delay for state to settle
       setTimeout(() => {
         isApplyingServerDataRef.current = false;
+        if (keptSelection) {
+          debouncedSave();
+        }
       }, 100);
     }
-  }, [isLoading, isConnected, scratchData]);
+  }, [isLoading, isConnected, scratchData, debouncedSave]);
 
   // Subscribe to store changes and save to server
   useEffect(() => {
