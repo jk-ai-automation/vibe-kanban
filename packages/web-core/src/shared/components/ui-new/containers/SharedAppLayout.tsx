@@ -220,7 +220,8 @@ export function SharedAppLayout() {
   );
   useEffect(() => {
     if (activeProjectId) {
-      setSelectedProjectId(activeProjectId);
+      // 路由里的项目是用户自己点进来的，算显式选择：scratch 晚到时要保留并回存
+      setSelectedProjectId(activeProjectId, 'user');
     }
   }, [activeProjectId, setSelectedProjectId]);
 
@@ -267,7 +268,7 @@ export function SharedAppLayout() {
 
   const handlePersonalProjectSelect = useCallback(
     (projectId: string) => {
-      setSelectedProjectId(projectId);
+      setSelectedProjectId(projectId, 'user');
       if (personalActiveKey === 'pipeline') {
         appNavigation.goToProject(projectId);
       }

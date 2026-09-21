@@ -3,7 +3,10 @@ import { useRouter } from '@tanstack/react-router';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { getFirstProjectDestination } from '@/shared/lib/firstProjectDestination';
 import { useOrganizationStore } from '@/shared/stores/useOrganizationStore';
-import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
+import {
+  useUiPreferencesStore,
+  waitForScratchHydration,
+} from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { isLocalMode } from '@/shared/lib/local/dataSource';
 import { isLocalPersonalMode } from '@/shared/lib/local/runtimeMode';
@@ -37,6 +40,13 @@ export function RootRedirectPage() {
       // 会落到创建工作区页，用户从那里新建项目。
       if (!isLocalMode() && loginStatus?.status !== 'loggedin') {
         appNavigation.goToWorkspacesCreate({ replace: true });
+        return;
+      }
+
+      // 先等服务端保存的偏好拉回来：它走 WebSocket，通常比首屏晚到，
+      // 不等就会按「第一个项目」跳，而不是用户上次待的项目。超时照常继续。
+      await waitForScratchHydration();
+      if (!isActive) {
         return;
       }
 
