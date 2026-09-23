@@ -8,6 +8,14 @@
       "release": "5.1.0",
       "license": "MIT",
       "local": "~/.claude/plugins/cache/superpowers-marketplace/superpowers/5.1.0"
+    },
+    "atp": {
+      "kind": "git",
+      "repo": "https://github.com/jk-ai-automation/atp.git",
+      "commit": "2a6f27d8936a516bf5bc105b11e759ead28996ff",
+      "release": null,
+      "license": "内部仓库（jk-ai-automation/atp）",
+      "local": "/Users/admin/work/github/atp"
     }
   },
   "skills": [
@@ -69,6 +77,14 @@
       "source_dir": "skills/finishing-a-development-branch",
       "files": {
         "SKILL.md": "5c8d4b59aedb14c94e2f5d787a3265e858e8f53d4ceffe7ff1c15878a52b0e91"
+      }
+    },
+    {
+      "name": "prd2testcase",
+      "source": "atp",
+      "source_dir": "skills/prd2testcase",
+      "files": {
+        "SKILL.md": "6f407645fe1335d75981a40d963c7f2a446f56d0f4261750379446ed51bf20d0"
       }
     }
   ]

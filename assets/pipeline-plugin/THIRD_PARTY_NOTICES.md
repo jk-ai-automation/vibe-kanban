@@ -1,8 +1,10 @@
 # 第三方内容出处与许可证
 
-本目录是 vibe-kanban 自带的 Claude Code 插件 `vk-pipeline`。`skills/` 下的技能分两类：
-平台自写（`vk-*`、`atp-run`）与外来引入。外来技能由 `scripts/sync-pipeline-skills.mjs`
-按 `skills.lock.json` 同步，**逐字节不改**；要改请先改上游，再更新锁文件。
+本目录是 vibe-kanban 自带的 Claude Code 插件 `vk-pipeline`。`skills/` 下的技能分三类：
+平台自写（`vk-*`、`atp-run`，随本仓库演进）、自有仓库同步（`prd2testcase`，来自 atp 仓库）、
+第三方引入（superpowers）。后两类都由 `scripts/sync-pipeline-skills.mjs` 按 `skills.lock.json`
+同步，**逐字节不改**；要改请先改上游，再更新锁文件。本文件的「第三方」只指 superpowers 一节，
+atp 一节记的是自有仓库的出处，不涉及第三方授权。
 
 ## superpowers 5.1.0
 
@@ -46,6 +48,17 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## atp（自有仓库，非第三方）
+
+- 来源：https://github.com/jk-ai-automation/atp.git
+- 提交：`2a6f27d8936a516bf5bc105b11e759ead28996ff`（分支 `skills-prd2testcase`，PR
+  https://github.com/jk-ai-automation/atp/pull/5，**尚未合入 atp 主干**；合入后把锁文件里的
+  `commit` 改成主干提交号并重跑 `node scripts/sync-pipeline-skills.mjs --update`）
+- 许可证：内部仓库，与本仓库同一所有方，不涉及第三方授权
+- 引入的技能：`prd2testcase`（文件白名单只有 `SKILL.md`）
+- 为什么放在 atp 仓库：旧版 CSV 的 46 列定义由 atp 维护（`src/atp/legacy_csv/columns.py`），
+  技能正文里的列说明与格式自检命令必须跟着列定义走，所以技能与格式同仓维护，这里只锁提交号与哈希。
 
 ## 规格模板结构
 
