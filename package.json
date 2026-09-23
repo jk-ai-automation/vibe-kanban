@@ -12,7 +12,7 @@
   "scripts": {
     "lint": "pnpm run local-web:lint && pnpm run ui:lint && pnpm run backend:lint && node scripts/check-unused-i18n-keys.mjs",
     "format": "pnpm run backend:format && pnpm run web-core:format && pnpm run local-web:format && pnpm run remote-web:format && pnpm run ui:format && pnpm --filter @vibe/e2e run format",
-    "check": "pnpm run local-web:legacy-path-guard && pnpm run local-web:check && pnpm run remote-web:check && pnpm run web-core:check && pnpm run ui:check && pnpm run backend:check && pnpm run web-core:test && pnpm run e2e:check",
+    "check": "pnpm run pipeline-skills:check && pnpm run local-web:legacy-path-guard && pnpm run local-web:check && pnpm run remote-web:check && pnpm run web-core:check && pnpm run ui:check && pnpm run backend:check && pnpm run web-core:test && pnpm run e2e:check",
     "dev": "export FRONTEND_PORT=$(node scripts/setup-dev-environment.js frontend) && export BACKEND_PORT=$(node scripts/setup-dev-environment.js backend) && export PREVIEW_PROXY_PORT=$(node scripts/setup-dev-environment.js preview_proxy) && export VK_ALLOWED_ORIGINS=\"http://localhost:${FRONTEND_PORT}\" && export VITE_VK_SHARED_API_BASE=${VK_SHARED_API_BASE:-} && concurrently \"pnpm run backend:dev:watch\" \"pnpm run local-web:dev\"",
     "test:npm": "./test-npm-package.sh",
     "e2e": "pnpm --filter @vibe/e2e run test",
@@ -44,6 +44,8 @@
     "remote:generate-types:check": "cargo run --manifest-path crates/remote/Cargo.toml --bin remote-generate-types -- --check",
     "prepare-db": "node scripts/prepare-db.js",
     "prepare-db:check": "node scripts/prepare-db.js --check",
+    "pipeline-skills:check": "node scripts/sync-pipeline-skills.mjs --check",
+    "pipeline-skills:update": "node scripts/sync-pipeline-skills.mjs --update",
     "build:bippy-bundle": "node scripts/build-bippy-bundle.mjs",
     "build:npx": "bash ./local-build.sh",
     "build:selfhost": "bash ./deploy/build-selfhost.sh",
