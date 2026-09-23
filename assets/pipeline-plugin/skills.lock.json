@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "sources": {
+    "superpowers": {
+      "kind": "git",
+      "repo": "https://github.com/obra/superpowers",
+      "commit": "f2cbfbefebbfef77321e4c9abc9e949826bea9d7",
+      "release": "5.1.0",
+      "license": "MIT",
+      "local": "~/.claude/plugins/cache/superpowers-marketplace/superpowers/5.1.0"
+    }
+  },
+  "skills": [
+    { "name": "brainstorming", "source": "superpowers", "source_dir": "skills/brainstorming", "files": { "SKILL.md": "" } },
+    { "name": "writing-plans", "source": "superpowers", "source_dir": "skills/writing-plans", "files": { "SKILL.md": "" } },
+    { "name": "test-driven-development", "source": "superpowers", "source_dir": "skills/test-driven-development", "files": { "SKILL.md": "", "testing-anti-patterns.md": "" } },
+    { "name": "requesting-code-review", "source": "superpowers", "source_dir": "skills/requesting-code-review", "files": { "SKILL.md": "", "code-reviewer.md": "" } },
+    { "name": "systematic-debugging", "source": "superpowers", "source_dir": "skills/systematic-debugging", "files": { "SKILL.md": "", "root-cause-tracing.md": "", "defense-in-depth.md": "" } },
+    { "name": "verification-before-completion", "source": "superpowers", "source_dir": "skills/verification-before-completion", "files": { "SKILL.md": "" } },
+    { "name": "finishing-a-development-branch", "source": "superpowers", "source_dir": "skills/finishing-a-development-branch", "files": { "SKILL.md": "" } }
+  ]
+}
