@@ -12,7 +12,7 @@
     "atp": {
       "kind": "git",
       "repo": "https://github.com/jk-ai-automation/atp.git",
-      "commit": "2a6f27d8936a516bf5bc105b11e759ead28996ff",
+      "commit": "10feaa1ea6e99719e88435d71244d851047779ed",
       "release": null,
       "license": "内部仓库（jk-ai-automation/atp）",
       "local": "/Users/admin/work/github/atp"

@@ -52,8 +52,8 @@ SOFTWARE.
 ## atp（自有仓库，非第三方）
 
 - 来源：https://github.com/jk-ai-automation/atp.git
-- 提交：`2a6f27d8936a516bf5bc105b11e759ead28996ff`（分支 `skills-prd2testcase`，PR
-  https://github.com/jk-ai-automation/atp/pull/5，**尚未合入 atp 主干**；合入后把锁文件里的
+- 提交：`10feaa1ea6e99719e88435d71244d851047779ed`（分支 `skills-prd2testcase`，PR
+  https://github.com/jk-ai-automation/atp/pull/5，**已合入 atp 主干（PR #5）**；合入后把锁文件里的
   `commit` 改成主干提交号并重跑 `node scripts/sync-pipeline-skills.mjs --update`）
 - 许可证：内部仓库，与本仓库同一所有方，不涉及第三方授权
 - 引入的技能：`prd2testcase`（文件白名单只有 `SKILL.md`）
