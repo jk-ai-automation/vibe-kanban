@@ -25,7 +25,9 @@ use db::models::{
 use deployment::Deployment;
 use serde::Deserialize;
 use serde_json::Value;
-use services::services::pipeline::{PipelineError, PipelineService, StartPipelineInput};
+use services::services::pipeline::{
+    PipelineError, PipelineService, PipelineSkillInfo, StartPipelineInput, skills_view,
+};
 use sqlx::SqlitePool;
 use utils::response::ApiResponse;
 use uuid::Uuid;
@@ -259,6 +261,11 @@ pub(super) async fn start_pipeline(
     Ok(ResponseJson(ApiResponse::success(view)))
 }
 
+/// 技能清单：只读编进二进制的插件内容与锁文件，不依赖解压是否成功，因此不会失败。
+pub(crate) fn handle_list_skills() -> Vec<PipelineSkillInfo> {
+    skills_view()
+}
+
 async fn get_artifact(
     State(deployment): State<DeploymentImpl>,
     Path(artifact_id): Path<Uuid>,
@@ -315,6 +322,10 @@ async fn pending(
     Ok(ResponseJson(ApiResponse::success(items)))
 }
 
+async fn list_skills() -> ResponseJson<ApiResponse<Vec<PipelineSkillInfo>>> {
+    ResponseJson(ApiResponse::success(handle_list_skills()))
+}
+
 async fn list_runs(
     State(deployment): State<DeploymentImpl>,
     Query(query): Query<ProjectScopedQuery>,
@@ -337,6 +348,7 @@ pub fn router() -> Router<DeploymentImpl> {
         .route("/runs/{id}/resume", &["POST"], post(resume))
         .route("/runs/{id}/cancel", &["POST"], post(cancel))
         .route("/pending", &["GET"], get(pending))
+        .route("/skills", &["GET"], get(list_skills))
         .into_router();
     let runs = LocalRoutes::new("/pipeline_runs")
         .route("/", &["GET"], get(list_runs))
@@ -844,6 +856,7 @@ mod tests {
             ("/api/local/pipeline/runs/{id}/resume", "POST"),
             ("/api/local/pipeline/runs/{id}/cancel", "POST"),
             ("/api/local/pipeline/pending", "GET"),
+            ("/api/local/pipeline/skills", "GET"),
             ("/api/local/pipeline_runs", "GET"),
             ("/api/local/pipeline_stage_runs", "GET"),
         ] {
@@ -854,5 +867,41 @@ mod tests {
                 "{method} {path} 未登记，已登记：{registered:#?}"
             );
         }
+    }
+
+    #[test]
+    fn 技能清单包含七阶段技能并带来源() {
+        let skills = handle_list_skills();
+        let by_name: std::collections::BTreeMap<_, _> =
+            skills.iter().map(|s| (s.name.as_str(), s)).collect();
+        for name in [
+            "vk-requirement",
+            "vk-spec",
+            "prd2testcase",
+            "vk-develop",
+            "vk-review",
+            "atp-run",
+            "vk-deliver",
+        ] {
+            let skill = by_name
+                .get(name)
+                .unwrap_or_else(|| panic!("清单里没有 {name}"));
+            assert_eq!(skill.qualified_name, format!("vk-pipeline:{name}"));
+            assert!(skill.stage.is_some(), "{name} 应该对应某个阶段");
+        }
+        assert_eq!(by_name["vk-requirement"].source, "platform");
+        assert!(by_name["vk-requirement"].source_version.is_none());
+
+        let brainstorming = by_name
+            .get("brainstorming")
+            .expect("清单里没有 brainstorming");
+        assert_eq!(brainstorming.source, "superpowers");
+        assert_eq!(
+            brainstorming.source_version.as_deref(),
+            Some("5.1.0"),
+            "外来技能要显示来源版本"
+        );
+        assert_eq!(brainstorming.license.as_deref(), Some("MIT"));
+        assert!(brainstorming.stage.is_none(), "它不直接对应阶段");
     }
 }
