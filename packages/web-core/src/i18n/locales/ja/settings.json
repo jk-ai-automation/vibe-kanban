@@ -23,6 +23,8 @@
         "agentsDesc": "コーディングエージェントの設定",
         "mcp": "MCPサーバー",
         "mcpDesc": "モデルコンテキストプロトコルサーバー",
+        "pipeline-skills": "パイプラインスキル",
+        "pipeline-skillsDesc": "各ステージが読み込むスキル",
         "organizations": "Organization Settings",
         "organizationsDesc": "Manage organization members and permissions",
         "remote-projects": "プロジェクト",
@@ -390,6 +392,25 @@
         "successMessage": "✓ MCP設定が正常に保存されました！",
         "loading": "現在のMCPサーバー設定を読み込み中...",
         "unsavedChanges": "• 未保存の変更があります"
+      }
+    },
+    "pipelineSkills": {
+      "description": "パイプラインの各ステージは、内蔵の vk-pipeline プラグインからスキルを 1 つ読み込みます。プラグインはセッション単位で注入され、リポジトリには書き込まれません。",
+      "readOnly": "読み取り専用です。外部スキルは skills.lock.json でチェックサム固定されています。",
+      "loading": "スキルを読み込み中…",
+      "loadError": "スキルを読み込めませんでした: {{message}}",
+      "empty": "スキルが見つかりません。",
+      "noStage": "他のスキルから参照",
+      "columns": {
+        "name": "スキル",
+        "source": "提供元",
+        "version": "バージョン",
+        "stage": "ステージ"
+      },
+      "source": {
+        "platform": "内蔵",
+        "superpowers": "superpowers",
+        "atp": "atp"
       }
     },
     "projects": {
