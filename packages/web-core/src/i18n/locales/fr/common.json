@@ -567,7 +567,7 @@
     },
     "team": "Team",
     "personal": "Personal",
-    "searchPlaceholder": "Search issues...",
+    "searchPlaceholder": "Rechercher des tickets...",
     "filters": "Filters",
     "clearFilters": "Clear filters",
     "filtersDescription": "Adjust filters and sorting for this board view.",
@@ -687,7 +687,19 @@
       "issue": "Ouvrir le ticket lié",
       "workspace": "Ouvrir l’espace de travail",
       "pr": "Ouvrir la pull request"
-    }
+    },
+    "issueTitleLabel": "Titre du ticket",
+    "deleteDraft": "Supprimer le brouillon",
+    "removeParentIssue": "Retirer le ticket parent",
+    "subIssueActions": "Actions du sous-ticket",
+    "priorityLevel": {
+      "urgent": "Urgente",
+      "high": "Haute",
+      "medium": "Moyenne",
+      "low": "Basse"
+    },
+    "noPriority": "Aucune priorité",
+    "selectStatus": "Choisir un statut"
   },
   "createMode": {
     "headings": {
@@ -985,5 +997,16 @@
       "actorHuman": "You",
       "empty": "Nothing has happened yet"
     }
+  },
+  "relativeTime": {
+    "justNow": "à l'instant",
+    "minutesAgo": "il y a {{n}} min",
+    "hoursAgo": "il y a {{n}} h",
+    "daysAgo": "il y a {{n}} j",
+    "weeksAgo": "il y a {{n}} sem",
+    "shortNow": "maintenant",
+    "shortMinutes": "{{n}} min",
+    "shortHours": "{{n}} h",
+    "shortDays": "{{n}} j"
   }
 }

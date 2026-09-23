@@ -1,5 +1,6 @@
 import type { Ref, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { relativeTimeShort } from '../lib/relativeTime';
 import type { LocalAttachmentMetadata } from './WorkspaceContext';
 import { cn } from '../lib/cn';
 import {
@@ -44,20 +45,6 @@ export interface ReactionGroup {
   hasReacted: boolean;
   reactionId: string | undefined;
   userNames: string[];
-}
-
-function formatRelativeTime(dateString: string): string {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMinutes = Math.floor(diffMs / (1000 * 60));
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffDays > 0) return `${diffDays}d`;
-  if (diffHours > 0) return `${diffHours}h`;
-  if (diffMinutes > 0) return `${diffMinutes}m`;
-  return 'now';
 }
 
 interface DropzoneProps {
@@ -276,7 +263,8 @@ function CommentItem({
   renderEditor,
 }: CommentItemProps) {
   const { t } = useTranslation('common');
-  const timeAgo = formatRelativeTime(comment.createdAt);
+  const timeAgoSpec = relativeTimeShort(comment.createdAt);
+  const timeAgo = t(timeAgoSpec.key, timeAgoSpec.params);
 
   return (
     <div className="flex flex-col gap-base">

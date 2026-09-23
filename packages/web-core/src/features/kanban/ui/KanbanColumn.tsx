@@ -187,10 +187,16 @@ export function KanbanColumn({
                 relationships={getResolvedRelationshipsForIssue(issue.id)}
                 isSubIssue={!!issue.parent_issue_id}
                 isMobile={isMobile}
-                workspaceBadge={buildWorkspaceBadge(issueWorkspaces)}
+                // 个人版流水线看板：工作区运行状态与「测试未接入」占位徽标都让位给
+                // 流水线状态标签与七格进度（设计文档 §8.3），不重复展示。
+                workspaceBadge={
+                  isPipelineBoard ? null : buildWorkspaceBadge(issueWorkspaces)
+                }
                 // 紧凑模式下把逐个 PR 链接收成一个汇总徽标；舒适模式保留可点链接。
                 prBadge={isCompact ? buildPrBadge(issueCardPullRequests) : null}
-                testBadge={buildTestBadge()}
+                testBadge={isPipelineBoard ? null : buildTestBadge()}
+                showEmptyPriority={!isPipelineBoard}
+                tagAddOnHover={isPipelineBoard}
                 showAssignees={showAssignees}
                 showDescription={density.showDescription}
                 onPriorityClick={(e) => {
@@ -246,7 +252,8 @@ export function KanbanColumn({
                   />
                 </div>
               )}
-              {issueWorkspaces.length > 0 && (
+              {/* 流水线看板不内嵌关联工作区小卡：详情页里已有工作区入口 */}
+              {!isPipelineBoard && issueWorkspaces.length > 0 && (
                 <div className={cn('mt-base flex flex-col', density.cards)}>
                   {issueWorkspaces.map((workspace) => (
                     <IssueWorkspaceCard

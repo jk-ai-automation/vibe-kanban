@@ -701,7 +701,19 @@
       "issue": "Open linked issue",
       "workspace": "Open workspace",
       "pr": "Open pull request"
-    }
+    },
+    "issueTitleLabel": "Issue title",
+    "deleteDraft": "Delete draft",
+    "removeParentIssue": "Remove parent issue",
+    "subIssueActions": "Sub-issue actions",
+    "priorityLevel": {
+      "urgent": "Urgent",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
+    "noPriority": "No priority",
+    "selectStatus": "Select status"
   },
   "createMode": {
     "headings": {
@@ -985,5 +997,16 @@
       "actorHuman": "You",
       "empty": "Nothing has happened yet"
     }
+  },
+  "relativeTime": {
+    "justNow": "just now",
+    "minutesAgo": "{{n}}m ago",
+    "hoursAgo": "{{n}}h ago",
+    "daysAgo": "{{n}}d ago",
+    "weeksAgo": "{{n}}w ago",
+    "shortNow": "now",
+    "shortMinutes": "{{n}}m",
+    "shortHours": "{{n}}h",
+    "shortDays": "{{n}}d"
   }
 }

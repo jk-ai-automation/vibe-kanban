@@ -567,7 +567,7 @@
     },
     "team": "Team",
     "personal": "Personal",
-    "searchPlaceholder": "Search issues...",
+    "searchPlaceholder": "搜索需求…",
     "filters": "Filters",
     "clearFilters": "Clear filters",
     "filtersDescription": "Adjust filters and sorting for this board view.",
@@ -687,7 +687,19 @@
       "issue": "打开关联需求",
       "workspace": "打开工作区",
       "pr": "打开 PR"
-    }
+    },
+    "issueTitleLabel": "需求标题",
+    "deleteDraft": "删除草稿",
+    "removeParentIssue": "移除父需求",
+    "subIssueActions": "子需求操作",
+    "priorityLevel": {
+      "urgent": "紧急",
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    },
+    "noPriority": "无优先级",
+    "selectStatus": "选择状态"
   },
   "createMode": {
     "headings": {
@@ -985,5 +997,16 @@
       "actorHuman": "你",
       "empty": "还没有动静"
     }
+  },
+  "relativeTime": {
+    "justNow": "刚刚",
+    "minutesAgo": "{{n}} 分钟前",
+    "hoursAgo": "{{n}} 小时前",
+    "daysAgo": "{{n}} 天前",
+    "weeksAgo": "{{n}} 周前",
+    "shortNow": "刚刚",
+    "shortMinutes": "{{n}} 分钟",
+    "shortHours": "{{n}} 小时",
+    "shortDays": "{{n}} 天"
   }
 }

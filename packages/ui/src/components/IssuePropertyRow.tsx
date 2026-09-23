@@ -14,11 +14,11 @@ export interface IssuePropertyStatus {
   color: string;
 }
 
-const priorityLabels: Record<PriorityLevel, string> = {
-  urgent: 'Urgent',
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
+const priorityLabelKeys: Record<PriorityLevel, string> = {
+  urgent: 'kanban.priorityLevel.urgent',
+  high: 'kanban.priorityLevel.high',
+  medium: 'kanban.priorityLevel.medium',
+  low: 'kanban.priorityLevel.low',
 };
 
 export interface IssuePropertyRowProps {
@@ -70,7 +70,8 @@ export function IssuePropertyRow({
         <StatusDot
           color={statuses.find((s) => s.id === statusId)?.color ?? '0 0% 50%'}
         />
-        {statuses.find((s) => s.id === statusId)?.name ?? 'Select status'}
+        {statuses.find((s) => s.id === statusId)?.name ??
+          t('kanban.selectStatus')}
       </PrimaryButton>
 
       <PrimaryButton
@@ -79,7 +80,7 @@ export function IssuePropertyRow({
         disabled={disabled}
       >
         <PriorityIcon priority={priority} />
-        {priority ? priorityLabels[priority] : 'No priority'}
+        {priority ? t(priorityLabelKeys[priority]) : t('kanban.noPriority')}
       </PrimaryButton>
 
       {showAssignees && (
@@ -135,8 +136,8 @@ export function IssuePropertyRow({
               icon={XIcon}
               onClick={onRemoveParentIssue}
               disabled={disabled}
-              aria-label="Remove parent issue"
-              title="Remove parent issue"
+              aria-label={t('kanban.removeParentIssue')}
+              title={t('kanban.removeParentIssue')}
             />
           )}
         </div>
@@ -147,8 +148,8 @@ export function IssuePropertyRow({
           icon={PlusIcon}
           onClick={onAddClick}
           disabled={disabled}
-          aria-label="Add"
-          title="Add"
+          aria-label={t('buttons.add')}
+          title={t('buttons.add')}
         />
       )}
     </div>

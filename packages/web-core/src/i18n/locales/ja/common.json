@@ -567,7 +567,7 @@
     },
     "team": "Team",
     "personal": "Personal",
-    "searchPlaceholder": "Search issues...",
+    "searchPlaceholder": "課題を検索...",
     "filters": "Filters",
     "clearFilters": "Clear filters",
     "filtersDescription": "Adjust filters and sorting for this board view.",
@@ -687,7 +687,19 @@
       "issue": "関連イシューを開く",
       "workspace": "ワークスペースを開く",
       "pr": "プルリクエストを開く"
-    }
+    },
+    "issueTitleLabel": "課題のタイトル",
+    "deleteDraft": "下書きを削除",
+    "removeParentIssue": "親課題を解除",
+    "subIssueActions": "サブ課題の操作",
+    "priorityLevel": {
+      "urgent": "緊急",
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    },
+    "noPriority": "優先度なし",
+    "selectStatus": "ステータスを選択"
   },
   "createMode": {
     "headings": {
@@ -985,5 +997,16 @@
       "actorHuman": "You",
       "empty": "Nothing has happened yet"
     }
+  },
+  "relativeTime": {
+    "justNow": "たった今",
+    "minutesAgo": "{{n}}分前",
+    "hoursAgo": "{{n}}時間前",
+    "daysAgo": "{{n}}日前",
+    "weeksAgo": "{{n}}週間前",
+    "shortNow": "今",
+    "shortMinutes": "{{n}}分",
+    "shortHours": "{{n}}時間",
+    "shortDays": "{{n}}日"
   }
 }

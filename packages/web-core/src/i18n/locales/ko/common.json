@@ -567,7 +567,7 @@
     },
     "team": "Team",
     "personal": "Personal",
-    "searchPlaceholder": "Search issues...",
+    "searchPlaceholder": "이슈 검색...",
     "filters": "Filters",
     "clearFilters": "Clear filters",
     "filtersDescription": "Adjust filters and sorting for this board view.",
@@ -687,7 +687,19 @@
       "issue": "연결된 이슈 열기",
       "workspace": "워크스페이스 열기",
       "pr": "풀 리퀘스트 열기"
-    }
+    },
+    "issueTitleLabel": "이슈 제목",
+    "deleteDraft": "초안 삭제",
+    "removeParentIssue": "상위 이슈 제거",
+    "subIssueActions": "하위 이슈 작업",
+    "priorityLevel": {
+      "urgent": "긴급",
+      "high": "높음",
+      "medium": "보통",
+      "low": "낮음"
+    },
+    "noPriority": "우선순위 없음",
+    "selectStatus": "상태 선택"
   },
   "createMode": {
     "headings": {
@@ -985,5 +997,16 @@
       "actorHuman": "You",
       "empty": "Nothing has happened yet"
     }
+  },
+  "relativeTime": {
+    "justNow": "방금",
+    "minutesAgo": "{{n}}분 전",
+    "hoursAgo": "{{n}}시간 전",
+    "daysAgo": "{{n}}일 전",
+    "weeksAgo": "{{n}}주 전",
+    "shortNow": "지금",
+    "shortMinutes": "{{n}}분",
+    "shortHours": "{{n}}시간",
+    "shortDays": "{{n}}일"
   }
 }
