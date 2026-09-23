@@ -1052,7 +1052,7 @@ pub trait ContainerService {
     ) -> Result<ExecutionProcess, ContainerError> {
         // Create container
         self.create(workspace).await?;
-        self.start_new_session(workspace, executor_config, prompt, true)
+        self.start_new_session(workspace, executor_config, prompt, true, Vec::new())
             .await
     }
 
@@ -1061,12 +1061,14 @@ pub trait ContainerService {
     /// `run_setup = true` 时先跑仓库 setup 脚本（与原 `start_workspace` 完全一致）；
     /// 流水线后续阶段在同一工作区开新会话时传 `false`，跳过 setup。
     /// 智能体之后照常串上仓库 cleanup 脚本。
+    /// `plugin_dirs` 是会话级插件目录（技能包），只有 Claude Code 会用。
     async fn start_new_session(
         &self,
         workspace: &Workspace,
         executor_config: ExecutorConfig,
         prompt: String,
         run_setup: bool,
+        plugin_dirs: Vec<std::path::PathBuf>,
     ) -> Result<ExecutionProcess, ContainerError> {
         let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
 
@@ -1107,7 +1109,7 @@ pub trait ContainerService {
                 prompt,
                 executor_config: executor_config.clone(),
                 working_dir,
-                plugin_dirs: Vec::new(),
+                plugin_dirs,
             }),
             cleanup_action.map(Box::new),
         );

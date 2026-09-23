@@ -315,4 +315,44 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn 技能名解析三种情形() {
+        assert_eq!(
+            qualify_skill("vk-requirement"),
+            "vk-pipeline:vk-requirement"
+        );
+        assert_eq!(qualify_skill("  vk-review  "), "vk-pipeline:vk-review");
+        assert_eq!(
+            qualify_skill("superpowers:brainstorming"),
+            "superpowers:brainstorming",
+            "已带命名空间的原样"
+        );
+        assert_eq!(
+            qualify_skill("我们仓库自带的技能"),
+            "我们仓库自带的技能",
+            "不在插件里的原样"
+        );
+    }
+
+    #[test]
+    fn 内置模板的七个技能都在插件里() {
+        let missing: Vec<String> = builtin_template()
+            .stages
+            .iter()
+            .filter(|stage| !skill_names().contains(&stage.skill))
+            .map(|stage| format!("{}（阶段 {}）", stage.skill, stage.key.as_str()))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "内置模板用到但插件里没有的技能：{missing:?}"
+        );
+        for stage in builtin_template().stages {
+            assert!(
+                qualify_skill(&stage.skill).starts_with("vk-pipeline:"),
+                "{} 应该带插件前缀",
+                stage.skill
+            );
+        }
+    }
 }

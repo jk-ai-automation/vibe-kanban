@@ -34,6 +34,7 @@ use super::{
     artifacts,
     gates::{self, StageVerdict},
     launcher::{self, StageLauncher},
+    plugin,
     prompt::{self, StagePromptInput},
     template::{self, PipelineTemplate},
     transition::{self, FinishedProcess, PipelineExitEvent, Transition},
@@ -906,8 +907,18 @@ impl PipelineService {
             .cloned()
             .collect();
         let feedback = PipelineStageRuns::feedback(pool, stage_run.id).await?;
+        // 技能包：解压失败不让阶段起不来——没有技能时模型仍会按提示词里的固定行做事，
+        // 缺产出物会被关卡判定抓到，界面上看得见。
+        let plugin_dirs = match plugin::ensure_extracted() {
+            Ok(dir) => vec![dir],
+            Err(e) => {
+                tracing::warn!(run_id = %run.id, "{e}；本阶段不加载技能插件");
+                Vec::new()
+            }
+        };
+        let skill = plugin::qualify_skill(&stage.skill);
         let prompt = prompt::build_stage_prompt(&StagePromptInput {
-            skill: &stage.skill,
+            skill: &skill,
             simple_id: &issue.simple_id,
             title: &issue.title,
             artifacts_dir: &dir,
@@ -920,7 +931,13 @@ impl PipelineService {
         let step = self
             .inner
             .launcher
-            .start_agent_session(workspace_id, &executor_config, prompt, run_setup)
+            .start_agent_session(
+                workspace_id,
+                &executor_config,
+                prompt,
+                run_setup,
+                plugin_dirs,
+            )
             .await?;
         PipelineStageRuns::mark_started(
             pool,

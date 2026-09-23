@@ -1247,3 +1247,55 @@ async fn 检查脚本失败后下一轮提示词带失败原因() {
         "{prompt}"
     );
 }
+
+#[tokio::test]
+async fn 阶段提示词带插件命名空间且注入插件目录() {
+    let s = 场景::新建("注入技能插件").await;
+    s.启动().await.unwrap();
+    let launch = s.launcher.last();
+    assert!(
+        launch
+            .prompt
+            .starts_with("先用 Skill 工具加载技能 vk-pipeline:vk-requirement，严格按它执行。\n"),
+        "{}",
+        launch.prompt
+    );
+    assert_eq!(launch.plugin_dirs.len(), 1, "应注入一个插件目录");
+    let dir = &launch.plugin_dirs[0];
+    assert!(
+        dir.join(".claude-plugin/plugin.json").is_file(),
+        "{dir:?} 应是插件根目录"
+    );
+    assert!(
+        dir.join("skills/vk-requirement/SKILL.md").is_file(),
+        "{dir:?} 里应有 vk-requirement"
+    );
+}
+
+/// 计划 §6 硬约束 1：技能只经 `--plugin-dir` 注入，绝不落进工作区（更不进用户仓库）。
+#[tokio::test]
+async fn 技能文件不落进工作区() {
+    let s = 场景::新建("技能不落盘").await;
+    s.启动().await.unwrap();
+    let launch = s.launcher.last();
+    let 工作区 = s.dir.path().join("workspace");
+    assert!(
+        !launch.plugin_dirs[0].starts_with(&工作区),
+        "插件目录 {:?} 不该在工作区里",
+        launch.plugin_dirs[0]
+    );
+    let mut stack = vec![工作区.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            assert_ne!(
+                path.file_name().and_then(|n| n.to_str()),
+                Some("SKILL.md"),
+                "工作区里出现了技能文件：{path:?}"
+            );
+            if path.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+}
