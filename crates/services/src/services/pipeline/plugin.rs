@@ -36,6 +36,14 @@ pub const READY_MARKER: &str = ".vk-plugin-ready";
 const SKILLS_PREFIX: &str = "skills/";
 const SKILL_FILE: &str = "SKILL.md";
 
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
 /// 整个插件的内容哈希（路径 + 长度 + 字节，按路径排序）。目录名用它，内容一变就换目录。
 pub fn content_hash() -> String {
     static HASH: OnceLock<String> = OnceLock::new();
@@ -52,12 +60,7 @@ pub fn content_hash() -> String {
             hasher.update((file.data.len() as u64).to_le_bytes());
             hasher.update(file.data.as_ref());
         }
-        let digest = hasher.finalize();
-        let mut out = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            let _ = write!(out, "{byte:02x}");
-        }
-        out
+        hex_lower(&hasher.finalize())
     })
     .clone()
 }
@@ -332,6 +335,150 @@ mod tests {
             qualify_skill("我们仓库自带的技能"),
             "我们仓库自带的技能",
             "不在插件里的原样"
+        );
+    }
+
+    fn skill_text(name: &str) -> String {
+        let file = PipelinePluginAssets::get(&format!("skills/{name}/{SKILL_FILE}"))
+            .unwrap_or_else(|| panic!("技能 {name} 没有 SKILL.md"));
+        String::from_utf8(file.data.to_vec())
+            .unwrap_or_else(|_| panic!("技能 {name} 的 SKILL.md 不是 UTF-8"))
+    }
+
+    /// frontmatter 的 `key: value`（只取顶层、不解析嵌套 YAML——技能的 frontmatter 就这两个键）。
+    fn frontmatter(name: &str) -> BTreeMap<String, String> {
+        let text = skill_text(name);
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("---"),
+            "技能 {name} 的 SKILL.md 第一行必须是 ---"
+        );
+        let mut map = BTreeMap::new();
+        for line in lines {
+            if line.trim() == "---" {
+                return map;
+            }
+            if let Some((key, value)) = line.split_once(": ") {
+                map.insert(
+                    key.trim().to_string(),
+                    value.trim().trim_matches('"').to_string(),
+                );
+            }
+        }
+        panic!("技能 {name} 的 frontmatter 没有闭合的 ---")
+    }
+
+    /// 「## 流水线约定」到下一个 `## ` 之间的正文。
+    fn convention_section(name: &str) -> String {
+        let text = skill_text(name);
+        let body = text
+            .split_once("## 流水线约定")
+            .unwrap_or_else(|| panic!("技能 {name} 没有「## 流水线约定」一节"))
+            .1;
+        body.split("\n## ")
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn 每个技能的_frontmatter_合法且_name_与目录一致() {
+        assert!(skill_names().len() >= 14, "技能太少：{:?}", skill_names());
+        for name in skill_names() {
+            let front = frontmatter(name);
+            assert_eq!(
+                front.get("name").map(String::as_str),
+                Some(name.as_str()),
+                "技能 {name} 的 frontmatter name 与目录名不一致"
+            );
+            let description = front
+                .get("description")
+                .unwrap_or_else(|| panic!("技能 {name} 缺 description"));
+            assert!(
+                !description.trim().is_empty(),
+                "技能 {name} 的 description 是空的"
+            );
+        }
+    }
+
+    #[test]
+    fn 平台技能都带同一段流水线约定() {
+        let baseline = convention_section("vk-requirement");
+        assert!(
+            baseline.contains("不要向人提问"),
+            "约定段内容不对：{baseline}"
+        );
+        for name in [
+            "vk-spec",
+            "vk-develop",
+            "vk-review",
+            "vk-deliver",
+            "atp-run",
+            "prd2testcase",
+        ] {
+            assert_eq!(
+                convention_section(name),
+                baseline,
+                "技能 {name} 的「流水线约定」与 vk-requirement 不一致"
+            );
+        }
+    }
+
+    #[test]
+    fn 平台技能正文提到的产出文件名与契约一致() {
+        for stage in builtin_template().stages {
+            if stage.artifacts.is_empty() {
+                continue; // develop 阶段不产出文件
+            }
+            let text = skill_text(&stage.skill);
+            for artifact in &stage.artifacts {
+                assert!(
+                    text.contains(artifact.as_str()),
+                    "技能 {} 的正文没提到它必须产出的 {}（契约 §4）",
+                    stage.skill,
+                    artifact
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 锁文件里的哈希与插件里的内容一致() {
+        let lock = lock().expect("skills.lock.json 必须能解析");
+        assert!(!lock.skills.is_empty(), "锁文件里一个外来技能都没有");
+        for skill in &lock.skills {
+            assert!(
+                lock.sources.contains_key(&skill.source),
+                "技能 {} 的来源 {} 不在 sources 里",
+                skill.name,
+                skill.source
+            );
+            for (file, want) in &skill.files {
+                let path = format!("skills/{}/{}", skill.name, file);
+                let embedded = PipelinePluginAssets::get(&path)
+                    .unwrap_or_else(|| panic!("{path} 在锁文件里但不在插件里"));
+                let mut hasher = Sha256::new();
+                hasher.update(embedded.data.as_ref());
+                assert_eq!(
+                    &hex_lower(&hasher.finalize()),
+                    want,
+                    "{path} 与锁文件不一致：跑 node scripts/sync-pipeline-skills.mjs --update"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 已验证支持_plugin_dir_的_claude_版本没有变() {
+        // 平台跑的是 `npx -y @anthropic-ai/claude-code@<版本>`。这个版本号一变就要重新验
+        // 一遍 --plugin-dir（计划 §4 待核实项 A 的验收脚本），所以在这里钉住。
+        // 若因文件移动导致 include_str! 编译失败，按新路径改这里并重新验收。
+        let source = include_str!("../../../../executors/src/executors/claude.rs");
+        assert!(
+            source.contains("@anthropic-ai/claude-code@2.1.119"),
+            "Claude Code 的固定版本变了：请重新验证 --plugin-dir 支持情况，再更新本测试与计划 §2.1"
         );
     }
 
