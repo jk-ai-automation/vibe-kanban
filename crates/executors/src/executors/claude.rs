@@ -139,6 +139,13 @@ pub struct ClaudeCode {
     #[serde(flatten)]
     pub cmd: CmdOverrides,
 
+    /// 会话级插件目录。不序列化：它是每次会话现算的（解压目录带内容哈希），
+    /// 写进 `profiles.json` 只会留下过期路径。
+    #[serde(skip)]
+    #[ts(skip)]
+    #[derivative(Debug = "ignore", PartialEq = "ignore")]
+    plugin_dirs: Vec<PathBuf>,
+
     #[serde(skip)]
     #[ts(skip)]
     #[derivative(Debug = "ignore", PartialEq = "ignore")]
@@ -184,6 +191,12 @@ impl ClaudeCode {
         }
         if let Some(agent) = &self.agent {
             builder = builder.extend_params(["--agent", agent]);
+        }
+        // 每个目录一对参数。extend_params 不做 shell 切分，带空格的路径原样进 argv。
+        // 已核实 npx @anthropic-ai/claude-code@2.1.119 支持 --plugin-dir（可重复）。
+        for dir in &self.plugin_dirs {
+            builder =
+                builder.extend_params(["--plugin-dir".to_string(), dir.display().to_string()]);
         }
         builder = builder.extend_params([
             "--verbose",
@@ -343,6 +356,10 @@ impl StandardCodingAgentExecutor for ClaudeCode {
 
     fn use_approvals(&mut self, approvals: Arc<dyn ExecutorApprovalService>) {
         self.approvals_service = Some(approvals);
+    }
+
+    fn set_plugin_dirs(&mut self, dirs: &[PathBuf]) {
+        self.plugin_dirs = dirs.to_vec();
     }
 
     async fn spawn(
@@ -2756,6 +2773,84 @@ mod tests {
     use super::*;
     use crate::logs::utils::{EntryIndexProvider, patch::extract_normalized_entry_from_patch};
 
+    fn 默认执行器() -> ClaudeCode {
+        serde_json::from_str("{}").expect("ClaudeCode 的字段都有 serde 默认值")
+    }
+
+    #[tokio::test]
+    async fn 插件目录为空时参数与旧行为逐字一致() {
+        let params = 默认执行器()
+            .build_command_builder()
+            .await
+            .unwrap()
+            .params
+            .unwrap();
+        assert_eq!(
+            params,
+            vec![
+                "-p",
+                "--disallowedTools=AskUserQuestion",
+                "--verbose",
+                "--output-format=stream-json",
+                "--input-format=stream-json",
+                "--include-partial-messages",
+                "--replay-user-messages",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn 每个插件目录追加一次_plugin_dir() {
+        let mut agent = 默认执行器();
+        agent.set_plugin_dirs(&[
+            PathBuf::from("/data/vk assets/pipeline-plugin/abc"),
+            PathBuf::from("/data/other"),
+        ]);
+        let params = agent
+            .build_command_builder()
+            .await
+            .unwrap()
+            .params
+            .unwrap();
+        let at = params
+            .iter()
+            .position(|p| p == "--plugin-dir")
+            .expect("命令行里应有 --plugin-dir");
+        assert_eq!(
+            &params[at..at + 4],
+            &[
+                "--plugin-dir".to_string(),
+                "/data/vk assets/pipeline-plugin/abc".to_string(),
+                "--plugin-dir".to_string(),
+                "/data/other".to_string(),
+            ],
+            "带空格的路径必须是一个独立参数，不能被切开"
+        );
+        assert_eq!(params.iter().filter(|p| *p == "--plugin-dir").count(), 2);
+    }
+
+    /// 计划 §4 待核实项 C：`enum_dispatch` 要把 trait 上**新增的默认方法**转发到变体自己的
+    /// 实现，而不是让枚举直接用 trait 默认的空实现（那样流水线注入会静默失效）。
+    #[tokio::test]
+    async fn 枚举按变体转发_set_plugin_dirs() {
+        let mut agent = crate::executors::CodingAgent::ClaudeCode(默认执行器());
+        agent.set_plugin_dirs(&[PathBuf::from("/data/vk/plugin")]);
+        let crate::executors::CodingAgent::ClaudeCode(claude) = &agent else {
+            panic!("变体应该还是 ClaudeCode");
+        };
+        let params = claude
+            .build_command_builder()
+            .await
+            .unwrap()
+            .params
+            .unwrap();
+        assert!(
+            params.windows(2).any(|pair| pair
+                == ["--plugin-dir".to_string(), "/data/vk/plugin".to_string()]),
+            "枚举没把 set_plugin_dirs 转发给 ClaudeCode：{params:?}"
+        );
+    }
+
     fn patches_to_entries(patches: &[json_patch::Patch]) -> Vec<NormalizedEntry> {
         patches
             .iter()
@@ -2952,6 +3047,7 @@ mod tests {
                 additional_params: None,
                 env: None,
             },
+            plugin_dirs: Vec::new(),
             approvals_service: None,
             disable_api_key: None,
         };

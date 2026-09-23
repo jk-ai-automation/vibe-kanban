@@ -884,6 +884,7 @@ async fn 退出事件读真实进程行_顺序_setup_链断按失败_并行_setu
             prompt: "p".to_string(),
             executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
             working_dir: None,
+            plugin_dirs: Vec::new(),
         }),
         None,
     );

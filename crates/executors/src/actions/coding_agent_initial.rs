@@ -1,4 +1,7 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -24,6 +27,12 @@ pub struct CodingAgentInitialRequest {
     /// If None, uses the container_ref directory directly.
     #[serde(default)]
     pub working_dir: Option<String>,
+    /// 会话级插件目录（Claude Code `--plugin-dir`）。流水线用它注入技能包。
+    ///
+    /// **必须 `#[serde(default)]`**：库里 `execution_processes.executor_action` 的老 JSON
+    /// 没有这个字段，反序列化不能失败。
+    #[serde(default)]
+    pub plugin_dirs: Vec<PathBuf>,
 }
 
 impl CodingAgentInitialRequest {
@@ -68,8 +77,41 @@ impl Executable for CodingAgentInitialRequest {
                 agent.apply_overrides(&self.executor_config);
             }
             agent.use_approvals(approvals.clone());
+            agent.set_plugin_dirs(&self.plugin_dirs);
 
             agent.spawn(&effective_dir, &self.prompt, env).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::profile::ExecutorConfig;
+
+    /// 库里 `execution_processes.executor_action` 的老 JSON 没有 `plugin_dirs`，
+    /// 必须照常反序列化（否则老工作区的续聊会整条挂掉）。
+    #[test]
+    fn 旧数据没有_plugin_dirs_也能反序列化() {
+        let old = r#"{"prompt":"做点事","executor_config":{"executor":"CLAUDE_CODE"},"working_dir":null}"#;
+        let request: CodingAgentInitialRequest = serde_json::from_str(old).unwrap();
+        assert!(request.plugin_dirs.is_empty());
+        assert_eq!(request.prompt, "做点事");
+    }
+
+    #[test]
+    fn 带_plugin_dirs_能往返() {
+        let request = CodingAgentInitialRequest {
+            prompt: "做点事".to_string(),
+            executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
+            working_dir: None,
+            plugin_dirs: vec![std::path::PathBuf::from("/tmp/vk/plugin")],
+        };
+        let text = serde_json::to_string(&request).unwrap();
+        assert!(text.contains("/tmp/vk/plugin"), "{text}");
+        assert_eq!(
+            serde_json::from_str::<CodingAgentInitialRequest>(&text).unwrap(),
+            request
+        );
     }
 }

@@ -1107,6 +1107,7 @@ pub trait ContainerService {
                 prompt,
                 executor_config: executor_config.clone(),
                 working_dir,
+                plugin_dirs: Vec::new(),
             }),
             cleanup_action.map(Box::new),
         );
