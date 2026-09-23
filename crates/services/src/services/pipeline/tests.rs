@@ -1299,3 +1299,34 @@ async fn 技能文件不落进工作区() {
         }
     }
 }
+
+#[cfg(not(feature = "qa-mode"))]
+#[tokio::test]
+async fn 非_claude_code_执行器启动被拒() {
+    let s = 场景::新建("换个执行器").await;
+    let err = s
+        .service
+        .start(StartPipelineInput {
+            issue: s.issue.clone(),
+            workspace_id: s.workspace_id,
+            repo_root: s.仓库目录(),
+            executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+            template_key: None,
+        })
+        .await
+        .expect_err("非 Claude Code 应被拒");
+    match err {
+        PipelineError::BadRequest(message) => {
+            assert!(message.contains("只支持 Claude Code"), "{message}");
+        }
+        other => panic!("应是 BadRequest，实际 {other:?}"),
+    }
+    assert!(
+        s.service
+            .view_for_issue(s.issue.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "被拒时不许留下运行记录"
+    );
+}

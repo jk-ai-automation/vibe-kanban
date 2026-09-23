@@ -2806,12 +2806,7 @@ mod tests {
             PathBuf::from("/data/vk assets/pipeline-plugin/abc"),
             PathBuf::from("/data/other"),
         ]);
-        let params = agent
-            .build_command_builder()
-            .await
-            .unwrap()
-            .params
-            .unwrap();
+        let params = agent.build_command_builder().await.unwrap().params.unwrap();
         let at = params
             .iter()
             .position(|p| p == "--plugin-dir")
@@ -2845,8 +2840,9 @@ mod tests {
             .params
             .unwrap();
         assert!(
-            params.windows(2).any(|pair| pair
-                == ["--plugin-dir".to_string(), "/data/vk/plugin".to_string()]),
+            params
+                .windows(2)
+                .any(|pair| pair == ["--plugin-dir".to_string(), "/data/vk/plugin".to_string()]),
             "枚举没把 set_plugin_dirs 转发给 ClaudeCode：{params:?}"
         );
     }

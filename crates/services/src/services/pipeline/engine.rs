@@ -137,6 +137,16 @@ impl PipelineService {
         let _guard = self.inner.lock.lock().await;
         let pool = self.pool();
 
+        // 技能包是 Claude Code 插件，只有它认 --plugin-dir；别的执行器跑起来会没有技能、
+        // 每个阶段都缺产出物，白烧一轮额度，不如在入口挡住。
+        // qa-mode 下模拟执行器不是真执行器，这段不编译。
+        #[cfg(not(feature = "qa-mode"))]
+        if input.executor_config.executor != executors::executors::BaseCodingAgent::ClaudeCode {
+            return Err(PipelineError::BadRequest(
+                "流水线目前只支持 Claude Code".to_string(),
+            ));
+        }
+
         if PipelineRuns::has_active_for_issue(pool, input.issue.id).await? {
             return Err(PipelineError::Conflict(ACTIVE_RUN_CONFLICT.to_string()));
         }
