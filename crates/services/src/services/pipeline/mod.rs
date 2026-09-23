@@ -5,6 +5,7 @@ pub mod artifacts;
 pub mod engine;
 pub mod gates;
 pub mod launcher;
+pub mod plugin;
 pub mod prompt;
 pub mod template;
 pub mod transition;
@@ -16,4 +17,5 @@ mod tests;
 
 pub use engine::{PipelineError, PipelineService, StartPipelineInput};
 pub use launcher::{ContainerStageLauncher, LaunchedStep, NoopStageLauncher, StageLauncher};
+pub use plugin::{PipelineSkillInfo, ensure_extracted, qualify_skill, skills_view};
 pub use transition::{FinishedProcess, PipelineExitEvent};
