@@ -477,7 +477,7 @@ mod tests {
         // 若因文件移动导致 include_str! 编译失败，按新路径改这里并重新验收。
         let source = include_str!("../../../../executors/src/executors/claude.rs");
         assert!(
-            source.contains("@anthropic-ai/claude-code@2.1.119"),
+            source.contains("@anthropic-ai/claude-code@2.1.274"),
             "Claude Code 的固定版本变了：请重新验证 --plugin-dir 支持情况，再更新本测试与计划 §2.1"
         );
     }
