@@ -276,6 +276,12 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 | D | `#[serde(skip)]` 的 `Vec<PathBuf>` 字段不会让 `ClaudeCode` 的 `JsonSchema` derive 报错 | 任务 10 步骤 4：`cargo check -p executors` | 加 `#[schemars(skip)]` |
 | E | atp 仓库能开 PR（远端可写、有 `gh` 权限） | 任务 7 步骤 1：`cd /Users/admin/work/github/atp && git remote -v && gh auth status` | 只在 atp 本地建分支并提交，PR 留给主控手动开；本仓库的锁文件仍指向该提交号，并在 `THIRD_PARTY_NOTICES.md` 注明「提交号尚未合入 atp 主干」 |
 
+### 4.1 核实结论（2026-09-23，实测）
+
+- **A 成立**：`npx -y @anthropic-ai/claude-code@2.1.119 -p --plugin-dir <插件根目录>` 直接指向插件根目录（目录里就是 `.claude-plugin/` 与 `skills/`）可用，14 个技能全部以 `vk-pipeline:` 前缀出现。**解压层级不改**。
+- **B 成立**：非交互 `-p` 模式下模型会按提示词首行加载技能并执行。实测用真实提示词跑 `vk-pipeline:vk-requirement`，在指定绝对路径产出了结构完整的 `requirement.md`（背景 / 范围 / 不做 / AC-1..4 / 待澄清）。**提示词不加降级行**。
+- C、D 在任务 10 已随 `cargo test -p executors plugin_dir` 通过验证；E 见任务 7 的记录。
+
 ---
 
 ## 5. 文件清单

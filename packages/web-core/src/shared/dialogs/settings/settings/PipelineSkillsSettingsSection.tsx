@@ -44,7 +44,9 @@ export function PipelineSkillsSettingsSection() {
       <p className="text-sm text-normal">
         {t('settings.pipelineSkills.description')}
       </p>
-      <p className="text-xs text-low">{t('settings.pipelineSkills.readOnly')}</p>
+      <p className="text-xs text-low">
+        {t('settings.pipelineSkills.readOnly')}
+      </p>
 
       {error !== null && (
         <p className="text-sm text-error">
