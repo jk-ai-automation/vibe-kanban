@@ -282,6 +282,37 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 - **B 成立**：非交互 `-p` 模式下模型会按提示词首行加载技能并执行。实测用真实提示词跑 `vk-pipeline:vk-requirement`，在指定绝对路径产出了结构完整的 `requirement.md`（背景 / 范围 / 不做 / AC-1..4 / 待澄清）。**提示词不加降级行**。
 - C、D 在任务 10 已随 `cargo test -p executors plugin_dir` 通过验证；E 见任务 7 的记录。
 
+### 4.2 真实 Claude Code 验收记录（2026-09-26，任务 16）
+
+一次跑通，七个阶段全绿，`run.status = completed`。
+
+- 后端：`target/debug/server`，**不带** `qa-mode`；`VK_ASSET_DIR` 指向临时目录。
+- 执行器：`CLAUDE_CODE`，`model_id = sonnet`（见下「已知环境限制」）。
+- 样例仓库：只有一个 `add(a, b)` 的 git 仓库。
+- 需求：给 `src/add.mjs` 的 `add` 加入参校验，非有限数字抛 `TypeError` 且错误信息点明参数名。
+
+| 阶段 | 技能 | 耗时 | 产出物 | 结果 |
+|---|---|---|---|---|
+| 需求 | `vk-pipeline:vk-requirement` | 57s | `requirement.md`（AC-1..6、待澄清 3 条带「我推断的」标） | 人工通过 |
+| 规格 | `vk-pipeline:vk-spec` | 78s | `spec.md`（实现决策表、测试决策表）、`plan.md`（红→绿两步） | 人工通过 |
+| 用例 | `vk-pipeline:prd2testcase` | 579s | `test-cases.csv`（表头与 6 行数据**均为 46 列**）、`trace-matrix.md`（AC-1..6 全覆盖） | 人工通过 |
+| 开发 | `vk-pipeline:vk-develop` | 48s | 提交 `7a072db`（守卫 + 6 条 `node --test` 测试） | 自动通过 |
+| 评审 | `vk-pipeline:vk-review` | 102s | `review.json` | blocker 0、major 0、minor 1 |
+| 测试 | `vk-pipeline:atp-run` | 34s | `test-report.json`（6/6 通过） | 最小版 |
+| 交付 | `vk-pipeline:vk-deliver` | 84s | `delivery-report.md`（含遗留问题） | 最小版 |
+
+隔离核对（三项全过）：
+
+- 样例仓库 `git status --porcelain` 为空，提交历史仍只有「初始提交」——流水线没碰用户仓库。
+- 工作区内 `find -name SKILL.md` 无输出；`.vk/` 落在工作区根目录（`repo/` 的同级），不在 git 仓库里，`git status` 看不见它。
+- `~/.claude` 下 `find -iname "*vk-pipeline*"` 无输出——技能包只经 `--plugin-dir` 以 `source: vk-pipeline@inline` 内联加载，不写用户目录。
+
+已知环境限制（**与本期改动无关，仓库 `main` 同样存在**）：`claude.rs` 钉住的
+`@anthropic-ai/claude-code@2.1.119` 不支持本机账号的默认模型，直接跑会收到
+`400 claude_code_version_too_old`、退出码 1，阶段按重试上限连失败 3 次。验收时靠
+`executor_config.model_id = "sonnet"` 绕开（`sonnet` / `opus` / `haiku` 实测都可用）。
+真正的修法是升 CLI 版本钉子，属独立决策。
+
 ---
 
 ## 5. 文件清单
