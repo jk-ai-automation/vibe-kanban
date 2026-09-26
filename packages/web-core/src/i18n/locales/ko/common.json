@@ -995,6 +995,8 @@
       "gateRejected": "You sent back {{stage}}",
       "actorAi": "AI",
       "actorHuman": "You",
+      "expand": "자세히 보기",
+      "collapse": "접기",
       "empty": "Nothing has happened yet"
     }
   },

@@ -101,6 +101,16 @@ export function isManualStop(stage: Pick<PipelineStageRun, 'error'>): boolean {
 }
 
 /**
+ * 失败原因的第一行。后端在失败原因里附了进程输出末尾（最多 50 行 / 4KB），
+ * 关卡条与工作台卡片这类一行的位置只放第一行——认出已知的接口报错时，
+ * 第一行就是那句中文说明。完整原文在需求详情右栏的时间线里。
+ */
+export function firstErrorLine(text: string | null): string | null {
+  const line = text?.split('\n', 1)[0]?.trim();
+  return line ? line : null;
+}
+
+/**
  * 这次尝试是本阶段的第几轮，与后端 `PipelineStageRuns::count_failed` 一致：
  * 本运行、本阶段、序号更早的尝试里 `status = failed` 且不是「用户手动停止」
  * 的个数 + 1。人工打回（rejected）、回流后重跑前的 passed 都不计。

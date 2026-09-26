@@ -166,6 +166,11 @@ export type GateBarState =
       stageKey: PipelineStageKey;
       attempt: number;
       maxRounds: number | null;
+      /**
+       * 当前阶段最新尝试的失败原因（后端已含日志末尾，可能很长）。关卡条只显示
+       * 第一行；完整原文在右栏时间线里。
+       */
+      error: string | null;
     }
   | {
       kind: 'human';
@@ -221,7 +226,14 @@ export function gateBarState(view: IssuePipelineView | null): GateBarState {
             : null,
       };
     case 'failed':
-      return { kind: 'failed', runId: run.id, stageKey, attempt, maxRounds };
+      return {
+        kind: 'failed',
+        runId: run.id,
+        stageKey,
+        attempt,
+        maxRounds,
+        error: current?.error ?? null,
+      };
     case 'waiting_gate':
     case 'running':
       if (waitingHuman && current) {

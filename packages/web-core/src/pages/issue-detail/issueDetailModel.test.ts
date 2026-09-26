@@ -174,7 +174,39 @@ describe('gateBarState', () => {
       stageKey: 'review',
       attempt: 3,
       maxRounds: 3,
+      error: null,
     });
+  });
+
+  it('失败时带上当前阶段最新尝试的失败原因，关卡条才看得到真实原因', () => {
+    const view = makeView({
+      run: makeRun({
+        status: 'failed',
+        current_stage_key: 'develop',
+        updated_at: at(9),
+      }),
+      stages: [
+        makeStage({
+          id: 'dv1',
+          stage_key: 'develop',
+          attempt: 1,
+          status: 'failed',
+          error: '旧一轮的原因',
+        }),
+        makeStage({
+          id: 'dv2',
+          stage_key: 'develop',
+          attempt: 2,
+          status: 'failed',
+          error:
+            'Claude Code 版本过旧，不支持当前模型\n编码智能体输出末尾：\nAPI Error: 400',
+        }),
+      ],
+    });
+    const state = gateBarState(view);
+    expect(state.kind === 'failed' && state.error).toBe(
+      'Claude Code 版本过旧，不支持当前模型\n编码智能体输出末尾：\nAPI Error: 400'
+    );
   });
 });
 

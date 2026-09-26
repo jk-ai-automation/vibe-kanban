@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MANUAL_STOP_ERROR,
+  firstErrorLine,
   isManualStop,
   latestAttempts,
   pipelineProgress,
@@ -350,5 +351,27 @@ describe('stageRound 与后端 count_failed 对齐', () => {
   it('当前尝试本身失败：按计入后的失败数显示', () => {
     const stages = [develop(1), develop(2), develop(3)];
     expect(stageRound(stages, stages[2])).toBe(3);
+  });
+});
+
+describe('firstErrorLine：一行的位置只放失败原因第一行', () => {
+  it('多行失败原因取第一行（已知接口报错时就是那句中文说明）', () => {
+    expect(
+      firstErrorLine(
+        'Claude Code 版本过旧，不支持当前模型：请升级平台钉住的命令行版本。\n' +
+          '编码智能体 进程未成功结束（状态：失败，退出码 1）\n' +
+          '编码智能体输出末尾（最多 50 行 / 4096 字节）：\n' +
+          'API Error: 400 {"error":{"details":{"error_code":"claude_code_version_too_old"}}}'
+      )
+    ).toBe(
+      'Claude Code 版本过旧，不支持当前模型：请升级平台钉住的命令行版本。'
+    );
+  });
+
+  it('单行原样返回，空与 null 都当没有', () => {
+    expect(firstErrorLine('用户手动停止')).toBe('用户手动停止');
+    expect(firstErrorLine(null)).toBeNull();
+    expect(firstErrorLine('')).toBeNull();
+    expect(firstErrorLine('\n后面才有内容')).toBeNull();
   });
 });

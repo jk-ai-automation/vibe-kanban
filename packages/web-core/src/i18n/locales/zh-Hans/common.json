@@ -995,6 +995,8 @@
       "gateRejected": "你打回了{{stage}}",
       "actorAi": "AI",
       "actorHuman": "你",
+      "expand": "展开全部",
+      "collapse": "收起",
       "empty": "还没有动静"
     }
   },

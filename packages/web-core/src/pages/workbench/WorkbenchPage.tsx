@@ -18,6 +18,7 @@ import {
   groupStagesByRun,
 } from '@/entities/pipeline/model/cardInfo';
 import {
+  firstErrorLine,
   pipelineStatus,
   pipelineStatusText,
   toMillis,
@@ -138,7 +139,8 @@ export function WorkbenchPage() {
           />
         }
         timeText={timeText(waitingSince(item.stage_run))}
-        meta={item.stage_run.error ?? item.stage_run.summary}
+        // 失败原因带着进程输出末尾，卡片上只放第一行（需求详情的时间线有全文）。
+        meta={firstErrorLine(item.stage_run.error) ?? item.stage_run.summary}
         highlight={info.tone === 'failed' ? 'failed' : 'gate'}
         openLabel={t('workbench.card.open')}
         onOpen={() => openIssue(item.run.issue_id)}
