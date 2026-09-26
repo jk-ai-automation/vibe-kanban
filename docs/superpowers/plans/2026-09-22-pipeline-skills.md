@@ -313,6 +313,10 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 `executor_config.model_id = "sonnet"` 绕开（`sonnet` / `opus` / `haiku` 实测都可用）。
 真正的修法是升 CLI 版本钉子，属独立决策。
 
+**已于分支 `claude-cli-version-and-errors` 修掉**：版本钉子升到 `2.1.274`（npm `stable` 标签）。
+实测 2.1.274：`plugin validate` 通过、`--plugin-dir` 仍可用、14 个技能全部以 `vk-pipeline:`
+前缀可见，且不指定 `--model`（用账号默认模型）也能正常返回、退出码 0。
+
 ---
 
 ## 5. 文件清单

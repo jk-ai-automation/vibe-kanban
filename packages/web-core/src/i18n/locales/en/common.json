@@ -995,6 +995,8 @@
       "gateRejected": "You sent back {{stage}}",
       "actorAi": "AI",
       "actorHuman": "You",
+      "expand": "Show more",
+      "collapse": "Show less",
       "empty": "Nothing has happened yet"
     }
   },

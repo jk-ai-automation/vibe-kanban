@@ -62,7 +62,7 @@ fn base_command(claude_code_router: bool) -> &'static str {
     if claude_code_router {
         "npx -y @musistudio/claude-code-router@1.0.66 code"
     } else {
-        "npx -y @anthropic-ai/claude-code@2.1.119"
+        "npx -y @anthropic-ai/claude-code@2.1.274"
     }
 }
 
@@ -193,7 +193,7 @@ impl ClaudeCode {
             builder = builder.extend_params(["--agent", agent]);
         }
         // 每个目录一对参数。extend_params 不做 shell 切分，带空格的路径原样进 argv。
-        // 已核实 npx @anthropic-ai/claude-code@2.1.119 支持 --plugin-dir（可重复）。
+        // 已核实 npx @anthropic-ai/claude-code@2.1.274 支持 --plugin-dir（可重复）。
         for dir in &self.plugin_dirs {
             builder =
                 builder.extend_params(["--plugin-dir".to_string(), dir.display().to_string()]);

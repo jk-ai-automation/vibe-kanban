@@ -987,27 +987,23 @@ impl PipelineService {
         })
     }
 
-    /// 进程失败原因。检查脚本附日志末尾（读不到日志就只写状态与退出码）。
+    /// 进程失败原因：状态与退出码，加上日志末尾（读不到日志就只写状态与退出码）。
+    ///
+    /// 智能体进程也附日志末尾：模型接口的报错（例如
+    /// `API Error: 400 … claude_code_version_too_old`）只出现在进程输出里，
+    /// 光有退出码用户无从判断。
     async fn describe_process_failure(&self, process: &FinishedProcess) -> String {
-        let summary = describe_exit(process);
-        if process.run_reason != ExecutionProcessRunReason::PipelineStep {
-            return summary;
-        }
         let tail = crate::services::execution_process::load_raw_log_messages(
             self.pool(),
             process.execution_process_id,
         )
         .await
-        .and_then(|messages| log_tail(&messages, CHECK_LOG_TAIL_LINES, CHECK_LOG_TAIL_BYTES));
-        match tail {
-            Some(tail) => {
-                format!(
-                    "{summary}\n检查脚本输出末尾（最多 {CHECK_LOG_TAIL_LINES} 行 / \
-                     {CHECK_LOG_TAIL_BYTES} 字节）：\n{tail}"
-                )
-            }
-            None => summary,
-        }
+        .and_then(|messages| log_tail(&messages, LOG_TAIL_LINES, LOG_TAIL_BYTES));
+        failure_reason(
+            &describe_exit(process),
+            run_reason_label(&process.run_reason),
+            tail.as_deref(),
+        )
     }
 
     async fn fail_run(
@@ -1105,11 +1101,11 @@ fn run_reason_label(run_reason: &ExecutionProcessRunReason) -> &'static str {
     }
 }
 
-/// 检查脚本失败时回喂的日志行数上限。
-const CHECK_LOG_TAIL_LINES: usize = 50;
+/// 进程失败时回喂的日志行数上限。
+const LOG_TAIL_LINES: usize = 50;
 
 /// 回喂日志的字节上限（单条 4KB）。这段文本会落进阶段的 `error` 并被推送给项目订阅者。
-const CHECK_LOG_TAIL_BYTES: usize = 4 * 1024;
+const LOG_TAIL_BYTES: usize = 4 * 1024;
 
 const SETUP_BROKEN: &str = "setup 脚本后智能体未启动";
 
@@ -1132,6 +1128,61 @@ fn describe_exit(process: &FinishedProcess) -> String {
             .map(|code| code.to_string())
             .unwrap_or_else(|| "无".to_string())
     )
+}
+
+/// 拼装写进 `pipeline_stage_runs.error` 的失败原因：
+/// 命中已知报错时的中文说明在最前，然后是状态与退出码，最后是日志末尾原文。
+fn failure_reason(summary: &str, label: &str, tail: Option<&str>) -> String {
+    let Some(tail) = tail else {
+        return summary.to_string();
+    };
+    let body = format!(
+        "{summary}\n{label}输出末尾（最多 {LOG_TAIL_LINES} 行 / {LOG_TAIL_BYTES} 字节）：\n{tail}"
+    );
+    match api_error_hint(tail) {
+        Some(hint) => format!("{hint}\n{body}"),
+        None => body,
+    }
+}
+
+/// 从日志末尾认出已知的模型接口报错，给一句人能看懂的中文说明。
+///
+/// Claude Code 把接口报错当成一条 assistant 文本打到 stdout，例如
+/// `API Error: 400 {"error":{…,"details":{"error_code":"claude_code_version_too_old"}}}`，
+/// 进程只以退出码 1 结束。没有已知模式时返回 None，不瞎猜。
+fn api_error_hint(tail: &str) -> Option<String> {
+    if tail.contains("claude_code_version_too_old") {
+        return Some(
+            "Claude Code 版本过旧，不支持当前模型：请升级平台钉住的命令行版本，\
+             或把这个阶段的模型改成 sonnet / opus。"
+                .to_string(),
+        );
+    }
+    match last_api_error_status(tail)? {
+        status @ 400..=499 => Some(format!(
+            "智能体调用模型接口报 {status}：常见原因是模型名不对、登录过期或额度用尽。"
+        )),
+        status @ 500..=599 => Some(format!(
+            "模型接口返回 {status}（服务端错误）：多为临时故障，可稍后重试。"
+        )),
+        _ => None,
+    }
+}
+
+/// 日志里最后一处 `API Error: <状态码>` 的状态码。
+fn last_api_error_status(tail: &str) -> Option<u16> {
+    const MARKER: &str = "API Error: ";
+    tail.match_indices(MARKER)
+        .filter_map(|(at, _)| {
+            tail[at + MARKER.len()..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .take(3)
+                .collect::<String>()
+                .parse::<u16>()
+                .ok()
+        })
+        .last()
 }
 
 /// 日志末尾最多 `max_lines` 行、`max_bytes` 字节（stdout 与 stderr 按到达顺序拼接）。
@@ -1208,6 +1259,50 @@ mod tests {
         let tail = log_tail(&messages, 50, 61).unwrap();
         assert!(tail.contains("中"));
         assert!(!tail.contains('\u{fffd}'));
+    }
+
+    /// 实测 `npx -y @anthropic-ai/claude-code@2.1.119 -p --output-format=stream-json` 的输出。
+    const 版本过旧的原始输出: &str = r#"{"type":"assistant","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Claude Code 2.1.119 does not support this model; version 2.1.251 or newer is required.\",\"details\":{\"error_code\":\"claude_code_version_too_old\"}}}"}]},"error":"unknown"}"#;
+
+    #[test]
+    fn 版本过旧的接口报错给出升级提示() {
+        let hint = api_error_hint(版本过旧的原始输出).expect("应认出版本过旧");
+        assert!(hint.contains("版本过旧"), "{hint}");
+        assert!(hint.contains("sonnet"), "{hint}");
+    }
+
+    #[test]
+    fn 其它四开头的接口报错带上状态码() {
+        let hint =
+            api_error_hint("API Error: 401 {\"error\":\"unauthorized\"}").expect("应认出 4xx 报错");
+        assert!(hint.contains("401"), "{hint}");
+        let hint = api_error_hint("API Error: 500 upstream boom").expect("应认出 5xx 报错");
+        assert!(hint.contains("500"), "{hint}");
+    }
+
+    #[test]
+    fn 没有已知模式时不加说明() {
+        assert_eq!(api_error_hint("cargo test 失败：3 个用例未通过"), None);
+        assert_eq!(api_error_hint("API Error: 无状态码"), None);
+    }
+
+    #[test]
+    fn 失败原因把中文说明放在最前面并保留原始输出() {
+        let reason = failure_reason(
+            "编码智能体 进程未成功结束（状态：失败，退出码 1）",
+            "编码智能体",
+            Some(版本过旧的原始输出),
+        );
+        assert!(reason.starts_with("Claude Code 版本过旧"), "{reason}");
+        assert!(reason.contains("退出码 1"), "{reason}");
+        assert!(reason.contains("claude_code_version_too_old"), "{reason}");
+        assert!(reason.contains("编码智能体输出末尾"), "{reason}");
+    }
+
+    #[test]
+    fn 读不到日志时失败原因只有状态与退出码() {
+        let summary = "编码智能体 进程未成功结束（状态：失败，退出码 1）";
+        assert_eq!(failure_reason(summary, "编码智能体", None), summary);
     }
 
     #[test]

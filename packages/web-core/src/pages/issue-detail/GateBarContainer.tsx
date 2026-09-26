@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { IssuePipelineView } from 'shared/types';
 import { PipelineGateBar } from '@vibe/ui/components/PipelineGateBar';
 import { useGateDecision } from '@/entities/pipeline/model/hooks/usePipelineData';
+import { firstErrorLine } from '@/entities/pipeline/model/progress';
 import {
   autoConditionLabelKey,
   fallbackGateLabelKey,
@@ -72,7 +73,13 @@ export function GateBarContainer({
       break;
     case 'failed':
       title = t('pipeline.status.failed');
-      message = [t('pipeline.gate.failedHint'), round]
+      // 失败原因含日志末尾，可能有几十行；关卡条只放第一行（认出已知接口报错时
+      // 就是那句中文说明），完整原文在右栏时间线里。
+      message = [
+        t('pipeline.gate.failedHint'),
+        round,
+        firstErrorLine(state.error),
+      ]
         .filter(Boolean)
         .join(' · ');
       break;
