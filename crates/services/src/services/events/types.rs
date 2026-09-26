@@ -17,7 +17,7 @@ pub enum EventError {
     Other(#[from] AnyhowError), // Catches any unclassified errors
 }
 
-#[derive(EnumString, Display)]
+#[derive(EnumString, Display, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HookTables {
     #[strum(to_string = "workspaces")]
     Workspaces,
@@ -31,6 +31,10 @@ pub enum HookTables {
     ProjectStatuses,
     #[strum(to_string = "issue_comments")]
     IssueComments,
+    #[strum(to_string = "pipeline_runs")]
+    PipelineRuns,
+    #[strum(to_string = "pipeline_stage_runs")]
+    PipelineStageRuns,
 }
 
 #[derive(Serialize, Deserialize, TS)]
@@ -62,6 +66,14 @@ pub enum RecordTypes {
         rowid: i64,
     },
     DeletedIssueComment {
+        rowid: i64,
+    },
+    PipelineRun(db::models::pipeline::PipelineRun),
+    PipelineStageRun(db::models::pipeline::PipelineStageRun),
+    DeletedPipelineRun {
+        rowid: i64,
+    },
+    DeletedPipelineStageRun {
         rowid: i64,
     },
 }

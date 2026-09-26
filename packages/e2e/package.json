@@ -1,0 +1,20 @@
+{
+  "name": "@vibe/e2e",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:update": "playwright test --update-snapshots",
+    "install-browser": "playwright install chromium",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "format": "prettier --config ../local-web/.prettierrc.json --write \"**/*.ts\"",
+    "format:check": "prettier --config ../local-web/.prettierrc.json --check \"**/*.ts\""
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^20.0.0",
+    "prettier": "^3.6.1",
+    "typescript": "^5.9.2"
+  }
+}

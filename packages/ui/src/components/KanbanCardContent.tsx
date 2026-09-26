@@ -164,6 +164,13 @@ export type KanbanCardContentProps<TTag extends KanbanTag = KanbanTag> = {
   showAssignees?: boolean;
   /** 紧凑密度下收起描述预览。 */
   showDescription?: boolean;
+  /**
+   * 没设优先级时是否显示虚线圆（点它设置优先级）。默认显示；个人版流水线看板
+   * 不显示，避免被误认成加载圈（优先级仍可在详情面板里设置）。
+   */
+  showEmptyPriority?: boolean;
+  /** 标签行的「+」只在悬停卡片时显示（卡片需带 `group` 类）。默认常显。 */
+  tagAddOnHover?: boolean;
 };
 
 export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
@@ -188,6 +195,8 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
   testBadge = null,
   showAssignees = true,
   showDescription = true,
+  showEmptyPriority = true,
+  tagAddOnHover = false,
 }: KanbanCardContentProps<TTag>) {
   const { t } = useTranslation('common');
   const previewDescription = useMemo(() => {
@@ -216,7 +225,15 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
         <span className="text-sm text-low">+{tags.length - 2}</span>
       )}
       {tagEditProps && tags.length === 0 && (
-        <PlusIcon className="size-icon-xs text-low" weight="bold" />
+        <PlusIcon
+          className={cn(
+            'size-icon-xs text-low',
+            tagAddOnHover &&
+              !isMobile &&
+              'invisible opacity-0 transition-opacity group-hover:visible group-hover:opacity-100'
+          )}
+          weight="bold"
+        />
       )}
     </>
   );
@@ -260,8 +277,8 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
                 : 'invisible opacity-0 group-hover:visible group-hover:opacity-100',
               'transition-[opacity,color,background-color]'
             )}
-            aria-label="More actions"
-            title="More actions"
+            aria-label={t('kanban.moreActions')}
+            title={t('kanban.moreActions')}
           >
             <DotsThreeIcon className="size-icon-xs" weight="bold" />
           </button>
@@ -285,43 +302,45 @@ export function KanbanCardContent<TTag extends KanbanTag = KanbanTag>({
         </p>
       )}
 
-      {/* Row 4: Priority + Assignee */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-half min-w-0">
-          {onPriorityClick ? (
-            <button
-              type="button"
-              onClick={onPriorityClick}
-              onMouseDown={(e) => e.stopPropagation()}
-              className="flex items-center cursor-pointer hover:bg-secondary rounded-sm transition-colors"
-            >
+      {/* Row 4: Priority + Assignee（两样都没有内容时整行不渲染，不留空白） */}
+      {!(!priority && !showEmptyPriority && !showAssignees) && (
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-half min-w-0">
+            {onPriorityClick ? (
+              <button
+                type="button"
+                onClick={onPriorityClick}
+                onMouseDown={(e) => e.stopPropagation()}
+                className="flex items-center cursor-pointer hover:bg-secondary rounded-sm transition-colors"
+              >
+                <PriorityIcon priority={priority} />
+                {!priority && showEmptyPriority && (
+                  <CircleDashedIcon
+                    className="size-icon-xs text-low"
+                    weight="bold"
+                  />
+                )}
+              </button>
+            ) : (
               <PriorityIcon priority={priority} />
-              {!priority && (
-                <CircleDashedIcon
-                  className="size-icon-xs text-low"
-                  weight="bold"
-                />
-              )}
-            </button>
-          ) : (
-            <PriorityIcon priority={priority} />
-          )}
-        </div>
-        {/* 负责人头像只在团队版出现；个人版 showAssignees=false，整块不渲染，不留空占位 */}
-        {showAssignees &&
-          (onAssigneeClick ? (
-            <button
-              type="button"
-              onClick={onAssigneeClick}
-              onMouseDown={(e) => e.stopPropagation()}
-              className="cursor-pointer hover:bg-secondary rounded-sm transition-colors"
-            >
+            )}
+          </div>
+          {/* 负责人头像只在团队版出现；个人版 showAssignees=false，整块不渲染，不留空占位 */}
+          {showAssignees &&
+            (onAssigneeClick ? (
+              <button
+                type="button"
+                onClick={onAssigneeClick}
+                onMouseDown={(e) => e.stopPropagation()}
+                className="cursor-pointer hover:bg-secondary rounded-sm transition-colors"
+              >
+                <KanbanAssignee assignees={assignees} />
+              </button>
+            ) : (
               <KanbanAssignee assignees={assignees} />
-            </button>
-          ) : (
-            <KanbanAssignee assignees={assignees} />
-          ))}
-      </div>
+            ))}
+        </div>
+      )}
 
       {/* Row 5: 工作区 → PR → 测试 → 标签 → 关系（独立一行，避免溢出）
           前三个是设计文档 §7.2 的状态徽标，都可选；不传时这一行退回改造前的内容。 */}

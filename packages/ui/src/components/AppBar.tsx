@@ -263,13 +263,17 @@ export function AppBar({
       });
     }
 
-    sections.push({ key: 'local', label: 'Local', items: localItems });
+    sections.push({
+      key: 'local',
+      label: t('appBar.sections.local'),
+      items: localItems,
+    });
   }
 
   if (hosts.length > 0 || onPairHostClick) {
     sections.push({
       key: 'remote',
-      label: 'Remote',
+      label: t('appBar.sections.remote'),
       items: [
         ...hosts.map((host) => ({
           key: `host-${host.id}`,
@@ -343,7 +347,7 @@ export function AppBar({
   if (projectSectionItems.length > 0) {
     sections.push({
       key: 'projects',
-      label: 'Projects',
+      label: t('appBar.sections.projects'),
       items: projectSectionItems,
     });
   }
@@ -351,7 +355,7 @@ export function AppBar({
   if (isSignedIn && onExportClick) {
     sections.push({
       key: 'export',
-      label: 'Export',
+      label: t('appBar.sections.export'),
       items: [
         {
           key: 'export-data',

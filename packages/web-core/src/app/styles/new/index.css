@@ -82,6 +82,16 @@ html {
     --success: 117 38% 50%;
     --merged: 271 81% 46%;
 
+    /* Pipeline stage semantic colors (light) — 设计文档 §8.5：
+       灰=需求/规格、蓝=开发、紫=评审、琥珀=测试、绿=完成、红=失败。
+       等人工一律用 --brand（橙）。 */
+    --stage-neutral: 220 9% 58%;
+    --stage-dev: 217 91% 52%;
+    --stage-review: 271 70% 56%;
+    --stage-test: 38 92% 45%;
+    --stage-done: 142 64% 36%;
+    --stage-failed: 0 72% 50%;
+
     /* Text on accent */
     --text-on-brand: 0 0% 100%;
   }
@@ -140,6 +150,14 @@ html {
     --error: 0 59% 57%;
     --success: 117 38% 50%;
     --merged: 271 81% 66%;
+
+    /* Pipeline stage semantic colors (dark) */
+    --stage-neutral: 220 9% 52%;
+    --stage-dev: 217 91% 64%;
+    --stage-review: 271 75% 70%;
+    --stage-test: 38 92% 56%;
+    --stage-done: 142 55% 48%;
+    --stage-failed: 0 75% 62%;
 
     /* Text on accent */
     --text-on-brand: 0 0% 100%;

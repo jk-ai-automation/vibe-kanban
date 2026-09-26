@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import type { LocalAttachmentMetadata } from './WorkspaceContext';
 import { cn } from '../lib/cn';
 import {
+  ArrowsOutIcon,
   XIcon,
   LinkIcon,
   DotsThreeIcon,
@@ -142,6 +143,8 @@ export interface KanbanIssuePanelProps {
 
   // More actions callback (edit mode only) - opens command bar with issue actions
   onMoreActions?: () => void;
+  /** 「全屏查看」（设计文档 §8.4）。不传就不渲染；只有个人版传。 */
+  onOpenFullscreen?: () => void;
 
   // Image attachment upload
   onPasteFiles?: (files: File[]) => void;
@@ -201,6 +204,7 @@ export function KanbanIssuePanel({
   titleInputRef,
   onCopyLink,
   onMoreActions,
+  onOpenFullscreen,
   onPasteFiles,
   localAttachments,
   dropzoneProps,
@@ -305,6 +309,17 @@ export function KanbanIssuePanel({
           )}
         </div>
         <div className="flex items-center gap-half">
+          {!isCreateMode && onOpenFullscreen && (
+            <button
+              type="button"
+              onClick={onOpenFullscreen}
+              className="p-half rounded-sm text-low hover:text-normal hover:bg-panel transition-colors"
+              aria-label={t('issueDetail.fullscreen')}
+              title={t('issueDetail.fullscreen')}
+            >
+              <ArrowsOutIcon className="size-icon-sm" weight="bold" />
+            </button>
+          )}
           {!isCreateMode && onMoreActions && (
             <button
               type="button"
@@ -388,9 +403,9 @@ export function KanbanIssuePanel({
                 value={formData.title}
                 onChange={(value) => onFormChange('title', value)}
                 onKeyDown={handleTitleKeyDown}
-                placeholder="Issue Title..."
+                placeholder={t('kanban.issueTitlePlaceholder')}
                 autoFocus={isCreateMode}
-                aria-label="Issue title"
+                aria-label={t('kanban.issueTitleLabel')}
                 disabled={isSubmitting}
                 className={cn(
                   'px-base text-lg font-medium text-high',
@@ -562,8 +577,8 @@ export function KanbanIssuePanel({
                   icon={TrashIcon}
                   onClick={onDeleteDraft}
                   disabled={isSubmitting}
-                  aria-label="Delete draft"
-                  title="Delete draft"
+                  aria-label={t('kanban.deleteDraft')}
+                  title={t('kanban.deleteDraft')}
                   className="hover:text-error hover:bg-error/10"
                 />
               )}

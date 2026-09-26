@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "sources": {
+    "superpowers": {
+      "kind": "git",
+      "repo": "https://github.com/obra/superpowers",
+      "commit": "f2cbfbefebbfef77321e4c9abc9e949826bea9d7",
+      "release": "5.1.0",
+      "license": "MIT",
+      "local": "~/.claude/plugins/cache/superpowers-marketplace/superpowers/5.1.0"
+    },
+    "atp": {
+      "kind": "git",
+      "repo": "https://github.com/jk-ai-automation/atp.git",
+      "commit": "10feaa1ea6e99719e88435d71244d851047779ed",
+      "release": null,
+      "license": "内部仓库（jk-ai-automation/atp）",
+      "local": "/Users/admin/work/github/atp"
+    }
+  },
+  "skills": [
+    {
+      "name": "brainstorming",
+      "source": "superpowers",
+      "source_dir": "skills/brainstorming",
+      "files": {
+        "SKILL.md": "bba47904a7f6bbee3bf8a107ebbe84e65d392be683bbb898ded736b29e415f90"
+      }
+    },
+    {
+      "name": "writing-plans",
+      "source": "superpowers",
+      "source_dir": "skills/writing-plans",
+      "files": {
+        "SKILL.md": "4fd4627d2c02367879c0307d7249270bed633317ff9be82e926a6d57bf5d331b"
+      }
+    },
+    {
+      "name": "test-driven-development",
+      "source": "superpowers",
+      "source_dir": "skills/test-driven-development",
+      "files": {
+        "SKILL.md": "7dee67b4af6bdccc7a914ca34533184d64592d0f5b23aeae631538168db14994",
+        "testing-anti-patterns.md": "bde453bc258f06543987477c837939afaa774ea2acbd9f308d702fc452bc4283"
+      }
+    },
+    {
+      "name": "requesting-code-review",
+      "source": "superpowers",
+      "source_dir": "skills/requesting-code-review",
+      "files": {
+        "SKILL.md": "5a3a44a3667800e2dc836829c6b92fada51e6dc58ac144ec05fe59f47d6bcd84",
+        "code-reviewer.md": "595d91d05d5ecba530bd52e1e53c5173d820ab5d4bc223eb7820d69a9ab1c403"
+      }
+    },
+    {
+      "name": "systematic-debugging",
+      "source": "superpowers",
+      "source_dir": "skills/systematic-debugging",
+      "files": {
+        "SKILL.md": "4999cb851360485eca5074e727bbdd62ef20549c5d5b01216fcbf5831badb473",
+        "defense-in-depth.md": "1e175fb86fc357e58c6aebf5441e481e1b7868b4380c0456b63a17eefbd18ba7",
+        "root-cause-tracing.md": "6b0622269e098ca1399e123e553fd385f0b6412d88ef0e9c4f5a8ea9cf1cec7b"
+      }
+    },
+    {
+      "name": "verification-before-completion",
+      "source": "superpowers",
+      "source_dir": "skills/verification-before-completion",
+      "files": {
+        "SKILL.md": "ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c"
+      }
+    },
+    {
+      "name": "finishing-a-development-branch",
+      "source": "superpowers",
+      "source_dir": "skills/finishing-a-development-branch",
+      "files": {
+        "SKILL.md": "5c8d4b59aedb14c94e2f5d787a3265e858e8f53d4ceffe7ff1c15878a52b0e91"
+      }
+    },
+    {
+      "name": "prd2testcase",
+      "source": "atp",
+      "source_dir": "skills/prd2testcase",
+      "files": {
+        "SKILL.md": "6f407645fe1335d75981a40d963c7f2a446f56d0f4261750379446ed51bf20d0"
+      }
+    }
+  ]
+}

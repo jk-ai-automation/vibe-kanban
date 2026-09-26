@@ -1,5 +1,6 @@
 import { cn } from '../lib/cn';
 import { useTranslation } from 'react-i18next';
+import { relativeTimeAgo } from '../lib/relativeTime';
 import {
   ArrowUUpLeftIcon,
   CheckIcon,
@@ -150,9 +151,10 @@ export function IssueWorkspaceCard({
   className,
 }: IssueWorkspaceCardProps) {
   const { t } = useTranslation('common');
-  const timeAgo = getTimeAgo(
+  const timeAgoSpec = relativeTimeAgo(
     workspace.latestProcessCompletedAt ?? workspace.updatedAt
   );
+  const timeAgo = t(timeAgoSpec.key, timeAgoSpec.params);
   const isRunning = workspace.isRunning ?? false;
   const hasPendingApproval = workspace.hasPendingApproval ?? false;
   const hasRunningDevServer = workspace.hasRunningDevServer ?? false;
@@ -435,20 +437,4 @@ export function IssueWorkspaceCreateCard({
       </div>
     </IssueWorkspaceCardContainer>
   );
-}
-
-function getTimeAgo(dateString: string): string {
-  const date = new Date(dateString);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / (1000 * 60));
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  const diffWeeks = Math.floor(diffDays / 7);
-
-  if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays < 7) return `${diffDays}d ago`;
-  return `${diffWeeks}w ago`;
 }

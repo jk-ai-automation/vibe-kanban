@@ -27,6 +27,8 @@
         "agentsDesc": "Coding agent configurations",
         "mcp": "MCP Servers",
         "mcpDesc": "Model Context Protocol servers",
+        "pipeline-skills": "Pipeline Skills",
+        "pipeline-skillsDesc": "Skills each pipeline stage loads",
         "organizations": "Organization Settings",
         "organizationsDesc": "Manage organization members and permissions",
         "remote-projects": "Projects",
@@ -300,6 +302,11 @@
           "label": "Enable Workspaces Beta",
           "helper": "Use the new workspaces interface when viewing workspaces. Tasks will open in task view first, and attempts will open in the new workspaces view."
         }
+      },
+      "export": {
+        "title": "Data export",
+        "description": "Export project data from the cloud service (available when signed in to a cloud account)",
+        "button": "Open export page"
       }
     },
     "agents": {
@@ -393,6 +400,25 @@
         "successMessage": "✓ MCP configuration saved successfully!",
         "loading": "Loading current MCP server configuration...",
         "unsavedChanges": "• You have unsaved changes"
+      }
+    },
+    "pipelineSkills": {
+      "description": "Every pipeline stage loads one skill from the built-in vk-pipeline plugin. The plugin is injected per session and never written into your repositories.",
+      "readOnly": "Read-only. Third-party skills are pinned by checksum in skills.lock.json.",
+      "loading": "Loading skills…",
+      "loadError": "Could not load skills: {{message}}",
+      "empty": "No skills found.",
+      "noStage": "Referenced by other skills",
+      "columns": {
+        "name": "Skill",
+        "source": "Source",
+        "version": "Version",
+        "stage": "Stage"
+      },
+      "source": {
+        "platform": "Built-in",
+        "superpowers": "superpowers",
+        "atp": "atp"
       }
     },
     "projects": {

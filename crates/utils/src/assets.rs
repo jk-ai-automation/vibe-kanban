@@ -3,12 +3,12 @@ use rust_embed::RustEmbed;
 
 const PROJECT_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
+/// 覆盖数据目录的环境变量。端到端测试给每个用例一个独立的临时目录。
+/// 未设置或为空时行为与原来完全一致。
+pub const ASSET_DIR_ENV: &str = "VK_ASSET_DIR";
+
 pub fn asset_dir() -> std::path::PathBuf {
-    let path = if cfg!(debug_assertions) {
-        std::path::PathBuf::from(PROJECT_ROOT).join("../../dev_assets")
-    } else {
-        prod_asset_dir_path()
-    };
+    let path = resolve_asset_dir(std::env::var_os(ASSET_DIR_ENV));
 
     // Ensure the directory exists
     if !path.exists() {
@@ -19,6 +19,23 @@ pub fn asset_dir() -> std::path::PathBuf {
     // ✔ macOS → ~/Library/Application Support/MyApp
     // ✔ Linux → ~/.local/share/myapp   (respects XDG_DATA_HOME)
     // ✔ Windows → %APPDATA%\Example\MyApp
+}
+
+/// 纯函数：由环境变量的值算出数据目录。拆出来是为了测试时不改进程环境变量
+/// （edition 2024 下 `std::env::set_var` 是 unsafe，且会污染并行跑的其它测试）。
+fn resolve_asset_dir(override_dir: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    match override_dir {
+        Some(dir) if !dir.is_empty() => std::path::PathBuf::from(dir),
+        _ => default_asset_dir(),
+    }
+}
+
+fn default_asset_dir() -> std::path::PathBuf {
+    if cfg!(debug_assertions) {
+        std::path::PathBuf::from(PROJECT_ROOT).join("../../dev_assets")
+    } else {
+        prod_asset_dir_path()
+    }
 }
 
 pub fn prod_asset_dir_path() -> std::path::PathBuf {
@@ -96,3 +113,36 @@ pub struct SoundAssets;
 #[derive(RustEmbed)]
 #[folder = "../../assets/scripts"]
 pub struct ScriptAssets;
+
+#[cfg(test)]
+mod tests {
+    use std::{ffi::OsString, path::PathBuf};
+
+    use super::{default_asset_dir, resolve_asset_dir};
+
+    #[test]
+    fn 未设置覆盖时沿用默认目录() {
+        assert_eq!(resolve_asset_dir(None), default_asset_dir());
+    }
+
+    #[test]
+    fn 覆盖为空串时沿用默认目录() {
+        assert_eq!(
+            resolve_asset_dir(Some(OsString::new())),
+            default_asset_dir()
+        );
+    }
+
+    #[test]
+    fn 设置覆盖时使用指定目录() {
+        let dir = PathBuf::from("/tmp/vk-e2e-case-1");
+        assert_eq!(resolve_asset_dir(Some(dir.clone().into_os_string())), dir);
+    }
+
+    #[test]
+    fn debug_构建默认目录仍是_dev_assets() {
+        if cfg!(debug_assertions) {
+            assert!(default_asset_dir().ends_with("dev_assets"));
+        }
+    }
+}

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useScratch } from '@/shared/hooks/useScratch';
+import { resolveScratchSelection } from '@/shared/lib/scratchSelection';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
 import {
   ScratchType,
@@ -268,39 +269,58 @@ export function useUiPreferencesScratch() {
 
     hasInitializedRef.current = true;
 
-    if (scratchData) {
-      // Server has data - apply it to store
-      isApplyingServerDataRef.current = true;
-      const serverState = scratchDataToStore(scratchData);
-
-      // Merge server state into the store
-      useUiPreferencesStore.setState({
-        repoActions: serverState.repoActions,
-        expanded: serverState.expanded,
-        contextBarPosition: serverState.contextBarPosition,
-        paneSizes: serverState.paneSizes,
-        collapsedPaths: serverState.collapsedPaths,
-        fileSearchRepoId: serverState.fileSearchRepoId,
-        isLeftSidebarVisible: serverState.isLeftSidebarVisible,
-        isRightSidebarVisible: serverState.isRightSidebarVisible,
-        isTerminalVisible: serverState.isTerminalVisible,
-        workspacePanelStates: serverState.workspacePanelStates,
-        workspaceFilters: serverState.workspaceFilters,
-        workspaceSort: serverState.workspaceSort,
-        selectedOrgId: serverState.selectedOrgId,
-        selectedProjectId: serverState.selectedProjectId,
-        createDraftWorkspaceByDefault:
-          serverState.createDraftWorkspaceByDefault,
-        kanbanProjectViewSelections: serverState.kanbanProjectViewSelections,
-        kanbanProjectViewPreferences: serverState.kanbanProjectViewPreferences,
-      });
-
-      // Allow a brief delay for state to settle
-      setTimeout(() => {
-        isApplyingServerDataRef.current = false;
-      }, 100);
+    if (!scratchData) {
+      // 服务端没有数据：也算 hydration 结束，等它的人可以继续了
+      useUiPreferencesStore.getState().setScratchHydrated(true);
+      return;
     }
-  }, [isLoading, isConnected, scratchData]);
+
+    // Server has data - apply it to store
+    isApplyingServerDataRef.current = true;
+    const serverState = scratchDataToStore(scratchData);
+    const session = useUiPreferencesStore.getState();
+    // scratch 晚到：区分「用户显式选择 / 路由进入」与「自动挑的第一个」，
+    // 只保留前者，否则会把服务端存的上次选中盖掉（见 scratchSelection.ts）。
+    const selection = resolveScratchSelection({
+      serverOrgId: serverState.selectedOrgId,
+      serverProjectId: serverState.selectedProjectId,
+      sessionOrgId: session.selectedOrgId,
+      sessionProjectId: session.selectedProjectId,
+      sessionProjectSource: session.selectedProjectSource,
+    });
+
+    // Merge server state into the store
+    useUiPreferencesStore.setState({
+      repoActions: serverState.repoActions,
+      expanded: serverState.expanded,
+      contextBarPosition: serverState.contextBarPosition,
+      paneSizes: serverState.paneSizes,
+      collapsedPaths: serverState.collapsedPaths,
+      fileSearchRepoId: serverState.fileSearchRepoId,
+      isLeftSidebarVisible: serverState.isLeftSidebarVisible,
+      isRightSidebarVisible: serverState.isRightSidebarVisible,
+      isTerminalVisible: serverState.isTerminalVisible,
+      workspacePanelStates: serverState.workspacePanelStates,
+      workspaceFilters: serverState.workspaceFilters,
+      workspaceSort: serverState.workspaceSort,
+      selectedOrgId: selection.orgId,
+      selectedProjectId: selection.projectId,
+      createDraftWorkspaceByDefault: serverState.createDraftWorkspaceByDefault,
+      kanbanProjectViewSelections: serverState.kanbanProjectViewSelections,
+      kanbanProjectViewPreferences: serverState.kanbanProjectViewPreferences,
+      scratchHydrated: true,
+    });
+
+    // Allow a brief delay for state to settle
+    setTimeout(() => {
+      isApplyingServerDataRef.current = false;
+      // 保留下来的会话选择是在 hydration 之前写的，不会触发下面的保存订阅，
+      // 这里补存一次，否则刷新后又会被服务端旧值顶掉。
+      if (selection.shouldSave) {
+        debouncedSave();
+      }
+    }, 100);
+  }, [isLoading, isConnected, scratchData, debouncedSave]);
 
   // Subscribe to store changes and save to server
   useEffect(() => {

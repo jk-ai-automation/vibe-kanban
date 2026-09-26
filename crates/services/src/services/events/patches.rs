@@ -181,6 +181,19 @@ id_keyed_patch_module!(
     api_types::issue_comment::IssueComment
 );
 
+// 流水线两张表（契约 §3）：路径 /pipeline_runs/{id}、/pipeline_stage_runs/{id}，
+// 值带 project_id，需求流按它过滤。
+id_keyed_patch_module!(
+    pipeline_run_patch,
+    "/pipeline_runs",
+    db::models::pipeline::PipelineRun
+);
+id_keyed_patch_module!(
+    pipeline_stage_run_patch,
+    "/pipeline_stage_runs",
+    db::models::pipeline::PipelineStageRun
+);
+
 /// Helper functions for creating approval-specific patches.
 pub mod approvals_patch {
     use super::*;

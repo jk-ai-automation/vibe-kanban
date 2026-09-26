@@ -44,6 +44,17 @@ import {
   toggleDensity,
 } from '../model/density';
 import { isLocalPersonalMode } from '@/shared/lib/local/runtimeMode';
+import { canDropIssue } from '../model/pipelineDrag';
+import {
+  buildPipelineCardInfo,
+  groupStagesByRun,
+  latestRunByIssue,
+  type PipelineCardInfo,
+} from '@/entities/pipeline/model/cardInfo';
+import {
+  usePipelineRuns,
+  usePipelineStageRuns,
+} from '@/entities/pipeline/model/hooks/usePipelineData';
 import { useSyncErrorContext } from '@/shared/hooks/useSyncErrorContext';
 import { isShortcutSuppressed } from '@/shared/keyboard/shortcutGuards';
 import { KanbanBoardSkeleton } from '@vibe/ui/components/KanbanBoardSkeleton';
@@ -640,6 +651,46 @@ export function KanbanContainer() {
   // 个人版隐藏负责人头像（设计文档 §7.5：团队版才有的元素不留空占位）。
   const showAssignees = shouldShowAssignees(isLocalPersonalMode());
 
+  // ---- 个人版流水线看板（设计文档 §8.3）----
+  // 团队版一律 false：集合不开、卡片不加进度格、拖拽不拦，行为与改造前一致。
+  const isPipelineBoard = isLocalPersonalMode();
+  const { runs: pipelineRuns } = usePipelineRuns(
+    isPipelineBoard ? projectId : null
+  );
+  const { stages: pipelineStageRuns } = usePipelineStageRuns(
+    isPipelineBoard ? projectId : null
+  );
+  const runByIssueId = useMemo(
+    () => latestRunByIssue(pipelineRuns),
+    [pipelineRuns]
+  );
+  const pipelineCards = useMemo(() => {
+    if (!isPipelineBoard) return undefined;
+    const stagesByRun = groupStagesByRun(pipelineStageRuns);
+    const translate = (key: string, params?: Record<string, string | number>) =>
+      String(t(key, params));
+    const cards = new Map<string, PipelineCardInfo>();
+    for (const [issueId, run] of runByIssueId) {
+      cards.set(
+        issueId,
+        buildPipelineCardInfo(run, stagesByRun.get(run.id) ?? [], translate)
+      );
+    }
+    return cards;
+  }, [isPipelineBoard, pipelineStageRuns, runByIssueId, t]);
+  const stageByStatusId = useMemo(
+    () =>
+      new Map(boardColumns.map((column) => [column.status.id, column.stage])),
+    [boardColumns]
+  );
+  // 非法拖拽给一次提示而不是静默失败（设计文档 §8.3），4 秒后自动消失。
+  const [dragHintKey, setDragHintKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (!dragHintKey) return;
+    const timer = setTimeout(() => setDragHintKey(null), 4000);
+    return () => clearTimeout(timer);
+  }, [dragHintKey]);
+
   // 密度（localStorage 持久化，见 `model/density.ts`）。
   const kanbanDensity = useUiPreferencesStore((s) => s.kanbanDensity);
   const setKanbanDensity = useUiPreferencesStore((s) => s.setKanbanDensity);
@@ -791,6 +842,23 @@ export function KanbanContainer() {
         return;
       }
 
+      // 个人版流水线：推进只由关卡决定，只允许往回拖（设计文档 §8.3）。
+      if (isPipelineBoard && source.droppableId !== destination.droppableId) {
+        const fromStage = stageByStatusId.get(source.droppableId);
+        const toStage = stageByStatusId.get(destination.droppableId);
+        if (fromStage && toStage) {
+          const decision = canDropIssue({
+            fromStage,
+            toStage,
+            runStatus: runByIssueId.get(result.draggableId)?.status ?? null,
+          });
+          if (!decision.allowed) {
+            setDragHintKey(decision.reasonKey);
+            return;
+          }
+        }
+      }
+
       const isManualSort = kanbanFilters.sortField === 'sort_order';
 
       // Block within-column reordering when not in manual sort mode
@@ -867,7 +935,13 @@ export function KanbanContainer() {
           }, 500);
         });
     },
-    [kanbanFilters.sortField, calculateSortOrder]
+    [
+      kanbanFilters.sortField,
+      calculateSortOrder,
+      isPipelineBoard,
+      stageByStatusId,
+      runByIssueId,
+    ]
   );
 
   // Multi-select support
@@ -1219,12 +1293,22 @@ export function KanbanContainer() {
             density={kanbanDensity}
             onDensityToggle={handleDensityToggle}
             densityLabel={t(densityLabelKey(kanbanDensity))}
+            showViewSwitch={!isPipelineBoard}
           />
         </div>
 
         {/* 整板为空时的引导（设计文档 §7.2） */}
         {shouldAnimateCreateButton && !hasBoardError && (
           <p className="m-0 text-sm text-low">{t('kanban.boardEmptyHint')}</p>
+        )}
+        {dragHintKey && (
+          <p
+            role="status"
+            data-testid="kanban-drag-hint"
+            className="m-0 text-sm text-error"
+          >
+            {t(dragHintKey)}
+          </p>
         )}
       </div>
 
@@ -1249,9 +1333,11 @@ export function KanbanContainer() {
             isMobile={isMobile}
             wipLimit={DEFAULT_WIP_LIMIT}
             hasActiveFilters={hasActiveFilters}
-            showStageBadge={showStageBadge}
+            showStageBadge={isPipelineBoard ? false : showStageBadge}
             showAssignees={showAssignees}
             density={density}
+            isPipelineBoard={isPipelineBoard}
+            pipelineCards={pipelineCards}
             getPullRequestsForIssue={getPullRequestsForIssue}
             getTagObjectsForIssue={getTagObjectsForIssue}
             getTagsForIssue={getTagsForIssue}

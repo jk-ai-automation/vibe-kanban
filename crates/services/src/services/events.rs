@@ -7,7 +7,6 @@ use db::{
         workspace::Workspace,
     },
 };
-use serde_json::json;
 use sqlx::{Error as SqlxError, Sqlite, SqlitePool, decode::Decode, sqlite::SqliteOperation};
 use tokio::sync::RwLock;
 use utils::msg_store::MsgStore;
@@ -21,10 +20,141 @@ mod streams;
 pub mod types;
 
 pub use patches::{
-    execution_process_patch, issue_comment_patch, issue_patch, project_status_patch, scratch_patch,
-    workspace_patch,
+    execution_process_patch, issue_comment_patch, issue_patch, pipeline_run_patch,
+    pipeline_stage_run_patch, project_status_patch, scratch_patch, workspace_patch,
 };
 pub use types::{EventError, EventPatch, EventPatchInner, HookTables, RecordTypes};
+
+/// 提交屏障池只有 1 个连接（sqlx 池按先来先得分配）。与业务主池、钩子反查池都分开，
+/// 排队的屏障不会占用业务连接。
+const COMMIT_BARRIER_MAX_CONNECTIONS: u32 = 1;
+
+/// 变更钩子专用的屏障池：同一数据库文件、同样的连接参数（含 busy_timeout），不装钩子。
+/// 懒连接，建池时不开连接；整个钩子生命周期内复用。
+fn commit_barrier_pool(query_pool: &SqlitePool) -> SqlitePool {
+    sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(COMMIT_BARRIER_MAX_CONNECTIONS)
+        .connect_lazy_with((*query_pool.connect_options()).clone())
+}
+
+/// 提交屏障：只作「触发钩子的写者已结束」的同步点。
+///
+/// commit hook 在提交真正完成之前触发，所以要等：`BEGIN IMMEDIATE` 要拿写锁，会一直等到
+/// 那个写事务提交或回滚（最多等 busy_timeout）。拿到后立即回滚释放写锁，不在持锁期间
+/// 反查，别的写者因此不必等推送结束。
+async fn wait_for_commit(barrier_pool: &SqlitePool) -> Result<(), SqlxError> {
+    let barrier = barrier_pool.begin_with("BEGIN IMMEDIATE").await?;
+    barrier.rollback().await
+}
+
+/// 非删除的行变更。删除在 preupdate 钩子里就地生成 remove 补丁（之后读不到旧行了）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowChange {
+    Insert,
+    Update,
+}
+
+/// 一个连接上、当前事务里攒下的变更。提交时整体取走推送，回滚时清空。
+#[derive(Default)]
+struct PendingChanges {
+    removals: Vec<json_patch::Patch>,
+    changes: Vec<(HookTables, i64, RowChange)>,
+}
+
+impl PendingChanges {
+    fn is_empty(&self) -> bool {
+        self.removals.is_empty() && self.changes.is_empty()
+    }
+
+    /// 按 (表, rowid) 去重，保持首次出现的顺序；同一行只要插入过就按插入推 add。
+    fn deduped_changes(&self) -> Vec<(HookTables, i64, RowChange)> {
+        let mut index: std::collections::HashMap<(HookTables, i64), usize> =
+            std::collections::HashMap::new();
+        let mut out: Vec<(HookTables, i64, RowChange)> = Vec::new();
+        for &(table, rowid, change) in &self.changes {
+            match index.get(&(table, rowid)) {
+                Some(&i) => {
+                    if change == RowChange::Insert {
+                        out[i].2 = RowChange::Insert;
+                    }
+                }
+                None => {
+                    index.insert((table, rowid), out.len());
+                    out.push((table, rowid, change));
+                }
+            }
+        }
+        out
+    }
+}
+
+type PendingBuffer = Arc<std::sync::Mutex<PendingChanges>>;
+
+/// 钩子回调里取缓冲。回调里绝不能 panic（commit hook 里 panic 会把提交变成回滚），
+/// 所以中毒的锁直接接着用。
+fn lock_pending(pending: &PendingBuffer) -> std::sync::MutexGuard<'_, PendingChanges> {
+    pending
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 删除前（preupdate）按旧行生成 remove 补丁。
+fn removal_patch(preupdate: &sqlx::sqlite::PreupdateHookResult<'_>) -> Option<json_patch::Patch> {
+    let id = || {
+        preupdate
+            .get_old_column_value(0)
+            .ok()
+            .and_then(|value| <Uuid as Decode<Sqlite>>::decode(value).ok())
+    };
+    match preupdate.table {
+        "workspaces" => id().map(workspace_patch::remove),
+        "execution_processes" => id().map(execution_process_patch::remove),
+        "scratch" => {
+            // 复合键：id（第 0 列）+ scratch_type（第 1 列）
+            let scratch_id = id()?;
+            let type_val = preupdate.get_old_column_value(1).ok()?;
+            let type_str = <String as Decode<Sqlite>>::decode(type_val).ok()?;
+            Some(scratch_patch::remove(scratch_id, &type_str))
+        }
+        "issues" => id().map(issue_patch::remove),
+        "project_statuses" => id().map(project_status_patch::remove),
+        "issue_comments" => id().map(issue_comment_patch::remove),
+        "pipeline_runs" => id().map(pipeline_run_patch::remove),
+        "pipeline_stage_runs" => id().map(pipeline_stage_run_patch::remove),
+        _ => None,
+    }
+}
+
+/// 推送消费者共用的上下文。
+#[derive(Clone)]
+struct HookContext {
+    msg_store: Arc<MsgStore>,
+    /// 反查用的库（不装钩子）。
+    db: DBService,
+    barrier_pool: SqlitePool,
+    #[cfg(test)]
+    probe: Option<Arc<HookProbe>>,
+}
+
+impl HookContext {
+    fn new(msg_store: Arc<MsgStore>, db: DBService) -> Self {
+        Self {
+            msg_store,
+            barrier_pool: commit_barrier_pool(&db.pool),
+            db,
+            #[cfg(test)]
+            probe: None,
+        }
+    }
+}
+
+/// 测试探针：统计过屏障的次数，并可在推送前人为延迟。
+#[cfg(test)]
+#[derive(Default)]
+struct HookProbe {
+    barrier_count: std::sync::atomic::AtomicUsize,
+    publish_delay_ms: std::sync::atomic::AtomicU64,
+}
 
 #[derive(Clone)]
 pub struct EventService {
@@ -59,9 +189,12 @@ impl EventService {
     }
 
     /// Creates the hook function that should be used with DBService::new_with_after_connect
+    ///
+    /// 必须在 tokio 运行时内调用：这里会启动推送消费者任务。`_entry_count` 只为兼容调用方保留
+    /// （旧的 `/entries` 兜底格式已删除）。
     pub fn create_hook(
         msg_store: Arc<MsgStore>,
-        entry_count: Arc<RwLock<usize>>,
+        _entry_count: Arc<RwLock<usize>>,
         db_service: DBService,
     ) -> impl for<'a> Fn(
         &'a mut sqlx::sqlite::SqliteConnection,
@@ -70,347 +203,375 @@ impl EventService {
     > + Send
     + Sync
     + 'static {
+        Self::hook_from_context(HookContext::new(msg_store, db_service))
+    }
+
+    /// 同 [`Self::create_hook`]，但带测试探针（统计屏障次数、人为延迟推送）。
+    #[cfg(test)]
+    fn create_hook_with_probe(
+        msg_store: Arc<MsgStore>,
+        db_service: DBService,
+        probe: Arc<HookProbe>,
+    ) -> impl for<'a> Fn(
+        &'a mut sqlx::sqlite::SqliteConnection,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sqlx::Error>> + Send + 'a>,
+    > + Send
+    + Sync
+    + 'static {
+        let mut context = HookContext::new(msg_store, db_service);
+        context.probe = Some(probe);
+        Self::hook_from_context(context)
+    }
+
+    /// 同 [`Self::create_hook`]，但屏障池指向一个打不开的路径：用来测「屏障失败时降级推送」。
+    #[cfg(test)]
+    fn create_hook_with_broken_barrier(
+        msg_store: Arc<MsgStore>,
+        db_service: DBService,
+    ) -> impl for<'a> Fn(
+        &'a mut sqlx::sqlite::SqliteConnection,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sqlx::Error>> + Send + 'a>,
+    > + Send
+    + Sync
+    + 'static {
+        let mut context = HookContext::new(msg_store, db_service);
+        context.barrier_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_lazy_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename("/vk-不存在的目录/commit-barrier.sqlite")
+                    .create_if_missing(false),
+            );
+        Self::hook_from_context(context)
+    }
+
+    /// 流程：preupdate / update 钩子只把变更记进本连接的缓冲；commit hook 触发时整体取走，
+    /// 送进无界通道；唯一的消费者任务按通道顺序串行推送（等提交屏障 → 先删除 → 按行去重
+    /// 反查）。rollback hook 清空缓冲，回滚掉的写入不推任何补丁。
+    ///
+    /// 顺序：commit hook 在提交过程中、仍持有写锁时触发，各连接的提交被写锁互斥，所以
+    /// 通道里的顺序就是提交顺序。消费者在所有发送端（即各连接上的钩子）drop 后自然退出；
+    /// 运行时关闭后 send 失败只丢弃，不 panic。
+    fn hook_from_context(
+        context: HookContext,
+    ) -> impl for<'a> Fn(
+        &'a mut sqlx::sqlite::SqliteConnection,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), sqlx::Error>> + Send + 'a>,
+    > + Send
+    + Sync
+    + 'static {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<PendingChanges>();
+        tokio::spawn(Self::publish_loop(context, receiver));
         move |conn: &mut sqlx::sqlite::SqliteConnection| {
-            let msg_store_for_hook = msg_store.clone();
-            let entry_count_for_hook = entry_count.clone();
-            let db_for_hook = db_service.clone();
+            let sender = sender.clone();
             Box::pin(async move {
                 let mut handle = conn.lock_handle().await?;
-                let runtime_handle = tokio::runtime::Handle::current();
+                // 每个连接一份缓冲：同一连接上的钩子回调是串行的，不同连接互不干扰。
+                let pending: PendingBuffer = Arc::default();
+
                 handle.set_preupdate_hook({
-                    let msg_store_for_preupdate = msg_store_for_hook.clone();
+                    let pending = pending.clone();
                     move |preupdate: sqlx::sqlite::PreupdateHookResult<'_>| {
                         if preupdate.operation != SqliteOperation::Delete {
                             return;
                         }
-
-                        match preupdate.table {
-                            "workspaces" => {
-                                if let Ok(value) = preupdate.get_old_column_value(0)
-                                    && let Ok(workspace_id) =
-                                        <Uuid as Decode<Sqlite>>::decode(value)
-                                {
-                                    let patch = workspace_patch::remove(workspace_id);
-                                    msg_store_for_preupdate.push_patch(patch);
-                                }
-                            }
-                            "execution_processes" => {
-                                if let Ok(value) = preupdate.get_old_column_value(0)
-                                    && let Ok(process_id) = <Uuid as Decode<Sqlite>>::decode(value)
-                                {
-                                    let patch = execution_process_patch::remove(process_id);
-                                    msg_store_for_preupdate.push_patch(patch);
-                                }
-                            }
-                            "scratch" => {
-                                // Composite key: need both id (column 0) and scratch_type (column 1)
-                                if let Ok(id_val) = preupdate.get_old_column_value(0)
-                                    && let Ok(scratch_id) = <Uuid as Decode<Sqlite>>::decode(id_val)
-                                    && let Ok(type_val) = preupdate.get_old_column_value(1)
-                                    && let Ok(type_str) =
-                                        <String as Decode<Sqlite>>::decode(type_val)
-                                {
-                                    let patch = scratch_patch::remove(scratch_id, &type_str);
-                                    msg_store_for_preupdate.push_patch(patch);
-                                }
-                            }
-                            "issues" => {
-                                if let Ok(value) = preupdate.get_old_column_value(0)
-                                    && let Ok(issue_id) = <Uuid as Decode<Sqlite>>::decode(value)
-                                {
-                                    msg_store_for_preupdate
-                                        .push_patch(issue_patch::remove(issue_id));
-                                }
-                            }
-                            "project_statuses" => {
-                                if let Ok(value) = preupdate.get_old_column_value(0)
-                                    && let Ok(status_id) = <Uuid as Decode<Sqlite>>::decode(value)
-                                {
-                                    msg_store_for_preupdate
-                                        .push_patch(project_status_patch::remove(status_id));
-                                }
-                            }
-                            "issue_comments" => {
-                                if let Ok(value) = preupdate.get_old_column_value(0)
-                                    && let Ok(comment_id) = <Uuid as Decode<Sqlite>>::decode(value)
-                                {
-                                    msg_store_for_preupdate
-                                        .push_patch(issue_comment_patch::remove(comment_id));
-                                }
-                            }
-                            _ => {}
+                        if let Some(patch) = removal_patch(&preupdate) {
+                            lock_pending(&pending).removals.push(patch);
                         }
                     }
                 });
 
-                handle.set_update_hook(move |hook: sqlx::sqlite::UpdateHookResult<'_>| {
-                    let runtime_handle = runtime_handle.clone();
-                    let entry_count_for_hook = entry_count_for_hook.clone();
-                    let msg_store_for_hook = msg_store_for_hook.clone();
-                    let db = db_for_hook.clone();
-
-                    if let Ok(table) = HookTables::from_str(hook.table) {
-                        let rowid = hook.rowid;
-                        runtime_handle.spawn(async move {
-                            let record_type: RecordTypes = match (table, hook.operation.clone()) {
-                                (HookTables::Workspaces, SqliteOperation::Delete)
-                                | (HookTables::ExecutionProcesses, SqliteOperation::Delete)
-                                | (HookTables::Scratch, SqliteOperation::Delete)
-                                | (HookTables::Issues, SqliteOperation::Delete)
-                                | (HookTables::ProjectStatuses, SqliteOperation::Delete)
-                                | (HookTables::IssueComments, SqliteOperation::Delete) => {
-                                    return;
-                                }
-                                (HookTables::Workspaces, _) => {
-                                    match Workspace::find_by_rowid(&db.pool, rowid).await {
-                                        Ok(Some(workspace)) => RecordTypes::Workspace(workspace),
-                                        Ok(None) => RecordTypes::DeletedWorkspace {
-                                            rowid,
-                                        },
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to fetch workspace: {:?}",
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::ExecutionProcesses, _) => {
-                                    match ExecutionProcess::find_by_rowid(&db.pool, rowid).await {
-                                        Ok(Some(process)) => RecordTypes::ExecutionProcess(process),
-                                        Ok(None) => RecordTypes::DeletedExecutionProcess {
-                                            rowid,
-                                            session_id: None,
-                                            process_id: None,
-                                        },
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "Failed to fetch execution_process: {:?}",
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::Scratch, _) => {
-                                    match Scratch::find_by_rowid(&db.pool, rowid).await {
-                                        Ok(Some(scratch)) => RecordTypes::Scratch(scratch),
-                                        Ok(None) => RecordTypes::DeletedScratch {
-                                            rowid,
-                                            scratch_id: None,
-                                            scratch_type: None,
-                                        },
-                                        Err(e) => {
-                                            tracing::error!("Failed to fetch scratch: {:?}", e);
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::Issues, _) => {
-                                    match db::models::issue::Issues::find_by_rowid(&db.pool, rowid)
-                                        .await
-                                    {
-                                        Ok(Some(issue)) => RecordTypes::Issue(issue),
-                                        Ok(None) => RecordTypes::DeletedIssue { rowid },
-                                        Err(e) => {
-                                            tracing::error!("读取 issue rowid={} 失败: {}", rowid, e);
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::ProjectStatuses, _) => {
-                                    match db::models::local_project_status::ProjectStatuses::find_by_rowid(
-                                        &db.pool, rowid,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(status)) => RecordTypes::ProjectStatus(status),
-                                        Ok(None) => RecordTypes::DeletedProjectStatus { rowid },
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "读取 project_status rowid={} 失败: {}",
-                                                rowid,
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    }
-                                }
-                                (HookTables::IssueComments, _) => {
-                                    match db::models::issue_side::IssueComments::find_by_rowid(
-                                        &db.pool, rowid,
-                                    )
-                                    .await
-                                    {
-                                        Ok(Some(comment)) => RecordTypes::IssueComment(comment),
-                                        Ok(None) => RecordTypes::DeletedIssueComment { rowid },
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "读取 issue_comment rowid={} 失败: {}",
-                                                rowid,
-                                                e
-                                            );
-                                            return;
-                                        }
-                                    }
-                                }
-                            };
-
-                            let db_op: &str = match hook.operation {
-                                SqliteOperation::Insert => "insert",
-                                SqliteOperation::Delete => "delete",
-                                SqliteOperation::Update => "update",
-                                SqliteOperation::Unknown(_) => "unknown",
-                            };
-
-                            // Handle operations with direct patches
-                            match &record_type {
-                                RecordTypes::Scratch(scratch) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => scratch_patch::add(scratch),
-                                        SqliteOperation::Update => scratch_patch::replace(scratch),
-                                        _ => scratch_patch::replace(scratch),
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
-                                }
-                                RecordTypes::DeletedScratch {
-                                    scratch_id: Some(scratch_id),
-                                    scratch_type: Some(scratch_type_str),
-                                    ..
-                                } => {
-                                    let patch = scratch_patch::remove(*scratch_id, scratch_type_str);
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
-                                }
-                                RecordTypes::Workspace(workspace) => {
-                                    // Emit workspace patch with status
-                                    if let Ok(Some(workspace_with_status)) =
-                                        Workspace::find_by_id_with_status(&db.pool, workspace.id)
-                                            .await
-                                    {
-                                        let patch = match hook.operation {
-                                            SqliteOperation::Insert => {
-                                                workspace_patch::add(&workspace_with_status)
-                                            }
-                                            _ => workspace_patch::replace(&workspace_with_status),
-                                        };
-                                        msg_store_for_hook.push_patch(patch);
-                                    }
-                                    return;
-                                }
-                                RecordTypes::DeletedWorkspace { .. } => {
-                                    return;
-                                }
-                                RecordTypes::ExecutionProcess(process) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => {
-                                            execution_process_patch::add(process)
-                                        }
-                                        SqliteOperation::Update => {
-                                            execution_process_patch::replace(process)
-                                        }
-                                        _ => execution_process_patch::replace(process), // fallback
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-
-                                    if let Err(err) = EventService::push_workspace_update_for_session(
-                                        &db.pool,
-                                        msg_store_for_hook.clone(),
-                                        process.session_id,
-                                    )
-                                    .await
-                                    {
-                                        tracing::error!(
-                                            "Failed to push workspace update after execution process change: {:?}",
-                                            err
-                                        );
-                                    }
-
-                                    return;
-                                }
-                                RecordTypes::DeletedExecutionProcess {
-                                    process_id: Some(process_id),
-                                    session_id,
-                                    ..
-                                } => {
-                                    let patch = execution_process_patch::remove(*process_id);
-                                    msg_store_for_hook.push_patch(patch);
-
-                                    if let Some(session_id) = session_id
-                                        && let Err(err) =
-                                            EventService::push_workspace_update_for_session(
-                                                &db.pool,
-                                                msg_store_for_hook.clone(),
-                                                *session_id,
-                                            )
-                                            .await
-                                        {
-                                            tracing::error!(
-                                                "Failed to push workspace update after execution process removal: {:?}",
-                                                err
-                                            );
-                                    }
-
-                                    return;
-                                }
-                                RecordTypes::Issue(issue) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => issue_patch::add(issue),
-                                        _ => issue_patch::replace(issue),
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
-                                }
-                                RecordTypes::ProjectStatus(status) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => project_status_patch::add(status),
-                                        _ => project_status_patch::replace(status),
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
-                                }
-                                RecordTypes::IssueComment(comment) => {
-                                    let patch = match hook.operation {
-                                        SqliteOperation::Insert => issue_comment_patch::add(comment),
-                                        _ => issue_comment_patch::replace(comment),
-                                    };
-                                    msg_store_for_hook.push_patch(patch);
-                                    return;
-                                }
-                                _ => {}
-                            }
-
-                            // Fallback: use the old entries format for other record types
-                            let next_entry_count = {
-                                let mut entry_count = entry_count_for_hook.write().await;
-                                *entry_count += 1;
-                                *entry_count
-                            };
-
-                            let event_patch: EventPatch = EventPatch {
-                                op: "add".to_string(),
-                                path: format!("/entries/{next_entry_count}"),
-                                value: EventPatchInner {
-                                    db_op: db_op.to_string(),
-                                    record: record_type,
-                                },
-                            };
-
-                            let patch =
-                                serde_json::from_value(json!([
-                                    serde_json::to_value(event_patch).unwrap()
-                                ]))
-                                .unwrap();
-
-                            msg_store_for_hook.push_patch(patch);
-                        });
+                handle.set_update_hook({
+                    let pending = pending.clone();
+                    move |hook: sqlx::sqlite::UpdateHookResult<'_>| {
+                        let change = match hook.operation {
+                            SqliteOperation::Insert => RowChange::Insert,
+                            SqliteOperation::Update => RowChange::Update,
+                            // 删除已在 preupdate 里记下 remove。
+                            _ => return,
+                        };
+                        if let Ok(table) = HookTables::from_str(hook.table) {
+                            lock_pending(&pending)
+                                .changes
+                                .push((table, hook.rowid, change));
+                        }
                     }
+                });
+
+                handle.set_commit_hook({
+                    let pending = pending.clone();
+                    move || {
+                        let batch = std::mem::take(&mut *lock_pending(&pending));
+                        // 接收端只在运行时关闭时消失，此时丢弃即可。
+                        if !batch.is_empty() && sender.send(batch).is_err() {
+                            tracing::debug!("变更推送消费者已退出，丢弃本次提交的推送");
+                        }
+                        // true = 不否决提交。
+                        true
+                    }
+                });
+
+                handle.set_rollback_hook(move || {
+                    *lock_pending(&pending) = PendingChanges::default();
                 });
 
                 Ok(())
             })
+        }
+    }
+
+    /// 推送消费者：按提交顺序逐批推送。
+    async fn publish_loop(
+        context: HookContext,
+        mut receiver: tokio::sync::mpsc::UnboundedReceiver<PendingChanges>,
+    ) {
+        while let Some(batch) = receiver.recv().await {
+            Self::publish_batch(&context, batch).await;
+        }
+    }
+
+    /// 推送一次提交攒下的变更：等提交屏障 → 先推删除 → 按行去重反查并推送。
+    ///
+    /// 屏障只作「写者已提交」的同步点，拿到写锁即释放，反查期间不占写锁。
+    /// 一致性：同一行最终一致——每次反查都在各自的提交之后，推送串行且按提交顺序，
+    /// 最后一个推送读到的是所有提交之后的数据。不保证同一次推送内的多个读（含
+    /// find_by_id_with_status、push_workspace_update_for_session 这类二次查询）是同一快照：
+    /// 推送期间别的写者可以提交，读到的只会更新，不会更旧。
+    async fn publish_batch(context: &HookContext, batch: PendingChanges) {
+        let changes = batch.deduped_changes();
+        let committed = wait_for_commit(&context.barrier_pool).await;
+        for patch in batch.removals {
+            context.msg_store.push_patch(patch);
+        }
+        if let Err(e) = &committed {
+            // 降级而不是丢弃：commit hook 已经触发，提交大概率成功；屏障失败（屏障池连不上、
+            // 超过 busy_timeout 等）时照常反查推送，最坏退回改造前的语义——可能读到提交前的
+            // 旧值。丢弃则会让客户端一直停在旧状态，直到重连，比读到旧值更糟。
+            tracing::warn!(
+                "等待写事务提交失败，本次提交的 {} 条变更降级为不过屏障直接反查推送，\
+                 可能读到提交前的值: {}",
+                changes.len(),
+                e
+            );
+        }
+
+        #[cfg(test)]
+        if let Some(probe) = &context.probe {
+            if committed.is_ok() {
+                probe
+                    .barrier_count
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            let delay = probe
+                .publish_delay_ms
+                .load(std::sync::atomic::Ordering::SeqCst);
+            if delay > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+        }
+
+        for (table, rowid, change) in changes {
+            Self::push_row_change(context, table, rowid, change).await;
+        }
+    }
+
+    /// 按 rowid 反查一行并推对应补丁。
+    async fn push_row_change(
+        context: &HookContext,
+        table: HookTables,
+        rowid: i64,
+        change: RowChange,
+    ) {
+        let db = &context.db;
+        let msg_store = &context.msg_store;
+        let record_type: RecordTypes = match table {
+            HookTables::Workspaces => match Workspace::find_by_rowid(&db.pool, rowid).await {
+                Ok(Some(workspace)) => RecordTypes::Workspace(workspace),
+                Ok(None) => RecordTypes::DeletedWorkspace { rowid },
+                Err(e) => {
+                    tracing::error!("Failed to fetch workspace: {:?}", e);
+                    return;
+                }
+            },
+            HookTables::ExecutionProcesses => {
+                match ExecutionProcess::find_by_rowid(&db.pool, rowid).await {
+                    Ok(Some(process)) => RecordTypes::ExecutionProcess(process),
+                    Ok(None) => RecordTypes::DeletedExecutionProcess {
+                        rowid,
+                        session_id: None,
+                        process_id: None,
+                    },
+                    Err(e) => {
+                        tracing::error!("Failed to fetch execution_process: {:?}", e);
+                        return;
+                    }
+                }
+            }
+            HookTables::Scratch => match Scratch::find_by_rowid(&db.pool, rowid).await {
+                Ok(Some(scratch)) => RecordTypes::Scratch(scratch),
+                Ok(None) => RecordTypes::DeletedScratch {
+                    rowid,
+                    scratch_id: None,
+                    scratch_type: None,
+                },
+                Err(e) => {
+                    tracing::error!("Failed to fetch scratch: {:?}", e);
+                    return;
+                }
+            },
+            HookTables::Issues => {
+                match db::models::issue::Issues::find_by_rowid(&db.pool, rowid).await {
+                    Ok(Some(issue)) => RecordTypes::Issue(issue),
+                    Ok(None) => RecordTypes::DeletedIssue { rowid },
+                    Err(e) => {
+                        tracing::error!("读取 issue rowid={} 失败: {}", rowid, e);
+                        return;
+                    }
+                }
+            }
+            HookTables::ProjectStatuses => {
+                match db::models::local_project_status::ProjectStatuses::find_by_rowid(
+                    &db.pool, rowid,
+                )
+                .await
+                {
+                    Ok(Some(status)) => RecordTypes::ProjectStatus(status),
+                    Ok(None) => RecordTypes::DeletedProjectStatus { rowid },
+                    Err(e) => {
+                        tracing::error!("读取 project_status rowid={} 失败: {}", rowid, e);
+                        return;
+                    }
+                }
+            }
+            HookTables::IssueComments => {
+                match db::models::issue_side::IssueComments::find_by_rowid(&db.pool, rowid).await {
+                    Ok(Some(comment)) => RecordTypes::IssueComment(comment),
+                    Ok(None) => RecordTypes::DeletedIssueComment { rowid },
+                    Err(e) => {
+                        tracing::error!("读取 issue_comment rowid={} 失败: {}", rowid, e);
+                        return;
+                    }
+                }
+            }
+            HookTables::PipelineRuns => {
+                match db::models::pipeline::PipelineRuns::find_by_rowid(&db.pool, rowid).await {
+                    Ok(Some(run)) => RecordTypes::PipelineRun(run),
+                    Ok(None) => RecordTypes::DeletedPipelineRun { rowid },
+                    Err(e) => {
+                        tracing::error!("读取 pipeline_run rowid={} 失败: {}", rowid, e);
+                        return;
+                    }
+                }
+            }
+            HookTables::PipelineStageRuns => {
+                match db::models::pipeline::PipelineStageRuns::find_by_rowid(&db.pool, rowid).await
+                {
+                    Ok(Some(stage_run)) => RecordTypes::PipelineStageRun(stage_run),
+                    Ok(None) => RecordTypes::DeletedPipelineStageRun { rowid },
+                    Err(e) => {
+                        tracing::error!("读取 pipeline_stage_run rowid={} 失败: {}", rowid, e);
+                        return;
+                    }
+                }
+            }
+        };
+
+        let is_insert = change == RowChange::Insert;
+        match &record_type {
+            RecordTypes::Scratch(scratch) => {
+                let patch = if is_insert {
+                    scratch_patch::add(scratch)
+                } else {
+                    scratch_patch::replace(scratch)
+                };
+                msg_store.push_patch(patch);
+            }
+            RecordTypes::Workspace(workspace) => {
+                // Emit workspace patch with status
+                if let Ok(Some(workspace_with_status)) =
+                    Workspace::find_by_id_with_status(&db.pool, workspace.id).await
+                {
+                    let patch = if is_insert {
+                        workspace_patch::add(&workspace_with_status)
+                    } else {
+                        workspace_patch::replace(&workspace_with_status)
+                    };
+                    msg_store.push_patch(patch);
+                }
+            }
+            RecordTypes::ExecutionProcess(process) => {
+                let patch = if is_insert {
+                    execution_process_patch::add(process)
+                } else {
+                    execution_process_patch::replace(process)
+                };
+                msg_store.push_patch(patch);
+
+                if let Err(err) = EventService::push_workspace_update_for_session(
+                    &db.pool,
+                    msg_store.clone(),
+                    process.session_id,
+                )
+                .await
+                {
+                    tracing::error!(
+                        "Failed to push workspace update after execution process change: {:?}",
+                        err
+                    );
+                }
+            }
+            RecordTypes::Issue(issue) => {
+                let patch = if is_insert {
+                    issue_patch::add(issue)
+                } else {
+                    issue_patch::replace(issue)
+                };
+                msg_store.push_patch(patch);
+            }
+            RecordTypes::ProjectStatus(status) => {
+                let patch = if is_insert {
+                    project_status_patch::add(status)
+                } else {
+                    project_status_patch::replace(status)
+                };
+                msg_store.push_patch(patch);
+            }
+            RecordTypes::IssueComment(comment) => {
+                let patch = if is_insert {
+                    issue_comment_patch::add(comment)
+                } else {
+                    issue_comment_patch::replace(comment)
+                };
+                msg_store.push_patch(patch);
+            }
+            RecordTypes::PipelineRun(run) => {
+                let patch = if is_insert {
+                    pipeline_run_patch::add(run)
+                } else {
+                    pipeline_run_patch::replace(run)
+                };
+                msg_store.push_patch(patch);
+            }
+            RecordTypes::PipelineStageRun(stage_run) => {
+                let patch = if is_insert {
+                    pipeline_stage_run_patch::add(stage_run)
+                } else {
+                    pipeline_stage_run_patch::replace(stage_run)
+                };
+                msg_store.push_patch(patch);
+            }
+            // 反查不到行（提交后又被别的事务删掉）：删除已由 preupdate 推过 remove，这里不推。
+            RecordTypes::DeletedWorkspace { .. }
+            | RecordTypes::DeletedExecutionProcess { .. }
+            | RecordTypes::DeletedScratch { .. }
+            | RecordTypes::DeletedIssue { .. }
+            | RecordTypes::DeletedProjectStatus { .. }
+            | RecordTypes::DeletedIssueComment { .. }
+            | RecordTypes::DeletedPipelineRun { .. }
+            | RecordTypes::DeletedPipelineStageRun { .. } => {}
         }
     }
 
@@ -445,6 +606,8 @@ mod tests {
         _dir: tempfile::TempDir,
         db: DBService,
         msg_store: Arc<MsgStore>,
+        /// 过提交屏障的次数与推送延迟。
+        probe: Arc<super::HookProbe>,
     }
 
     /// 建两个指向同一数据库文件的 `DBService`：一个专供钩子内部查询用，一个是
@@ -458,8 +621,9 @@ mod tests {
             .expect("初始化钩子查询用的 DBService 失败");
 
         let msg_store = Arc::new(MsgStore::new());
-        let entry_count = Arc::new(RwLock::new(0usize));
-        let hook = EventService::create_hook(msg_store.clone(), entry_count, hook_query_db);
+        let probe = Arc::new(super::HookProbe::default());
+        let hook =
+            EventService::create_hook_with_probe(msg_store.clone(), hook_query_db, probe.clone());
 
         let db = DBService::new_at_path_with_after_connect(&path, journal_mode, hook)
             .await
@@ -469,6 +633,7 @@ mod tests {
             _dir: dir,
             db,
             msg_store,
+            probe,
         }
     }
 
@@ -496,6 +661,44 @@ mod tests {
 
     fn patch_path(op: &PatchOperation) -> &str {
         op.path().as_str()
+    }
+
+    async fn insert_issue(pool: &sqlx::SqlitePool, project_id: Uuid, status_id: Uuid) -> Uuid {
+        let issue_id = Uuid::new_v4();
+        let number: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(issue_number), 0) + 1 FROM issues WHERE project_id = ?1",
+        )
+        .bind(project_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO issues (id, project_id, issue_number, simple_id, status_id, title) \
+             VALUES (?1, ?2, ?3, ?4, ?5, '流水线推送测试')",
+        )
+        .bind(issue_id)
+        .bind(project_id)
+        .bind(number)
+        .bind(format!("PL-{number}"))
+        .bind(status_id)
+        .execute(pool)
+        .await
+        .expect("插入 issue 失败");
+        issue_id
+    }
+
+    fn run_params(project_id: Uuid, issue_id: Uuid) -> db::models::pipeline::CreatePipelineRun {
+        db::models::pipeline::CreatePipelineRun {
+            issue_id,
+            project_id,
+            workspace_id: None,
+            template_key: "standard".to_string(),
+            template_version: 1,
+            template_json: "{}".to_string(),
+            template_warning: None,
+            executor_config_json: "{}".to_string(),
+            first_stage: db::models::pipeline::PipelineStageKey::Requirement,
+        }
     }
 
     /// `update_hook` 里用 `runtime_handle.spawn` 异步反查再 push patch（:154），
@@ -688,5 +891,587 @@ mod tests {
 
         let op = wait_for_patch(&msg_store, |op| patch_path(op) == "/probe").await;
         assert!(matches!(op, PatchOperation::Add(_)));
+    }
+
+    #[tokio::test]
+    async fn 流水线运行与阶段的增改删都产出_json_patch() {
+        use db::models::pipeline::{
+            CreateStageRun, GateKind, PipelineRunStatus, PipelineRuns, PipelineStageKey,
+            PipelineStageRuns, PipelineStageStatus,
+        };
+
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+
+        let run = PipelineRuns::create(&pool, &run_params(project_id, issue_id))
+            .await
+            .unwrap();
+        let run_path = format!("/pipeline_runs/{}", run.id);
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+
+        PipelineRuns::update_status(&pool, run.id, PipelineRunStatus::Paused, None)
+            .await
+            .unwrap();
+        let replace = wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path
+                && matches!(op, PatchOperation::Replace(r) if r.value["status"] == "paused")
+        })
+        .await;
+        let PatchOperation::Replace(replace) = replace else {
+            unreachable!()
+        };
+        assert_eq!(replace.value["project_id"], project_id.to_string());
+
+        let stage = PipelineStageRuns::create(
+            &pool,
+            &CreateStageRun {
+                run_id: run.id,
+                project_id,
+                stage_key: PipelineStageKey::Requirement,
+                gate_kind: GateKind::Human,
+                status: PipelineStageStatus::Running,
+                feedback: None,
+            },
+        )
+        .await
+        .unwrap();
+        let stage_path = format!("/pipeline_stage_runs/{}", stage.id);
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == stage_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+
+        sqlx::query("DELETE FROM pipeline_stage_runs WHERE id = ?1")
+            .bind(stage.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == stage_path && matches!(op, PatchOperation::Remove(_))
+        })
+        .await;
+
+        sqlx::query("DELETE FROM pipeline_runs WHERE id = ?1")
+            .bind(run.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path && matches!(op, PatchOperation::Remove(_))
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn 需求流首帧带流水线快照且只转发本项目的流水线增量() {
+        use db::models::pipeline::PipelineRuns;
+        use futures::StreamExt;
+
+        use super::pipeline_run_patch;
+
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_a, status_a) = insert_project_and_status(&pool).await;
+        let (project_b, status_b) = insert_project_and_status(&pool).await;
+        let issue_a = insert_issue(&pool, project_a, status_a).await;
+        let issue_b = insert_issue(&pool, project_b, status_b).await;
+        let run_a = PipelineRuns::create(&pool, &run_params(project_a, issue_a))
+            .await
+            .unwrap();
+        let run_b = PipelineRuns::create(&pool, &run_params(project_b, issue_b))
+            .await
+            .unwrap();
+
+        let events = EventService::new(
+            fixture.db.clone(),
+            fixture.msg_store.clone(),
+            Arc::new(RwLock::new(0)),
+        );
+        let mut stream = events.stream_issues_raw(project_a).await.unwrap();
+
+        let Some(Ok(LogMsg::JsonPatch(first))) = stream.next().await else {
+            panic!("首帧应是 JSON Patch");
+        };
+        let snapshot = serde_json::to_value(&first).unwrap();
+        let ops = snapshot.as_array().unwrap();
+        let runs_op = ops
+            .iter()
+            .find(|op| op["path"] == "/pipeline_runs")
+            .expect("首帧必须带 /pipeline_runs");
+        assert!(runs_op["value"].get(run_a.id.to_string()).is_some());
+        assert!(
+            runs_op["value"].get(run_b.id.to_string()).is_none(),
+            "首帧不得带别的项目的运行"
+        );
+        assert!(
+            ops.iter().any(|op| op["path"] == "/pipeline_stage_runs"),
+            "首帧必须带 /pipeline_stage_runs"
+        );
+
+        fixture
+            .msg_store
+            .push_patch(pipeline_run_patch::replace(&run_b));
+        fixture
+            .msg_store
+            .push_patch(pipeline_run_patch::replace(&run_a));
+
+        let path_a = format!("/pipeline_runs/{}", run_a.id);
+        let path_b = format!("/pipeline_runs/{}", run_b.id);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let Some(msg) = stream.next().await else {
+                    panic!("需求流意外结束");
+                };
+                let Ok(LogMsg::JsonPatch(patch)) = msg else {
+                    continue;
+                };
+                let path = patch.0[0].path().to_string();
+                assert_ne!(path, path_b, "不得转发别的项目的流水线");
+                if path == path_a {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("应收到本项目流水线的增量");
+    }
+
+    /// 回归：钩子在语句执行时（提交之前）就触发。反查若不等提交，UPDATE 会推出旧值、
+    /// INSERT 会查不到行而丢掉 add。这里让写事务故意晚 200ms 提交，稳定复现。
+    async fn delayed_commit_update_pushes_committed_value(journal_mode: SqliteJournalMode) {
+        use db::models::pipeline::PipelineRuns;
+
+        let fixture = setup(journal_mode).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+        let run = PipelineRuns::create(&pool, &run_params(project_id, issue_id))
+            .await
+            .unwrap();
+        let run_path = format!("/pipeline_runs/{}", run.id);
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("UPDATE pipeline_runs SET status = 'paused' WHERE id = ?1")
+            .bind(run.id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tx.commit().await.unwrap();
+
+        let replace = wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path && matches!(op, PatchOperation::Replace(_))
+        })
+        .await;
+        let PatchOperation::Replace(replace) = replace else {
+            unreachable!()
+        };
+        assert_eq!(
+            replace.value["status"], "paused",
+            "反查必须等写事务提交后再读，不能推出提交前的旧值"
+        );
+    }
+
+    async fn delayed_commit_insert_pushes_add(journal_mode: SqliteJournalMode) {
+        let fixture = setup(journal_mode).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+
+        let run_id = Uuid::new_v4();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO pipeline_runs (id, issue_id, project_id, template_key, \
+             template_version, template_json, executor_config, status, current_stage_key, \
+             created_at, updated_at) \
+             VALUES (?1, ?2, ?3, 'standard', 1, '{}', '{}', 'running', 'requirement', ?4, ?4)",
+        )
+        .bind(run_id)
+        .bind(issue_id)
+        .bind(project_id)
+        .bind(chrono::Utc::now())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tx.commit().await.unwrap();
+
+        let run_path = format!("/pipeline_runs/{run_id}");
+        let add = wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == run_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+        let PatchOperation::Add(add) = add else {
+            unreachable!()
+        };
+        assert_eq!(add.value["status"], "running");
+    }
+
+    #[tokio::test]
+    async fn wal_下写事务延迟提交时_replace_补丁带的是提交后的值() {
+        delayed_commit_update_pushes_committed_value(SqliteJournalMode::Wal).await;
+    }
+
+    #[tokio::test]
+    async fn delete_模式下写事务延迟提交时_replace_补丁带的是提交后的值() {
+        delayed_commit_update_pushes_committed_value(SqliteJournalMode::Delete).await;
+    }
+
+    #[tokio::test]
+    async fn wal_下写事务延迟提交时_insert_仍产出_add_补丁() {
+        delayed_commit_insert_pushes_add(SqliteJournalMode::Wal).await;
+    }
+
+    #[tokio::test]
+    async fn delete_模式下写事务延迟提交时_insert_仍产出_add_补丁() {
+        delayed_commit_insert_pushes_add(SqliteJournalMode::Delete).await;
+    }
+
+    /// 等异步推送落地：钩子任务是 spawn 出去的，断言「没有推」之前要给它时间。
+    async fn let_hooks_settle() {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    fn patches_since(msg_store: &MsgStore, from: usize) -> Vec<PatchOperation> {
+        msg_store
+            .get_history()
+            .into_iter()
+            .skip(from)
+            .filter_map(|msg| match msg {
+                LogMsg::JsonPatch(patch) => Some(patch.0),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn 回滚的_insert_不推任何补丁() {
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let_hooks_settle().await;
+        let from = fixture.msg_store.get_history().len();
+
+        let issue_id = Uuid::new_v4();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO issues (id, project_id, issue_number, simple_id, status_id, title) \
+             VALUES (?1, ?2, 1, 'RB-1', ?3, '回滚的需求')",
+        )
+        .bind(issue_id)
+        .bind(project_id)
+        .bind(status_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.rollback().await.unwrap();
+        let_hooks_settle().await;
+
+        let pushed = patches_since(&fixture.msg_store, from);
+        assert!(
+            pushed.is_empty(),
+            "回滚的写入不应推任何补丁，实际: {pushed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn 回滚的_delete_不推_remove() {
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+        let issue_path = format!("/issues/{issue_id}");
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+        let_hooks_settle().await;
+        let from = fixture.msg_store.get_history().len();
+
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM issues WHERE id = ?1")
+            .bind(issue_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        let_hooks_settle().await;
+
+        let pushed = patches_since(&fixture.msg_store, from);
+        assert!(
+            !pushed
+                .iter()
+                .any(|op| matches!(op, PatchOperation::Remove(_))),
+            "回滚的删除不应推 remove，实际: {pushed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn 同一事务多次更新同一行只推一次最终值() {
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+        let issue_path = format!("/issues/{issue_id}");
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+        let_hooks_settle().await;
+        let from = fixture.msg_store.get_history().len();
+
+        let mut tx = pool.begin().await.unwrap();
+        for title in ["第一次", "第二次", "最终"] {
+            sqlx::query("UPDATE issues SET title = ?2 WHERE id = ?1")
+                .bind(issue_id)
+                .bind(title)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == issue_path
+                && matches!(op, PatchOperation::Replace(r) if r.value["title"] == "最终")
+        })
+        .await;
+        let_hooks_settle().await;
+
+        let replaces: Vec<_> = patches_since(&fixture.msg_store, from)
+            .into_iter()
+            .filter(|op| patch_path(op) == issue_path)
+            .collect();
+        assert_eq!(replaces.len(), 1, "同一行只推一次，实际: {replaces:?}");
+    }
+
+    /// 屏障池不可用（连不上、超过 busy_timeout……）时不能丢弃变更：降级为直接反查推送。
+    #[tokio::test]
+    async fn 提交屏障失败时降级为照常反查推送() {
+        let dir = tempfile::tempdir().expect("创建临时目录失败");
+        let path = dir.path().join("broken_barrier.sqlite");
+        let hook_query_db = DBService::new_at_path_with_journal(&path, SqliteJournalMode::Wal)
+            .await
+            .expect("初始化钩子查询用的 DBService 失败");
+        let msg_store = Arc::new(MsgStore::new());
+        let hook = EventService::create_hook_with_broken_barrier(msg_store.clone(), hook_query_db);
+        let db = DBService::new_at_path_with_after_connect(&path, SqliteJournalMode::Wal, hook)
+            .await
+            .expect("装钩子初始化 DBService 失败");
+
+        let (project_id, status_id) = insert_project_and_status(&db.pool).await;
+        let issue_id = insert_issue(&db.pool, project_id, status_id).await;
+        let issue_path = format!("/issues/{issue_id}");
+        wait_for_patch(&msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+
+        sqlx::query("UPDATE issues SET title = '改过的标题' WHERE id = ?1")
+            .bind(issue_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let replaced = wait_for_patch(&msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Replace(_))
+        })
+        .await;
+        let PatchOperation::Replace(op) = replaced else {
+            panic!("应是 replace 补丁");
+        };
+        assert_eq!(op.value["title"], "改过的标题");
+    }
+
+    #[tokio::test]
+    async fn 一个事务多次写只过一次提交屏障() {
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let_hooks_settle().await;
+        let before = fixture
+            .probe
+            .barrier_count
+            .load(std::sync::atomic::Ordering::SeqCst);
+
+        let mut tx = pool.begin().await.unwrap();
+        let mut ids = Vec::new();
+        for number in 1..=5 {
+            let issue_id = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO issues (id, project_id, issue_number, simple_id, status_id, title) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, '批量需求')",
+            )
+            .bind(issue_id)
+            .bind(project_id)
+            .bind(number)
+            .bind(format!("BT-{number}"))
+            .bind(status_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+            ids.push(issue_id);
+        }
+        tx.commit().await.unwrap();
+        for issue_id in &ids {
+            let path = format!("/issues/{issue_id}");
+            wait_for_patch(&fixture.msg_store, |op| {
+                patch_path(op) == path && matches!(op, PatchOperation::Add(_))
+            })
+            .await;
+        }
+        let_hooks_settle().await;
+
+        let after = fixture
+            .probe
+            .barrier_count
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(after - before, 1, "一个事务只应过一次提交屏障");
+    }
+
+    /// 屏障只作「写者已提交」的同步点：推送（反查）进行中，别的写事务应能立即拿到写锁。
+    #[tokio::test]
+    async fn 推送进行中别的写事务不必等推送结束() {
+        use std::sync::atomic::Ordering;
+
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let_hooks_settle().await;
+
+        const DELAY_MS: u64 = 2000;
+        fixture
+            .probe
+            .publish_delay_ms
+            .store(DELAY_MS, Ordering::SeqCst);
+        let before = fixture.probe.barrier_count.load(Ordering::SeqCst);
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+        // 等推送任务过了屏障、进入人为延迟。
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while fixture.probe.barrier_count.load(Ordering::SeqCst) == before {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("推送任务应过屏障");
+
+        let started = std::time::Instant::now();
+        sqlx::query("UPDATE local_projects SET name = '并发写' WHERE id = ?1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(DELAY_MS / 4),
+            "推送期间写锁不应被占着，并发写耗时 {elapsed:?}"
+        );
+
+        fixture.probe.publish_delay_ms.store(0, Ordering::SeqCst);
+        let issue_path = format!("/issues/{issue_id}");
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn 跨事务删除后用同一_id_重新插入_最终存在() {
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+        let issue_path = format!("/issues/{issue_id}");
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+        let_hooks_settle().await;
+        let from = fixture.msg_store.get_history().len();
+
+        sqlx::query("DELETE FROM issues WHERE id = ?1")
+            .bind(issue_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO issues (id, project_id, issue_number, simple_id, status_id, title) \
+             VALUES (?1, ?2, 99, 'RE-99', ?3, '重新插入')",
+        )
+        .bind(issue_id)
+        .bind(project_id)
+        .bind(status_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let_hooks_settle().await;
+
+        let ops: Vec<_> = patches_since(&fixture.msg_store, from)
+            .into_iter()
+            .filter(|op| patch_path(op) == issue_path)
+            .collect();
+        assert!(
+            matches!(ops.first(), Some(PatchOperation::Remove(_))),
+            "先 remove，实际: {ops:?}"
+        );
+        assert!(
+            matches!(ops.last(), Some(PatchOperation::Add(_))),
+            "最后应是 add，行最终存在，实际: {ops:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn 多事务交替更新同一行_最后一个补丁是最终值() {
+        let fixture = setup(SqliteJournalMode::Wal).await;
+        let pool = fixture.db.pool.clone();
+        let (project_id, status_id) = insert_project_and_status(&pool).await;
+        let issue_id = insert_issue(&pool, project_id, status_id).await;
+        let issue_path = format!("/issues/{issue_id}");
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == issue_path && matches!(op, PatchOperation::Add(_))
+        })
+        .await;
+
+        const ROUNDS: usize = 40;
+        for round in 0..ROUNDS {
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::query("UPDATE issues SET title = ?2 WHERE id = ?1")
+                .bind(issue_id)
+                .bind(format!("第{round}轮-中间"))
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            sqlx::query("UPDATE issues SET title = ?2 WHERE id = ?1")
+                .bind(issue_id)
+                .bind(format!("第{round}轮"))
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+        let final_title = format!("第{}轮", ROUNDS - 1);
+        wait_for_patch(&fixture.msg_store, |op| {
+            patch_path(op) == issue_path
+                && matches!(op, PatchOperation::Replace(r) if r.value["title"] == final_title.as_str())
+        })
+        .await;
+        let_hooks_settle().await;
+
+        let last = patches_since(&fixture.msg_store, 0)
+            .into_iter()
+            .rfind(|op| patch_path(op) == issue_path)
+            .unwrap();
+        let PatchOperation::Replace(last) = last else {
+            panic!("最后一个补丁应是 replace，实际: {last:?}")
+        };
+        assert_eq!(last.value["title"], final_title.as_str());
     }
 }

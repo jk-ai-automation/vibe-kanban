@@ -28,6 +28,7 @@ use services::services::{
     local_auth::runtime::LocalAuthRuntime,
     oauth_credentials::OAuthCredentials,
     oauth_handoff::{HandoffRejection, HandoffStore, NonceBinding, PendingHandoff},
+    pipeline::{ContainerStageLauncher, PipelineExitEvent, PipelineService},
     pr_monitor::PrMonitorService,
     queued_message::QueuedMessageService,
     remote_client::{RemoteClient, RemoteClientError},
@@ -66,6 +67,7 @@ pub struct LocalDeployment {
     file: FileService,
     filesystem: FilesystemService,
     events: EventService,
+    pipeline: PipelineService,
     file_search_cache: Arc<FileSearchCache>,
     approvals: Approvals,
     queued_message_service: QueuedMessageService,
@@ -294,6 +296,34 @@ impl Deployment for LocalDeployment {
         )
         .await;
 
+        // 交付流水线：容器在每个执行进程收尾后发退出事件，引擎在后台逐条处理。
+        // 中断阶段的恢复（recover_interrupted）不在这里做：启动流程在
+        // cleanup_orphan_executions 之后、开始对外服务之前调用（server 的 main.rs / startup.rs），
+        // 那之前不会有任何执行进程启动，也就不会有退出事件。
+        let (pipeline_exit_tx, mut pipeline_exit_rx) =
+            tokio::sync::mpsc::unbounded_channel::<PipelineExitEvent>();
+        container.set_pipeline_exit_notifier(pipeline_exit_tx);
+        let pipeline = PipelineService::new(
+            db.clone(),
+            Arc::new(ContainerStageLauncher::new(container.clone())),
+        );
+        {
+            let pipeline = pipeline.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        event = pipeline_exit_rx.recv() => match event {
+                            Some(event) => pipeline.handle_exit_event(event).await,
+                            None => break,
+                        },
+                        _ = shutdown.cancelled() => break,
+                    }
+                }
+                tracing::debug!("流水线退出事件处理任务已退出");
+            });
+        }
+
         let events = EventService::new(db.clone(), events_msg_store, events_entry_count);
 
         let file_search_cache = Arc::new(FileSearchCache::new());
@@ -335,6 +365,7 @@ impl Deployment for LocalDeployment {
             file,
             filesystem,
             events,
+            pipeline,
             file_search_cache,
             approvals,
             queued_message_service,
@@ -397,6 +428,10 @@ impl Deployment for LocalDeployment {
 
     fn events(&self) -> &EventService {
         &self.events
+    }
+
+    fn pipeline(&self) -> &PipelineService {
+        &self.pipeline
     }
 
     fn file_search_cache(&self) -> &Arc<FileSearchCache> {

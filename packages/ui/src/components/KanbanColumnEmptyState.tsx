@@ -12,6 +12,8 @@ export interface KanbanColumnEmptyStateProps {
   onCreateWorkspace?: () => void;
   /** 「清除筛选」。`kind === 'filtered'` 时显示。 */
   onClearFilters?: () => void;
+  /** 空列的说明 i18n key（个人版「为什么空」）。不传用通用文案。 */
+  hintKey?: string;
   className?: string;
 }
 
@@ -57,6 +59,7 @@ export function KanbanColumnEmptyState({
   onCreateIssue,
   onCreateWorkspace,
   onClearFilters,
+  hintKey,
   className,
 }: KanbanColumnEmptyStateProps) {
   const { t } = useTranslation('common');
@@ -89,7 +92,7 @@ export function KanbanColumnEmptyState({
       )}
     >
       <p className="m-0 text-sm text-low">
-        {t('kanban.columnEmpty.emptyTitle')}
+        {t(hintKey ?? 'kanban.columnEmpty.emptyTitle')}
       </p>
       {onCreateIssue && (
         <EmptyStateButton onClick={onCreateIssue} icon={PlusIcon}>

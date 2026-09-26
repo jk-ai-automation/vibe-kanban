@@ -56,6 +56,10 @@ pub enum ExecutionProcessRunReason {
     ArchiveScript,
     CodingAgent,
     DevServer,
+    /// 流水线引擎自己跑的检查脚本（开发阶段的 checks）。库内值 `pipelinestep`，
+    /// 迁移 20260918000000_add_pipeline.sql 放开了 CHECK。
+    /// 流水线阶段的编码智能体进程仍然是 `CodingAgent`，见计划 A §4 纠正 1。
+    PipelineStep,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, TS)]
@@ -341,7 +345,24 @@ impl ExecutionProcess {
         .await
     }
 
-    /// Find latest execution process by session and run reason
+    /// 会话内某种 run_reason 最新（未被 drop）的执行进程 id。
+    /// 流水线用它把阶段记录的进程改回「会话里最近一个编码智能体进程」（契约 C7）。
+    pub async fn find_latest_id_by_session_and_run_reason(
+        pool: &SqlitePool,
+        session_id: Uuid,
+        run_reason: &ExecutionProcessRunReason,
+    ) -> Result<Option<Uuid>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT id FROM execution_processes \
+             WHERE session_id = ?1 AND run_reason = ?2 AND dropped = FALSE \
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .bind(run_reason)
+        .fetch_optional(pool)
+        .await
+    }
+
     /// Find latest execution process by workspace and run reason (across all sessions)
     pub async fn find_latest_by_workspace_and_run_reason(
         pool: &SqlitePool,
@@ -678,5 +699,190 @@ impl ExecutionProcess {
         .await?;
 
         Ok(rows.into_iter().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use executors::actions::{
+        ExecutorAction, ExecutorActionType,
+        script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
+    };
+    use uuid::Uuid;
+
+    use super::{CreateExecutionProcess, ExecutionProcess, ExecutionProcessRunReason};
+    use crate::{
+        models::{
+            local_project::DEFAULT_USER_ID,
+            session::{CreateSession, Session},
+            workspace::{CreateWorkspace, Workspace},
+        },
+        test_support::TestDb,
+    };
+
+    #[test]
+    fn pipeline_step_序列化为全小写() {
+        assert_eq!(
+            serde_json::to_value(ExecutionProcessRunReason::PipelineStep).unwrap(),
+            "pipelinestep"
+        );
+    }
+
+    #[tokio::test]
+    async fn pipeline_step_进程可以落库并读回() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.pool();
+        let workspace = Workspace::create(
+            pool,
+            &CreateWorkspace {
+                branch: "vk/pipeline".to_string(),
+                name: None,
+            },
+            Uuid::new_v4(),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        let session = Session::create(
+            pool,
+            &CreateSession {
+                executor: None,
+                name: None,
+            },
+            Uuid::new_v4(),
+            workspace.id,
+        )
+        .await
+        .unwrap();
+        let action = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "set -e\ntrue\n".to_string(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::PipelineCheck,
+                working_dir: None,
+            }),
+            None,
+        );
+        let process = ExecutionProcess::create(
+            pool,
+            &CreateExecutionProcess {
+                session_id: session.id,
+                executor_action: action,
+                run_reason: ExecutionProcessRunReason::PipelineStep,
+            },
+            Uuid::new_v4(),
+            &[],
+        )
+        .await
+        .expect("PipelineStep 进程应能落库");
+        assert_eq!(process.run_reason, ExecutionProcessRunReason::PipelineStep);
+    }
+
+    #[tokio::test]
+    async fn 按会话与_run_reason_取最新进程_id() {
+        let test_db = TestDb::new().await;
+        let pool = test_db.pool();
+        let workspace = Workspace::create(
+            pool,
+            &CreateWorkspace {
+                branch: "vk/latest".to_string(),
+                name: None,
+            },
+            Uuid::new_v4(),
+            DEFAULT_USER_ID,
+        )
+        .await
+        .unwrap();
+        let mut sessions = Vec::new();
+        for _ in 0..2 {
+            sessions.push(
+                Session::create(
+                    pool,
+                    &CreateSession {
+                        executor: None,
+                        name: None,
+                    },
+                    Uuid::new_v4(),
+                    workspace.id,
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        let script = |context| {
+            ExecutorAction::new(
+                ExecutorActionType::ScriptRequest(ScriptRequest {
+                    script: "true".to_string(),
+                    language: ScriptRequestLanguage::Bash,
+                    context,
+                    working_dir: None,
+                }),
+                None,
+            )
+        };
+        let create = async |session_id, run_reason, context| {
+            ExecutionProcess::create(
+                pool,
+                &CreateExecutionProcess {
+                    session_id,
+                    executor_action: script(context),
+                    run_reason,
+                },
+                Uuid::new_v4(),
+                &[],
+            )
+            .await
+            .unwrap()
+            .id
+        };
+        let s1 = sessions[0].id;
+        let first = create(
+            s1,
+            ExecutionProcessRunReason::CodingAgent,
+            ScriptContext::SetupScript,
+        )
+        .await;
+        let second = create(
+            s1,
+            ExecutionProcessRunReason::CodingAgent,
+            ScriptContext::SetupScript,
+        )
+        .await;
+        create(
+            s1,
+            ExecutionProcessRunReason::PipelineStep,
+            ScriptContext::PipelineCheck,
+        )
+        .await;
+        create(
+            sessions[1].id,
+            ExecutionProcessRunReason::CodingAgent,
+            ScriptContext::SetupScript,
+        )
+        .await;
+
+        let latest = ExecutionProcess::find_latest_id_by_session_and_run_reason(
+            pool,
+            s1,
+            &ExecutionProcessRunReason::CodingAgent,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            latest,
+            Some(second),
+            "同会话最新的一条，不跨会话、不看其他 run_reason"
+        );
+        assert_ne!(latest, Some(first));
+        assert_eq!(
+            ExecutionProcess::find_latest_id_by_session_and_run_reason(
+                pool,
+                s1,
+                &ExecutionProcessRunReason::CleanupScript,
+            )
+            .await
+            .unwrap(),
+            None
+        );
     }
 }

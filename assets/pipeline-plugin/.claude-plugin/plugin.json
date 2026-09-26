@@ -1,0 +1,8 @@
+{
+  "name": "vk-pipeline",
+  "description": "vibe-kanban 交付流水线的阶段技能包：需求、规格、用例、开发、评审、测试、交付",
+  "version": "0.1.0",
+  "author": {
+    "name": "vibe-kanban"
+  }
+}

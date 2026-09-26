@@ -188,6 +188,12 @@ pub fn router() -> Router<DeploymentImpl> {
             &["GET", "PATCH", "DELETE"],
             get(get_one).patch(update).delete(delete),
         )
+        // 流水线（契约 §2）。handler 在 pipeline.rs；与 /{id} 共用同一个 nest 与参数名（C4）。
+        .route(
+            "/{id}/pipeline",
+            &["GET", "POST"],
+            get(super::pipeline::get_issue_pipeline).post(super::pipeline::start_pipeline),
+        )
         .into_router()
 }
 

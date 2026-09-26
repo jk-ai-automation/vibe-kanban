@@ -506,7 +506,7 @@
     "noProjectFound": "未找到项目",
     "unassigned": "未分配",
     "noTagsAvailable": "无可用标签",
-    "createNewIssue": "创建新问题",
+    "createNewIssue": "新建需求",
     "searchTags": "搜索标签...",
     "selectColorFor": "选择颜色：",
     "createTag": "创建",
@@ -530,7 +530,7 @@
     "createDraftWorkspaceImmediately": "立即创建草稿工作区",
     "createDraftWorkspaceDescription": "创建议题后，打开预填了议题详情的工作区创建表单",
     "createIssue": "创建任务",
-    "newIssue": "新问题",
+    "newIssue": "新建需求",
     "previewCodeBlock": "[代码块]",
     "previewImage": "[图片]",
     "previewImageWithName": "[图片: {{name}}]",
@@ -567,7 +567,7 @@
     },
     "team": "Team",
     "personal": "Personal",
-    "searchPlaceholder": "Search issues...",
+    "searchPlaceholder": "搜索需求…",
     "filters": "Filters",
     "clearFilters": "Clear filters",
     "filtersDescription": "Adjust filters and sorting for this board view.",
@@ -687,7 +687,19 @@
       "issue": "打开关联需求",
       "workspace": "打开工作区",
       "pr": "打开 PR"
-    }
+    },
+    "issueTitleLabel": "需求标题",
+    "deleteDraft": "删除草稿",
+    "removeParentIssue": "移除父需求",
+    "subIssueActions": "子需求操作",
+    "priorityLevel": {
+      "urgent": "紧急",
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    },
+    "noPriority": "无优先级",
+    "selectStatus": "选择状态"
   },
   "createMode": {
     "headings": {
@@ -747,6 +759,12 @@
       "tooltip": "登录以查看项目",
       "title": "看板",
       "description": "登录以使用看板管理您的编码代理。"
+    },
+    "sections": {
+      "local": "本地",
+      "remote": "远程",
+      "projects": "项目",
+      "export": "导出"
     }
   },
   "errors": {
@@ -760,5 +778,237 @@
     "submitting": "正在提交回答...",
     "answeredCount": "已回答{{count}}个问题",
     "answeredCount_other": "已回答{{count}}个问题"
+  },
+  "nav": {
+    "workbench": "工作台",
+    "pipeline": "需求流水线",
+    "testing": "测试中心",
+    "docs": "文档",
+    "settings": "设置",
+    "projectSwitcher": "切换项目",
+    "createProject": "新建项目",
+    "noProject": "还没有项目",
+    "footer": "个人版 · 本机 v{{version}}"
+  },
+  "pipeline": {
+    "stage": {
+      "requirement": "需求",
+      "spec": "设计规格",
+      "test_design": "用例设计",
+      "develop": "开发",
+      "review": "评审",
+      "test": "测试",
+      "deliver": "交付"
+    },
+    "gateLabel": {
+      "requirement": "需求确认",
+      "spec": "设计规格确认",
+      "test_design": "用例设计确认"
+    },
+    "column": {
+      "backlog": "需求",
+      "todo": "规格 · 用例",
+      "dev": "开发",
+      "review": "评审",
+      "test": "测试",
+      "done": "交付",
+      "humanGate": "人工确认",
+      "auto": "自动"
+    },
+    "columnEmpty": {
+      "backlog": "在工作台描述一个需求，它会出现在这里",
+      "todo": "需求确认后，AI 会在这里写规格与用例",
+      "dev": "用例确认后自动进入开发",
+      "review": "评审由 AI 自动完成，一般停留不到 3 分钟",
+      "test": "评审通过后自动跑测试",
+      "done": "测试全部通过后自动交付"
+    },
+    "status": {
+      "waitingGate": "等你确认 · {{gate}}",
+      "running": "{{stage}} · 进行中",
+      "runningRound": "{{stage}} · 第 {{attempt}}/{{max}} 轮",
+      "paused": "已暂停",
+      "failed": "需要你处理",
+      "completed": "已交付",
+      "cancelled": "已取消"
+    },
+    "cell": {
+      "done": "已完成",
+      "running": "进行中",
+      "gate": "等人工",
+      "failed": "失败",
+      "pending": "未开始",
+      "paused": "已暂停",
+      "cancelled": "已取消"
+    },
+    "progressLabel": "流水线进度：{{summary}}",
+    "drag": {
+      "forwardBlocked": "不能往后拖：推进由关卡决定",
+      "pauseFirst": "流水线正在运行，请先暂停再打回"
+    },
+    "gate": {
+      "confirm": "确认并继续",
+      "reject": "打回并说明",
+      "rejectPlaceholder": "写清需要改什么（必填）",
+      "rejectSubmit": "提交打回",
+      "cancel": "取消",
+      "pause": "暂停自动化",
+      "resume": "继续",
+      "autoGate": "自动关卡",
+      "runningHint": "AI 正在处理：{{stage}}",
+      "round": "第 {{attempt}}/{{max}} 轮",
+      "failedHint": "自动修复轮次已用尽，需要你处理",
+      "pausedHint": "自动化已暂停",
+      "completedHint": "已交付，PR 不会自动合并",
+      "cancelledHint": "这条流水线已取消",
+      "error": "操作失败：{{message}}",
+      "autoCondition": {
+        "checksPassed": "lint 与单测全部通过后自动进入下一阶段",
+        "noBlockingFindings": "评审没有阻断问题后自动进入下一阶段",
+        "allCasesPassed": "用例全部通过后自动交付",
+        "artifactsPresent": "交付报告生成后完成"
+      }
+    },
+    "duration": {
+      "seconds": "{{s}} 秒",
+      "minutesSeconds": "{{m}} 分 {{s}} 秒",
+      "hoursMinutes": "{{h}} 小时 {{m}} 分"
+    },
+    "time": {
+      "justNow": "刚刚",
+      "minutesAgo": "{{n}} 分钟前",
+      "hoursAgo": "{{n}} 小时前",
+      "daysAgo": "{{n}} 天前"
+    }
+  },
+  "workbench": {
+    "greeting": {
+      "morning": "上午好",
+      "afternoon": "下午好",
+      "evening": "晚上好"
+    },
+    "summary": "今天自动完成 {{stages}} 个阶段，{{pending}} 件事等你确认",
+    "composer": {
+      "label": "描述一个需求",
+      "placeholder": "描述一个需求，或粘贴 PRD / 飞书文档链接……",
+      "example": "例：下单接口增加最小下单金额校验，低于 5 USDT 返回 400 与错误码 ORDER_MIN_NOTIONAL",
+      "repo": "仓库",
+      "branch": "分支",
+      "template": "流程模板",
+      "templateStandard": "标准七阶段",
+      "agent": "智能体",
+      "submit": "开始",
+      "submitting": "正在启动……",
+      "noRepo": "先在 设置 → 仓库 里添加一个仓库",
+      "noProject": "先新建一个项目",
+      "error": "启动失败：{{message}}",
+      "startFailedAfterCreate": "需求已创建，但启动流水线失败：{{message}}。再次点「开始」只会为这条需求重试启动。",
+      "noAgent": "未检测到可用的编码代理配置，请到 设置 → 代理 里配置。"
+    },
+    "columns": {
+      "confirm": "需要你确认",
+      "running": "正在自动跑",
+      "delivered": "最近交付"
+    },
+    "empty": {
+      "confirm": "没有等你确认的事",
+      "running": "没有正在跑的流水线",
+      "delivered": "还没有交付记录"
+    },
+    "card": {
+      "open": "查看"
+    },
+    "weekly": "本周：交付 {{delivered}} · 平均周期 {{avg}} 分 · 一次通过率 {{rate}}%",
+    "weeklyEmpty": "本周：还没有交付"
+  },
+  "docs": {
+    "title": "文档",
+    "emptyTitle": "规格与需求文档会出现在这里",
+    "emptyHint": "流水线跑完需求与设计规格阶段后，产出的文档会按需求归档到这一页。"
+  },
+  "issueDetail": {
+    "breadcrumb": "需求流水线",
+    "fullscreen": "全屏查看",
+    "notFound": "找不到这个需求",
+    "noPipeline": "这个需求还没有启动流水线，请在工作台启动。",
+    "noArtifact": "这个阶段还没有产出物",
+    "truncated": "内容过长，只显示前 256 KB",
+    "version": "第 {{version}} 版",
+    "loading": "加载中……",
+    "openWorkspace": "打开工作区",
+    "noWorkspace": "开发阶段开始后会创建工作区",
+    "testSummary": "{{passed}} 通过 · {{failed}} 失败 · 共 {{total}}",
+    "reviewEmpty": "没有评审意见",
+    "parseError": "产出物无法解析，下面显示原文",
+    "tab": {
+      "requirement": "需求与验收标准",
+      "spec": "规格",
+      "cases": "用例",
+      "code": "代码变更",
+      "test": "测试",
+      "delivery": "交付报告"
+    },
+    "side": {
+      "timeline": "时间线",
+      "artifacts": "产出物",
+      "usage": "用量",
+      "usageNotReady": "用量统计将在后续版本提供"
+    },
+    "artifactKind": {
+      "requirement": "需求文档",
+      "spec": "设计规格",
+      "plan": "实施计划",
+      "test_cases": "测试用例",
+      "trace_matrix": "追踪矩阵",
+      "review": "评审结果",
+      "test_report": "测试报告",
+      "delivery_report": "交付报告"
+    },
+    "testCols": {
+      "case": "用例",
+      "status": "结果",
+      "attribution": "归因",
+      "message": "说明"
+    },
+    "attribution": {
+      "code": "代码缺陷",
+      "case": "用例问题"
+    },
+    "caseStatus": {
+      "passed": "通过",
+      "failed": "失败",
+      "unknown": "未知"
+    },
+    "severity": {
+      "blocker": "阻断",
+      "major": "重要",
+      "minor": "次要",
+      "unknown": "其它"
+    },
+    "timeline": {
+      "stageStarted": "{{stage}}开始（第 {{attempt}} 次）",
+      "stagePassed": "{{stage}}完成",
+      "stageFailed": "{{stage}}失败",
+      "stageWaiting": "{{stage}}等待确认",
+      "stageRejected": "{{stage}}被打回",
+      "gateApproved": "你确认了{{stage}}",
+      "gateRejected": "你打回了{{stage}}",
+      "actorAi": "AI",
+      "actorHuman": "你",
+      "expand": "展开全部",
+      "collapse": "收起",
+      "empty": "还没有动静"
+    }
+  },
+  "relativeTime": {
+    "justNow": "刚刚",
+    "minutesAgo": "{{n}} 分钟前",
+    "hoursAgo": "{{n}} 小时前",
+    "daysAgo": "{{n}} 天前",
+    "weeksAgo": "{{n}} 周前",
+    "shortNow": "刚刚",
+    "shortMinutes": "{{n}} 分钟",
+    "shortHours": "{{n}} 小时",
+    "shortDays": "{{n}} 天"
   }
 }

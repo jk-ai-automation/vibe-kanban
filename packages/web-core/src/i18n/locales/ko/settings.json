@@ -23,6 +23,8 @@
         "agentsDesc": "코딩 에이전트 구성",
         "mcp": "MCP 서버",
         "mcpDesc": "Model Context Protocol 서버",
+        "pipeline-skills": "파이프라인 스킬",
+        "pipeline-skillsDesc": "각 단계가 불러오는 스킬",
         "organizations": "Organization Settings",
         "organizationsDesc": "Manage organization members and permissions",
         "remote-projects": "프로젝트",
@@ -292,6 +294,11 @@
           "label": "워크스페이스 베타 활성화",
           "helper": "작업 시도를 볼 때 새로운 워크스페이스 인터페이스를 사용합니다. 작업은 먼저 작업 보기에서 열리고, 시도는 새로운 워크스페이스 보기에서 열립니다."
         }
+      },
+      "export": {
+        "title": "Data export",
+        "description": "Export project data from the cloud service (available when signed in to a cloud account)",
+        "button": "Open export page"
       }
     },
     "agents": {
@@ -385,6 +392,25 @@
         "successMessage": "✓ MCP 구성이 성공적으로 저장되었습니다!",
         "loading": "현재 MCP 서버 구성 로딩 중...",
         "unsavedChanges": "• 저장되지 않은 변경 사항이 있습니다"
+      }
+    },
+    "pipelineSkills": {
+      "description": "파이프라인의 각 단계는 내장 vk-pipeline 플러그인에서 스킬을 하나씩 불러옵니다. 플러그인은 세션 단위로 주입되며 저장소에 기록되지 않습니다.",
+      "readOnly": "읽기 전용입니다. 외부 스킬은 skills.lock.json에서 체크섬으로 고정됩니다.",
+      "loading": "스킬을 불러오는 중…",
+      "loadError": "스킬을 불러오지 못했습니다: {{message}}",
+      "empty": "스킬이 없습니다.",
+      "noStage": "다른 스킬에서 참조",
+      "columns": {
+        "name": "스킬",
+        "source": "출처",
+        "version": "버전",
+        "stage": "단계"
+      },
+      "source": {
+        "platform": "기본 제공",
+        "superpowers": "superpowers",
+        "atp": "atp"
       }
     },
     "projects": {

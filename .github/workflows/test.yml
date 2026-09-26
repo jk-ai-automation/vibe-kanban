@@ -11,6 +11,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      update_snapshots:
+        description: '重新生成 e2e 视觉回归基线（在本次运行的产物里下载后提交）'
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -46,6 +51,7 @@ jobs:
               - 'packages/web-core/**'
               - 'packages/remote-web/**'
               - 'packages/ui/**'
+              - 'packages/e2e/**'
               - 'shared/**'
               - 'scripts/check-i18n.sh'
               - 'scripts/check-unused-i18n-keys.mjs'
@@ -178,7 +184,7 @@ jobs:
         run: |
           npx concurrently \
             --kill-others-on-fail \
-            --names "local:lint,local:fmt,local:build,remote:fmt,remote:build,ui:check,ui:lint,ui:fmt,core:check,core:fmt,core:test,i18n,i18n:unused,legacy" \
+            --names "local:lint,local:fmt,local:build,remote:fmt,remote:build,ui:check,ui:lint,ui:fmt,core:check,core:fmt,core:test,e2e:check,e2e:fmt,i18n,i18n:unused,legacy" \
             --timings \
             "cd packages/local-web && npm run lint" \
             "cd packages/local-web && npm run format:check" \
@@ -191,6 +197,8 @@ jobs:
             "cd packages/web-core && npm run check" \
             "cd packages/web-core && npm run format:check" \
             "cd packages/web-core && npm run test" \
+            "cd packages/e2e && npm run check" \
+            "cd packages/e2e && npm run format:check" \
             "GITHUB_BASE_REF=${{ github.base_ref || 'main' }} ./scripts/check-i18n.sh" \
             "node scripts/check-unused-i18n-keys.mjs" \
             "./scripts/check-legacy-frontend-paths.sh"
@@ -232,6 +240,9 @@ jobs:
           cache-key: backend-schema-checks-${{ runner.os }}-${{ runner.arch }}-${{ env.RUNNER_LABEL }}
           setup-node: 'true'
           setup-sqlx-cli: 'true'
+
+      - name: Check pipeline skills lock
+        run: npm run pipeline-skills:check
 
       - name: Check generated types
         run: npm run generate-types:check
@@ -367,3 +378,64 @@ jobs:
           cargo fmt --all --manifest-path crates/tauri-app/Cargo.toml -- --check
           cargo clippy --all-targets --manifest-path crates/tauri-app/Cargo.toml -- -D warnings
           cargo check -p vibe-kanban-tauri
+
+  # 端到端：qa-mode 真后端 + vite 前端 + Playwright 自带无头 Chromium（不设 channel）。
+  # 视觉回归基线只在这里（Linux）生成与比对；手动触发并勾选 update_snapshots 时重建基线。
+  e2e:
+    needs: changes
+    if: >-
+      always()
+      && (needs.changes.outputs.frontend == 'true'
+        || needs.changes.outputs.backend == 'true'
+        || needs.changes.result == 'skipped')
+    runs-on: *runner_label
+    timeout-minutes: 60
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust and Node
+        uses: ./.github/actions/cargo-checks-common-setup
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          cache-key: e2e-${{ runner.os }}-${{ runner.arch }}-${{ env.RUNNER_LABEL }}
+          setup-node: 'true'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Configure git identity (backend commits in worktrees)
+        run: |
+          git config --global user.name "vk-e2e"
+          git config --global user.email "vk-e2e@example.com"
+
+      # 与 playwright.config.ts 的 webServer 命令同一组参数，之后 cargo run 直接复用产物
+      - name: Build backend (qa-mode)
+        run: cargo build -p server --bin server --features qa-mode
+
+      - name: Install Playwright Chromium (bundled, headless)
+        run: pnpm --filter @vibe/e2e exec playwright install --with-deps chromium
+
+      - name: Run e2e
+        env:
+          CI: 'true'
+          UPDATE_SNAPSHOTS: ${{ github.event_name == 'workflow_dispatch' && inputs.update_snapshots && 'true' || 'false' }}
+        run: |
+          if [ "$UPDATE_SNAPSHOTS" = "true" ]; then
+            pnpm --filter @vibe/e2e exec playwright test --update-snapshots
+          else
+            pnpm run e2e
+          fi
+
+      - name: Upload Playwright report, traces and screenshots
+        if: failure() || (github.event_name == 'workflow_dispatch' && inputs.update_snapshots)
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-${{ github.run_id }}
+          path: |
+            packages/e2e/playwright-report
+            packages/e2e/test-results
+            packages/e2e/tests/__screenshots__
+          retention-days: 14

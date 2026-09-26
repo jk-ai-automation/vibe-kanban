@@ -176,7 +176,7 @@ dropped: boolean, started_at: string, completed_at: string | null, created_at: s
 
 export enum ExecutionProcessStatus { running = "running", completed = "completed", failed = "failed", killed = "killed" }
 
-export type ExecutionProcessRunReason = "setupscript" | "cleanupscript" | "archivescript" | "codingagent" | "devserver";
+export type ExecutionProcessRunReason = "setupscript" | "cleanupscript" | "archivescript" | "codingagent" | "devserver" | "pipelinestep";
 
 export type ExecutionProcessRepoState = { id: string, execution_process_id: string, repo_id: string, before_head_commit: string | null, after_head_commit: string | null, merge_commit: string | null, created_at: Date, updated_at: Date, };
 
@@ -553,6 +553,109 @@ export type CreateAndStartWorkspaceRequest = { name: string | null, repos: Array
 
 export type CreateAndStartWorkspaceResponse = { workspace: Workspace, execution_process: ExecutionProcess, };
 
+export type PipelineStageKey = "requirement" | "spec" | "test_design" | "develop" | "review" | "test" | "deliver";
+
+export type PipelineRunStatus = "running" | "waiting_gate" | "paused" | "failed" | "completed" | "cancelled";
+
+export type PipelineStageStatus = "pending" | "running" | "waiting_gate" | "passed" | "rejected" | "failed" | "skipped";
+
+export type GateKind = "human" | "auto" | "none";
+
+export type GateDecisionKind = "approve" | "reject";
+
+export type ArtifactKind = "requirement" | "spec" | "plan" | "test_cases" | "trace_matrix" | "review" | "test_report" | "delivery_report";
+
+export type PipelineRun = { id: string, issue_id: string, project_id: string, workspace_id: string | null, template_key: string, template_version: number, status: PipelineRunStatus, current_stage_key: PipelineStageKey, created_at: string, updated_at: string, finished_at: string | null, };
+
+export type PipelineStageRun = { id: string, run_id: string, project_id: string, stage_key: PipelineStageKey, attempt: number, status: PipelineStageStatus, gate_kind: GateKind, session_id: string | null, execution_process_id: string | null, started_at: string | null, finished_at: string | null, summary: string | null, error: string | null, };
+
+export type PipelineGateDecision = { id: string, stage_run_id: string, decision: GateDecisionKind, comment: string | null, decided_by: string | null, decided_at: string, };
+
+export type IssueArtifactSummary = { id: string, issue_id: string, stage_run_id: string, kind: ArtifactKind, rel_path: string, version: number, truncated: boolean, created_at: string, };
+
+export type IssueArtifact = { content: string, id: string, issue_id: string, stage_run_id: string, kind: ArtifactKind, rel_path: string, version: number, truncated: boolean, created_at: string, };
+
+export type PipelineTemplateStageView = { key: PipelineStageKey, skill: string, gate_kind: GateKind, 
+/**
+ * 人工关卡中文名，如「需求确认」。
+ */
+gate_label: string | null, 
+/**
+ * 自动关卡的判定名（`checks_passed` / `no_blocking_findings` / `all_cases_passed` /
+ * `artifacts_present`）；人工关卡与无关卡为 None。契约修订 C10。
+ */
+gate_condition: string | null, max_rounds: number, };
+
+export type PipelineTemplateView = { key: string, version: number, stages: Array<PipelineTemplateStageView>, };
+
+export type IssuePipelineView = { run: PipelineRun, 
+/**
+ * 全部尝试，按创建顺序（已启动者即 started_at 升序，pending 排最后）。
+ */
+stages: Array<PipelineStageRun>, 
+/**
+ * 全部关卡决策，按 decided_at 升序。
+ */
+decisions: Array<PipelineGateDecision>, 
+/**
+ * 该需求每个 kind 的全部版本。
+ */
+artifacts: Array<IssueArtifactSummary>, template: PipelineTemplateView, };
+
+export type StartPipelineRepo = { repo_id: string, target_branch: string, };
+
+export type StartPipelineRequest = { repos: Array<StartPipelineRepo>, 
+/**
+ * 与 `create_and_start_workspace` 相同的类型。
+ */
+executor_config: ExecutorConfig, 
+/**
+ * 缺省 "standard"。
+ */
+template_key: string | null, };
+
+export type GateDecisionRequest = { decision: GateDecisionKind, 
+/**
+ * reject 时必填，后端校验非空。
+ */
+comment: string | null, };
+
+export type PendingPipelineItem = { run: PipelineRun, 
+/**
+ * 当前等待或失败的那一条。
+ */
+stage_run: PipelineStageRun, issue_simple_id: string, issue_title: string, };
+
+export type PipelineSkillInfo = { 
+/**
+ * 目录名，例：`vk-requirement`
+ */
+name: string, 
+/**
+ * 提示词里写的引用名，例：`vk-pipeline:vk-requirement`
+ */
+qualified_name: string, 
+/**
+ * `platform`（平台自写）或锁文件里的来源名（`superpowers` / `atp`）
+ */
+source: string, 
+/**
+ * 来源的发布版本或提交号；平台自写为 null
+ */
+source_version: string | null, 
+/**
+ * 来源许可证；平台自写为 null
+ */
+license: string | null, 
+/**
+ * 内置模板里用在哪个阶段；没被用到为 null
+ */
+stage: PipelineStageKey | null, 
+/**
+ * 该技能目录下的文件数（外来技能取锁文件白名单，平台技能恒为 1）
+ */
+file_count: number, };
+
 export type UnifiedPrComment = { "comment_type": "general", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, } | { "comment_type": "review", id: bigint, author: string, author_association: string | null, body: string, created_at: string, url: string | null, path: string, line: bigint | null, side: string | null, diff_hunk: string | null, };
 
 export type ProviderKind = "git_hub" | "azure_dev_ops" | "unknown";
@@ -713,7 +816,7 @@ reasoning_id?: string | null,
  */
 permission_policy?: PermissionPolicy | null, };
 
-export type ScriptContext = "SetupScript" | "CleanupScript" | "ArchiveScript" | "DevServer" | "ToolInstallScript";
+export type ScriptContext = "SetupScript" | "CleanupScript" | "ArchiveScript" | "DevServer" | "ToolInstallScript" | "PipelineCheck";
 
 export type ScriptRequest = { script: string, language: ScriptRequestLanguage, context: ScriptContext, 
 /**
@@ -825,7 +928,14 @@ executor_config: ExecutorConfig,
  * Optional relative path to execute the agent in (relative to container_ref).
  * If None, uses the container_ref directory directly.
  */
-working_dir: string | null, };
+working_dir: string | null, 
+/**
+ * 会话级插件目录（Claude Code `--plugin-dir`）。流水线用它注入技能包。
+ *
+ * **必须 `#[serde(default)]`**：库里 `execution_processes.executor_action` 的老 JSON
+ * 没有这个字段，反序列化不能失败。
+ */
+plugin_dirs: Array<string>, };
 
 export type CodingAgentFollowUpRequest = { prompt: string, session_id: string, reset_to_message_id: string | null, 
 /**

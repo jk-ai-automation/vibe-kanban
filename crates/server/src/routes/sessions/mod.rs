@@ -203,6 +203,7 @@ pub async fn follow_up(
                 prompt,
                 executor_config: payload.executor_config.clone(),
                 working_dir,
+                plugin_dirs: Vec::new(),
             },
         )
     };

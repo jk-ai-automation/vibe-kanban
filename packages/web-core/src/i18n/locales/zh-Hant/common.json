@@ -506,7 +506,7 @@
     "noProjectFound": "找不到專案",
     "unassigned": "未指派",
     "noTagsAvailable": "無可用標籤",
-    "createNewIssue": "建立新問題",
+    "createNewIssue": "新增需求",
     "searchTags": "搜尋標籤...",
     "selectColorFor": "選擇顏色：",
     "createTag": "建立",
@@ -530,7 +530,7 @@
     "createDraftWorkspaceImmediately": "立即建立草稿工作區",
     "createDraftWorkspaceDescription": "建立議題後，開啟預填了議題詳情的工作區建立表單",
     "createIssue": "建立任務",
-    "newIssue": "新問題",
+    "newIssue": "新增需求",
     "previewCodeBlock": "[程式碼區塊]",
     "previewImage": "[圖片]",
     "previewImageWithName": "[圖片: {{name}}]",
@@ -567,7 +567,7 @@
     },
     "team": "Team",
     "personal": "Personal",
-    "searchPlaceholder": "Search issues...",
+    "searchPlaceholder": "搜尋需求…",
     "filters": "Filters",
     "clearFilters": "Clear filters",
     "filtersDescription": "Adjust filters and sorting for this board view.",
@@ -687,7 +687,19 @@
       "issue": "開啟關聯需求",
       "workspace": "開啟工作區",
       "pr": "開啟 PR"
-    }
+    },
+    "issueTitleLabel": "需求標題",
+    "deleteDraft": "刪除草稿",
+    "removeParentIssue": "移除父需求",
+    "subIssueActions": "子需求操作",
+    "priorityLevel": {
+      "urgent": "緊急",
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    },
+    "noPriority": "無優先級",
+    "selectStatus": "選擇狀態"
   },
   "createMode": {
     "headings": {
@@ -747,6 +759,12 @@
       "tooltip": "登入以查看專案",
       "title": "看板",
       "description": "登入以使用看板管理您的編碼代理。"
+    },
+    "sections": {
+      "local": "本機",
+      "remote": "遠端",
+      "projects": "專案",
+      "export": "匯出"
     }
   },
   "errors": {
@@ -760,5 +778,237 @@
     "submitting": "正在提交回答...",
     "answeredCount": "已回答{{count}}個問題",
     "answeredCount_other": "已回答{{count}}個問題"
+  },
+  "nav": {
+    "workbench": "工作台",
+    "pipeline": "需求流水線",
+    "testing": "測試中心",
+    "docs": "文件",
+    "settings": "設定",
+    "projectSwitcher": "切換專案",
+    "createProject": "新增專案",
+    "noProject": "還沒有專案",
+    "footer": "個人版 · 本機 v{{version}}"
+  },
+  "pipeline": {
+    "stage": {
+      "requirement": "需求",
+      "spec": "設計規格",
+      "test_design": "用例設計",
+      "develop": "開發",
+      "review": "評審",
+      "test": "測試",
+      "deliver": "交付"
+    },
+    "gateLabel": {
+      "requirement": "需求確認",
+      "spec": "設計規格確認",
+      "test_design": "用例設計確認"
+    },
+    "column": {
+      "backlog": "需求",
+      "todo": "規格 · 用例",
+      "dev": "開發",
+      "review": "評審",
+      "test": "測試",
+      "done": "交付",
+      "humanGate": "人工確認",
+      "auto": "自動"
+    },
+    "columnEmpty": {
+      "backlog": "在工作台描述一個需求，它會出現在這裡",
+      "todo": "需求確認後，AI 會在這裡寫規格與用例",
+      "dev": "用例確認後自動進入開發",
+      "review": "評審由 AI 自動完成，一般停留不到 3 分鐘",
+      "test": "評審通過後自動跑測試",
+      "done": "測試全部通過後自動交付"
+    },
+    "status": {
+      "waitingGate": "等你確認 · {{gate}}",
+      "running": "{{stage}} · 進行中",
+      "runningRound": "{{stage}} · 第 {{attempt}}/{{max}} 輪",
+      "paused": "已暫停",
+      "failed": "需要你處理",
+      "completed": "已交付",
+      "cancelled": "已取消"
+    },
+    "cell": {
+      "done": "已完成",
+      "running": "進行中",
+      "gate": "等人工",
+      "failed": "失敗",
+      "pending": "未開始",
+      "paused": "已暫停",
+      "cancelled": "已取消"
+    },
+    "progressLabel": "流水線進度：{{summary}}",
+    "drag": {
+      "forwardBlocked": "不能往後拖：推進由關卡決定",
+      "pauseFirst": "流水線正在執行，請先暫停再退回"
+    },
+    "gate": {
+      "confirm": "確認並繼續",
+      "reject": "退回並說明",
+      "rejectPlaceholder": "寫清需要改什麼（必填）",
+      "rejectSubmit": "提交退回",
+      "cancel": "取消",
+      "pause": "暫停自動化",
+      "resume": "繼續",
+      "autoGate": "自動關卡",
+      "runningHint": "AI 正在處理：{{stage}}",
+      "round": "第 {{attempt}}/{{max}} 輪",
+      "failedHint": "自動修復輪次已用盡，需要你處理",
+      "pausedHint": "自動化已暫停",
+      "completedHint": "已交付，PR 不會自動合併",
+      "cancelledHint": "這條流水線已取消",
+      "error": "操作失敗：{{message}}",
+      "autoCondition": {
+        "checksPassed": "lint 與單元測試全部通過後自動進入下一階段",
+        "noBlockingFindings": "評審沒有阻斷問題後自動進入下一階段",
+        "allCasesPassed": "用例全部通過後自動交付",
+        "artifactsPresent": "交付報告產生後完成"
+      }
+    },
+    "duration": {
+      "seconds": "{{s}} 秒",
+      "minutesSeconds": "{{m}} 分 {{s}} 秒",
+      "hoursMinutes": "{{h}} 小時 {{m}} 分"
+    },
+    "time": {
+      "justNow": "剛剛",
+      "minutesAgo": "{{n}} 分鐘前",
+      "hoursAgo": "{{n}} 小時前",
+      "daysAgo": "{{n}} 天前"
+    }
+  },
+  "workbench": {
+    "greeting": {
+      "morning": "早安",
+      "afternoon": "午安",
+      "evening": "晚安"
+    },
+    "summary": "今天自動完成 {{stages}} 個階段，{{pending}} 件事等你確認",
+    "composer": {
+      "label": "描述一個需求",
+      "placeholder": "描述一個需求，或貼上 PRD / 飛書文件連結……",
+      "example": "例：下單介面增加最小下單金額校驗，低於 5 USDT 回傳 400 與錯誤碼 ORDER_MIN_NOTIONAL",
+      "repo": "儲存庫",
+      "branch": "分支",
+      "template": "流程範本",
+      "templateStandard": "標準七階段",
+      "agent": "智慧體",
+      "submit": "開始",
+      "submitting": "正在啟動……",
+      "noRepo": "先在 設定 → 儲存庫 裡新增一個儲存庫",
+      "noProject": "先新增一個專案",
+      "error": "啟動失敗：{{message}}",
+      "startFailedAfterCreate": "需求已建立，但啟動流水線失敗：{{message}}。再次點「開始」只會為這條需求重試啟動。",
+      "noAgent": "未偵測到可用的編碼代理設定，請到 設定 → 代理 裡設定。"
+    },
+    "columns": {
+      "confirm": "需要你確認",
+      "running": "正在自動執行",
+      "delivered": "最近交付"
+    },
+    "empty": {
+      "confirm": "沒有等你確認的事",
+      "running": "沒有正在執行的流水線",
+      "delivered": "還沒有交付紀錄"
+    },
+    "card": {
+      "open": "檢視"
+    },
+    "weekly": "本週：交付 {{delivered}} · 平均週期 {{avg}} 分 · 一次通過率 {{rate}}%",
+    "weeklyEmpty": "本週：還沒有交付"
+  },
+  "docs": {
+    "title": "文件",
+    "emptyTitle": "規格與需求文件會出現在這裡",
+    "emptyHint": "流水線跑完需求與設計規格階段後，產出的文件會按需求歸檔到這一頁。"
+  },
+  "issueDetail": {
+    "breadcrumb": "需求流水線",
+    "fullscreen": "全螢幕檢視",
+    "notFound": "找不到這個需求",
+    "noPipeline": "這個需求還沒有啟動流水線，請在工作台啟動。",
+    "noArtifact": "這個階段還沒有產出物",
+    "truncated": "內容過長，只顯示前 256 KB",
+    "version": "第 {{version}} 版",
+    "loading": "載入中……",
+    "openWorkspace": "開啟工作區",
+    "noWorkspace": "開發階段開始後會建立工作區",
+    "testSummary": "{{passed}} 通過 · {{failed}} 失敗 · 共 {{total}}",
+    "reviewEmpty": "沒有評審意見",
+    "parseError": "產出物無法解析，下面顯示原文",
+    "tab": {
+      "requirement": "需求與驗收標準",
+      "spec": "規格",
+      "cases": "用例",
+      "code": "程式碼變更",
+      "test": "測試",
+      "delivery": "交付報告"
+    },
+    "side": {
+      "timeline": "時間線",
+      "artifacts": "產出物",
+      "usage": "用量",
+      "usageNotReady": "用量統計將在後續版本提供"
+    },
+    "artifactKind": {
+      "requirement": "需求文件",
+      "spec": "設計規格",
+      "plan": "實施計畫",
+      "test_cases": "測試用例",
+      "trace_matrix": "追蹤矩陣",
+      "review": "評審結果",
+      "test_report": "測試報告",
+      "delivery_report": "交付報告"
+    },
+    "testCols": {
+      "case": "用例",
+      "status": "結果",
+      "attribution": "歸因",
+      "message": "說明"
+    },
+    "attribution": {
+      "code": "程式缺陷",
+      "case": "用例問題"
+    },
+    "caseStatus": {
+      "passed": "通過",
+      "failed": "失敗",
+      "unknown": "未知"
+    },
+    "severity": {
+      "blocker": "阻斷",
+      "major": "重要",
+      "minor": "次要",
+      "unknown": "其他"
+    },
+    "timeline": {
+      "stageStarted": "{{stage}}開始（第 {{attempt}} 次）",
+      "stagePassed": "{{stage}}完成",
+      "stageFailed": "{{stage}}失敗",
+      "stageWaiting": "{{stage}}等待確認",
+      "stageRejected": "{{stage}}被退回",
+      "gateApproved": "你確認了{{stage}}",
+      "gateRejected": "你退回了{{stage}}",
+      "actorAi": "AI",
+      "actorHuman": "你",
+      "expand": "展開全部",
+      "collapse": "收起",
+      "empty": "還沒有動靜"
+    }
+  },
+  "relativeTime": {
+    "justNow": "剛剛",
+    "minutesAgo": "{{n}} 分鐘前",
+    "hoursAgo": "{{n}} 小時前",
+    "daysAgo": "{{n}} 天前",
+    "weeksAgo": "{{n}} 週前",
+    "shortNow": "剛剛",
+    "shortMinutes": "{{n}} 分鐘",
+    "shortHours": "{{n}} 小時",
+    "shortDays": "{{n}} 天"
   }
 }

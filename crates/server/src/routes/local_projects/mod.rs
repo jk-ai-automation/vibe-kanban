@@ -3,6 +3,7 @@
 //! （个人版不使用 ElectricSQL 事务对账，txid 只是占位）。
 
 pub mod issues;
+pub mod pipeline;
 pub mod projections;
 pub mod projects;
 pub mod side;
@@ -135,7 +136,8 @@ pub fn router() -> Router<DeploymentImpl> {
             .merge(statuses::router())
             .merge(issues::router())
             .merge(side::router())
-            .merge(projections::router()),
+            .merge(projections::router())
+            .merge(pipeline::router()),
     )
 }
 
@@ -308,6 +310,77 @@ mod tests {
         assert!(
             missing.is_empty(),
             "前端会调用但后端没挂的端点：{missing:#?}\n已注册：{registered:#?}"
+        );
+    }
+
+    /// 前端流水线接口文件（C13）。计划 B 才会建它；不存在时返回 None。
+    /// 运行时读取而不是 include_str!，这样文件缺失不会让编译失败。
+    fn 读流水线前端文件() -> Option<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packages/web-core/src/entities/pipeline/api/pipelineApi.ts");
+        std::fs::read_to_string(path).ok()
+    }
+
+    /// 前端模板字符串里的占位参数（`${issueId}` 等）统一映射成后端路由表的 `{id}`（C4）。
+    fn 占位参数统一为_id(path: &str) -> String {
+        let mut out = String::with_capacity(path.len());
+        let mut rest = path;
+        while let Some(open) = rest.find("${") {
+            out.push_str(&rest[..open]);
+            let tail = &rest[open + 2..];
+            let Some(close) = tail.find('}') else {
+                out.push_str(&rest[open..]);
+                return out;
+            };
+            out.push_str("{id}");
+            rest = &tail[close + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[test]
+    fn 占位参数映射成_id() {
+        assert_eq!(
+            占位参数统一为_id("/api/local/issues/${issueId}/pipeline"),
+            "/api/local/issues/{id}/pipeline"
+        );
+        assert_eq!(
+            占位参数统一为_id("/api/local/pipeline/runs/${runId}/pause"),
+            "/api/local/pipeline/runs/{id}/pause"
+        );
+        assert_eq!(
+            占位参数统一为_id("/api/local/pipeline/pending"),
+            "/api/local/pipeline/pending"
+        );
+    }
+
+    #[test]
+    fn 流水线前端调用的路径都挂上了路由() {
+        // C13：pipelineApi.ts 由计划 B 建立；在那之前文件不存在，跳过扫描。
+        // 计划 B 落地后这里自动生效（只比对路径，方法由流水线路由单测覆盖）。
+        let Some(source) = 读流水线前端文件() else {
+            return;
+        };
+        let _ = router();
+        let registered = registered_endpoints();
+        let expanded = source.replace("${LOCAL_API_PREFIX}", "/api/local");
+        let mut missing = Vec::new();
+        let mut rest = expanded.as_str();
+        while let Some(at) = rest.find("/api/local/") {
+            let tail = &rest[at..];
+            let end = tail
+                .find(|c: char| c == '\'' || c == '"' || c == '`' || c == '?' || c.is_whitespace())
+                .unwrap_or(tail.len());
+            let path = 占位参数统一为_id(&tail[..end]);
+            if !registered.contains_key(&path) {
+                missing.push(path);
+            }
+            rest = &tail[end..];
+        }
+        assert!(
+            missing.is_empty(),
+            "流水线前端调用但后端没挂的路径：{missing:#?}"
         );
     }
 

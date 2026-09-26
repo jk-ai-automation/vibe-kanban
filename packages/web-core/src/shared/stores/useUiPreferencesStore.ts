@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { create } from 'zustand';
+import type { SelectionSource } from '@/shared/lib/scratchSelection';
 import type { RepoAction } from '@vibe/ui/components/RepoCard';
 import type { IssuePriority } from 'shared/remote-types';
 import {
@@ -379,6 +380,14 @@ type State = {
   // Last selected organization and project (persisted via scratch store)
   selectedOrgId: string | null;
   selectedProjectId: string | null;
+  /**
+   * 当前 `selectedProjectId` 是怎么来的：用户显式选择 / 路由进入（`user`），
+   * 还是自动挑的第一个（`fallback`）。只在内存里，不进 scratch。
+   * scratch 晚到时用它决定要不要保留会话选择，见 `shared/lib/scratchSelection.ts`。
+   */
+  selectedProjectSource: SelectionSource;
+  /** scratch 是否已经拉回来（或确认拿不到）。只在内存里。 */
+  scratchHydrated: boolean;
   createDraftWorkspaceByDefault: boolean;
 
   // UI preferences actions
@@ -468,7 +477,11 @@ type State = {
   // Last selected organization and project actions
   setSelectedOrgId: (orgId: string | null) => void;
   clearSelectedOrgId: () => void;
-  setSelectedProjectId: (projectId: string | null) => void;
+  setSelectedProjectId: (
+    projectId: string | null,
+    source?: SelectionSource
+  ) => void;
+  setScratchHydrated: (hydrated: boolean) => void;
   setCreateDraftWorkspaceByDefault: (value: boolean) => void;
 };
 
@@ -515,6 +528,8 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Last selected organization and project
   selectedOrgId: null,
   selectedProjectId: null,
+  selectedProjectSource: 'fallback' as SelectionSource,
+  scratchHydrated: false,
   createDraftWorkspaceByDefault: DEFAULT_CREATE_DRAFT_WORKSPACE_BY_DEFAULT,
 
   // UI preferences actions
@@ -884,10 +899,46 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   // Last selected organization and project actions
   setSelectedOrgId: (orgId) => set({ selectedOrgId: orgId }),
   clearSelectedOrgId: () => set({ selectedOrgId: null }),
-  setSelectedProjectId: (projectId) => set({ selectedProjectId: projectId }),
+  setSelectedProjectId: (projectId, source = 'fallback') =>
+    set({ selectedProjectId: projectId, selectedProjectSource: source }),
+  setScratchHydrated: (hydrated) => set({ scratchHydrated: hydrated }),
   setCreateDraftWorkspaceByDefault: (value) =>
     set({ createDraftWorkspaceByDefault: value }),
 }));
+
+/**
+ * 等 scratch 拉回来（或确认拿不到）再继续。
+ *
+ * 根路径要按「上次选中的组织 / 项目」跳转，而 scratch 走 WebSocket 通常比首屏
+ * 晚到；不等的话会按「第一个项目」跳，用户每次开应用都落错地方。
+ * 超时后照常继续，绝不把首屏卡住。
+ */
+export function waitForScratchHydration(timeoutMs = 3000): Promise<boolean> {
+  if (useUiPreferencesStore.getState().scratchHydrated) {
+    return Promise.resolve(true);
+  }
+
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (hydrated: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(hydrated);
+    };
+
+    const timer: ReturnType<typeof setTimeout> = setTimeout(
+      () => finish(false),
+      timeoutMs
+    );
+    const unsubscribe = useUiPreferencesStore.subscribe((state) => {
+      if (state.scratchHydrated) {
+        finish(true);
+      }
+    });
+  });
+}
 
 // Hook for repo action preference
 export function useRepoAction(

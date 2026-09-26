@@ -60,8 +60,21 @@ import { WorkspacesSidebarContainer } from '@/pages/workspaces/WorkspacesSidebar
 import { WorkspacesSidebarReopenTag } from '@vibe/ui/components/WorkspacesSidebar';
 import { useRemoteCloudHostsAppBarModel } from '@/shared/hooks/useRemoteCloudHosts';
 import { CloudShutdownExportBanner } from '@/shared/components/CloudShutdownExportBanner';
+import {
+  PersonalSidebar,
+  type PersonalNavKey,
+} from '@vibe/ui/components/PersonalSidebar';
+import { isLocalPersonalMode } from '@/shared/lib/local/runtimeMode';
+import {
+  PERSONAL_ROUTES,
+  personalNavActiveKey,
+} from '@/shared/lib/routes/personalRoutes';
+import { usePendingPipelines } from '@/entities/pipeline/model/hooks/usePipelineData';
 
 export function SharedAppLayout() {
+  // 个人版外壳（设计文档 §8.1）。运行时模式在入口 bootstrap 后就固定，
+  // 整个进程生命周期内不变（见 local-web App.tsx 的 AuthBoundary 注释）。
+  const isPersonalShell = isLocalPersonalMode();
   const appNavigation = useAppNavigation();
   const currentDestination = useCurrentAppDestination();
   const isMobile = useIsMobile();
@@ -73,12 +86,16 @@ export function SharedAppLayout() {
   const { appVersion } = useUserSystem();
   const updateVersion = useAppUpdateStore((s) => s.updateVersion);
   const restartForUpdate = useAppUpdateStore((s) => s.restart);
-  const { data: onlineCount } = useDiscordOnlineCount();
-  const { data: starCount } = useGitHubStars();
+  const { data: onlineCount } = useDiscordOnlineCount({
+    enabled: !isPersonalShell,
+  });
+  const { data: starCount } = useGitHubStars({ enabled: !isPersonalShell });
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isAppBarHovered, setIsAppBarHovered] = useState(false);
   const { hosts: remoteCloudHosts } = useRemoteCloudHostsAppBarModel();
-  const { hostId: routeHostId } = useParams({ strict: false });
+  const { hostId: routeHostId, projectId: routeProjectId } = useParams({
+    strict: false,
+  });
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -182,8 +199,11 @@ export function SharedAppLayout() {
   // 占位页不在 AppDestination 体系里（它不属于工作区 / 项目那几类目的地），
   // 所以激活态直接看路径，不去改导航模块的类型。
   const isTestingActive = location.pathname.startsWith('/testing');
+  // 个人版不渲染停服横幅（设计文档 §8.1）；团队版 / 云端构建条件不变。
   const showCloudShutdownBanner =
-    isExportActive || (isSignedIn && isProjectDestination(currentDestination));
+    !isPersonalShell &&
+    (isExportActive ||
+      (isSignedIn && isProjectDestination(currentDestination)));
   const isWorkspaceSidebarPreviewEnabled =
     !isMobile && isWorkspacesActive && !isLeftSidebarVisible;
   const activeProjectId = projectDestination?.projectId ?? null;
@@ -200,9 +220,61 @@ export function SharedAppLayout() {
   );
   useEffect(() => {
     if (activeProjectId) {
-      setSelectedProjectId(activeProjectId);
+      // 路由里的项目是用户自己点进来的，算显式选择：scratch 晚到时要保留并回存
+      setSelectedProjectId(activeProjectId, 'user');
     }
   }, [activeProjectId, setSelectedProjectId]);
+
+  // ---- 个人版左侧栏（设计文档 §8.1）----
+  const selectedProjectId = useUiPreferencesStore((s) => s.selectedProjectId);
+  // 详情全屏页不属于 AppDestination 体系，项目 id 从路由参数拿。
+  const personalProjectId =
+    activeProjectId ??
+    routeProjectId ??
+    selectedProjectId ??
+    orderedProjects[0]?.id ??
+    null;
+  const personalActiveKey = personalNavActiveKey(location.pathname);
+  const { data: pendingItems } = usePendingPipelines(
+    isPersonalShell ? personalProjectId : null
+  );
+
+  const handlePersonalNavigate = useCallback(
+    (key: PersonalNavKey) => {
+      switch (key) {
+        case 'workbench':
+          void navigate({ to: PERSONAL_ROUTES.workbench });
+          return;
+        case 'pipeline':
+          if (personalProjectId) {
+            appNavigation.goToProject(personalProjectId);
+          } else {
+            void navigate({ to: PERSONAL_ROUTES.workbench });
+          }
+          return;
+        case 'testing':
+          void navigate({ to: PERSONAL_ROUTES.testing });
+          return;
+        case 'docs':
+          void navigate({ to: PERSONAL_ROUTES.docs });
+          return;
+        case 'settings':
+          void SettingsDialog.show();
+          return;
+      }
+    },
+    [appNavigation, navigate, personalProjectId]
+  );
+
+  const handlePersonalProjectSelect = useCallback(
+    (projectId: string) => {
+      setSelectedProjectId(projectId, 'user');
+      if (personalActiveKey === 'pipeline') {
+        appNavigation.goToProject(projectId);
+      }
+    },
+    [appNavigation, personalActiveKey, setSelectedProjectId]
+  );
 
   const handleWorkspacesClick = useCallback(() => {
     void navigate({ to: '/workspaces' });
@@ -344,46 +416,66 @@ export function SharedAppLayout() {
               onOpenDrawer={() => setIsDrawerOpen(true)}
             />
             {/* Desktop AppBar sidebar. */}
-            <AppBar
-              projects={orderedProjects}
-              hosts={remoteCloudHosts}
-              activeHostId={activeHostId}
-              onCreateProject={handleCreateProject}
-              onExportClick={handleExportClick}
-              onWorkspacesClick={handleWorkspacesClick}
-              onTestingClick={handleTestingClick}
-              isTestingActive={isTestingActive}
-              onHostClick={handleHostClick}
-              onPairHostClick={handlePairHostClick}
-              onProjectClick={handleProjectClick}
-              onProjectsDragEnd={handleProjectsDragEnd}
-              isSavingProjectOrder={isSavingProjectOrder}
-              isWorkspacesActive={isWorkspacesActive}
-              isExportActive={isExportActive}
-              activeProjectId={activeProjectId}
-              isSignedIn={isSignedIn}
-              isLoadingProjects={isLoading}
-              onSignIn={handleSignIn}
-              onHoverStart={() => setIsAppBarHovered(true)}
-              onHoverEnd={() => setIsAppBarHovered(false)}
-              notificationBell={
-                isSignedIn ? <AppBarNotificationBellContainer /> : undefined
-              }
-              userPopover={
-                <AppBarUserPopoverContainer
-                  organizations={organizations}
-                  selectedOrgId={selectedOrgId ?? ''}
-                  onOrgSelect={setSelectedOrgId}
-                />
-              }
-              starCount={starCount}
-              onlineCount={onlineCount}
-              appVersion={appVersion}
-              updateVersion={updateVersion}
-              onUpdateClick={restartForUpdate ?? undefined}
-              githubIconPath={siGithub.path}
-              discordIconPath={siDiscord.path}
-            />
+            {isPersonalShell ? (
+              <PersonalSidebar
+                projects={orderedProjects}
+                activeProjectId={personalProjectId}
+                onProjectSelect={handlePersonalProjectSelect}
+                onCreateProject={handleCreateProject}
+                activeKey={personalActiveKey}
+                onNavigate={handlePersonalNavigate}
+                pendingCount={pendingItems?.length ?? 0}
+                appVersion={appVersion}
+                userSlot={
+                  <AppBarUserPopoverContainer
+                    organizations={organizations}
+                    selectedOrgId={selectedOrgId ?? ''}
+                    onOrgSelect={setSelectedOrgId}
+                  />
+                }
+              />
+            ) : (
+              <AppBar
+                projects={orderedProjects}
+                hosts={remoteCloudHosts}
+                activeHostId={activeHostId}
+                onCreateProject={handleCreateProject}
+                onExportClick={handleExportClick}
+                onWorkspacesClick={handleWorkspacesClick}
+                onTestingClick={handleTestingClick}
+                isTestingActive={isTestingActive}
+                onHostClick={handleHostClick}
+                onPairHostClick={handlePairHostClick}
+                onProjectClick={handleProjectClick}
+                onProjectsDragEnd={handleProjectsDragEnd}
+                isSavingProjectOrder={isSavingProjectOrder}
+                isWorkspacesActive={isWorkspacesActive}
+                isExportActive={isExportActive}
+                activeProjectId={activeProjectId}
+                isSignedIn={isSignedIn}
+                isLoadingProjects={isLoading}
+                onSignIn={handleSignIn}
+                onHoverStart={() => setIsAppBarHovered(true)}
+                onHoverEnd={() => setIsAppBarHovered(false)}
+                notificationBell={
+                  isSignedIn ? <AppBarNotificationBellContainer /> : undefined
+                }
+                userPopover={
+                  <AppBarUserPopoverContainer
+                    organizations={organizations}
+                    selectedOrgId={selectedOrgId ?? ''}
+                    onOrgSelect={setSelectedOrgId}
+                  />
+                }
+                starCount={starCount}
+                onlineCount={onlineCount}
+                appVersion={appVersion}
+                updateVersion={updateVersion}
+                onUpdateClick={restartForUpdate ?? undefined}
+                githubIconPath={siGithub.path}
+                discordIconPath={siDiscord.path}
+              />
+            )}
             {/* Desktop content. */}
             <div className="relative min-h-0 overflow-hidden">
               {isWorkspaceSidebarPreviewEnabled && (
@@ -440,130 +532,154 @@ export function SharedAppLayout() {
           open={isDrawerOpen && isMobile}
           onClose={() => setIsDrawerOpen(false)}
         >
-          <div className="flex flex-col h-full">
-            {/* Header: org name + close button */}
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <span className="text-sm font-medium text-high truncate">
-                {organizations.find((o) => o.id === selectedOrgId)?.name ??
-                  'Organization'}
-              </span>
-              <button
-                type="button"
-                onClick={() => setIsDrawerOpen(false)}
-                className="p-1 rounded-sm text-low hover:text-normal cursor-pointer"
-              >
-                <XIcon className="h-4 w-4" weight="bold" />
-              </button>
-            </div>
-
-            {/* Workspaces link */}
-            <button
-              type="button"
-              onClick={() => {
-                void navigate({ to: '/workspaces' });
+          {isPersonalShell ? (
+            <PersonalSidebar
+              testId="personal-sidebar-mobile"
+              className="w-full border-r-0"
+              projects={orderedProjects}
+              activeProjectId={personalProjectId}
+              onProjectSelect={(projectId) => {
+                handlePersonalProjectSelect(projectId);
                 setIsDrawerOpen(false);
               }}
-              className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
-            >
-              <LayoutIcon className="h-4 w-4" />
-              Workspaces
-            </button>
-
-            {/* Divider */}
-            <div className="border-t border-border mx-4" />
-
-            {/* Export link */}
-            {isSignedIn && (
-              <div className="px-4 py-3">
-                <p className="mb-2 text-xs font-medium text-low">Export</p>
+              onCreateProject={() => {
+                void handleCreateProject();
+                setIsDrawerOpen(false);
+              }}
+              activeKey={personalActiveKey}
+              onNavigate={(key) => {
+                handlePersonalNavigate(key);
+                setIsDrawerOpen(false);
+              }}
+              pendingCount={pendingItems?.length ?? 0}
+              appVersion={appVersion}
+            />
+          ) : (
+            <div className="flex flex-col h-full">
+              {/* Header: org name + close button */}
+              <div className="flex items-center justify-between p-4 border-b border-border">
+                <span className="text-sm font-medium text-high truncate">
+                  {organizations.find((o) => o.id === selectedOrgId)?.name ??
+                    'Organization'}
+                </span>
                 <button
                   type="button"
-                  onClick={() => {
-                    handleExportClick();
-                    setIsDrawerOpen(false);
-                  }}
-                  className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-sm text-normal hover:bg-secondary cursor-pointer"
+                  onClick={() => setIsDrawerOpen(false)}
+                  className="p-1 rounded-sm text-low hover:text-normal cursor-pointer"
                 >
-                  <DownloadSimpleIcon className="h-4 w-4" />
-                  Export data
+                  <XIcon className="h-4 w-4" weight="bold" />
                 </button>
               </div>
-            )}
 
-            {/* Divider */}
-            {isSignedIn && <div className="border-t border-border mx-4" />}
+              {/* Workspaces link */}
+              <button
+                type="button"
+                onClick={() => {
+                  void navigate({ to: '/workspaces' });
+                  setIsDrawerOpen(false);
+                }}
+                className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+              >
+                <LayoutIcon className="h-4 w-4" />
+                Workspaces
+              </button>
 
-            {/* Project list */}
-            <div className="flex-1 overflow-y-auto p-2">
-              {isSignedIn ? (
-                orderedProjects.map((project) => (
+              {/* Divider */}
+              <div className="border-t border-border mx-4" />
+
+              {/* Export link */}
+              {isSignedIn && (
+                <div className="px-4 py-3">
+                  <p className="mb-2 text-xs font-medium text-low">Export</p>
                   <button
                     type="button"
-                    key={project.id}
                     onClick={() => {
-                      handleProjectClick(project.id);
+                      handleExportClick();
                       setIsDrawerOpen(false);
                     }}
-                    className={cn(
-                      'flex items-center gap-3 w-full px-3 py-2.5 rounded-md text-sm text-left cursor-pointer',
-                      'transition-colors',
-                      project.id === activeProjectId
-                        ? 'bg-brand/10 text-high'
-                        : 'text-normal hover:bg-secondary'
-                    )}
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-sm text-normal hover:bg-secondary cursor-pointer"
                   >
-                    <span
-                      className="h-2.5 w-2.5 rounded-full shrink-0"
-                      style={{ backgroundColor: `hsl(${project.color})` }}
-                    />
-                    <span className="truncate">{project.name}</span>
+                    <DownloadSimpleIcon className="h-4 w-4" />
+                    Export data
                   </button>
-                ))
-              ) : (
-                <div className="px-4 py-6 text-center">
-                  <KanbanIcon
-                    className="h-8 w-8 mx-auto text-low"
-                    weight="bold"
-                  />
-                  <p className="mt-3 text-sm font-medium text-high">
-                    Kanban Boards
-                  </p>
-                  <p className="mt-1 text-xs text-low">
-                    Sign in to organise your coding agents with kanban boards.
-                  </p>
-                  <div className="mt-4">
+                </div>
+              )}
+
+              {/* Divider */}
+              {isSignedIn && <div className="border-t border-border mx-4" />}
+
+              {/* Project list */}
+              <div className="flex-1 overflow-y-auto p-2">
+                {isSignedIn ? (
+                  orderedProjects.map((project) => (
                     <button
                       type="button"
+                      key={project.id}
                       onClick={() => {
-                        handleSignIn();
+                        handleProjectClick(project.id);
                         setIsDrawerOpen(false);
                       }}
-                      className="w-full px-3 py-2 rounded-md text-sm font-medium bg-brand text-on-brand hover:bg-brand-hover cursor-pointer"
+                      className={cn(
+                        'flex items-center gap-3 w-full px-3 py-2.5 rounded-md text-sm text-left cursor-pointer',
+                        'transition-colors',
+                        project.id === activeProjectId
+                          ? 'bg-brand/10 text-high'
+                          : 'text-normal hover:bg-secondary'
+                      )}
                     >
-                      Sign in
+                      <span
+                        className="h-2.5 w-2.5 rounded-full shrink-0"
+                        style={{ backgroundColor: `hsl(${project.color})` }}
+                      />
+                      <span className="truncate">{project.name}</span>
                     </button>
+                  ))
+                ) : (
+                  <div className="px-4 py-6 text-center">
+                    <KanbanIcon
+                      className="h-8 w-8 mx-auto text-low"
+                      weight="bold"
+                    />
+                    <p className="mt-3 text-sm font-medium text-high">
+                      Kanban Boards
+                    </p>
+                    <p className="mt-1 text-xs text-low">
+                      Sign in to organise your coding agents with kanban boards.
+                    </p>
+                    <div className="mt-4">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleSignIn();
+                          setIsDrawerOpen(false);
+                        }}
+                        className="w-full px-3 py-2 rounded-md text-sm font-medium bg-brand text-on-brand hover:bg-brand-hover cursor-pointer"
+                      >
+                        Sign in
+                      </button>
+                    </div>
                   </div>
+                )}
+              </div>
+
+              {/* Create Project button */}
+              {isSignedIn && (
+                <div className="p-3 border-t border-border">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleCreateProject();
+                      setIsDrawerOpen(false);
+                    }}
+                    className="flex items-center gap-2 w-full px-3 py-2.5 rounded-md text-sm text-low hover:text-normal hover:bg-secondary cursor-pointer"
+                  >
+                    <PlusIcon className="h-4 w-4" />
+                    Create Project
+                  </button>
                 </div>
               )}
             </div>
-
-            {/* Create Project button */}
-            {isSignedIn && (
-              <div className="p-3 border-t border-border">
-                <button
-                  type="button"
-                  onClick={() => {
-                    handleCreateProject();
-                    setIsDrawerOpen(false);
-                  }}
-                  className="flex items-center gap-2 w-full px-3 py-2.5 rounded-md text-sm text-low hover:text-normal hover:bg-secondary cursor-pointer"
-                >
-                  <PlusIcon className="h-4 w-4" />
-                  Create Project
-                </button>
-              </div>
-            )}
-          </div>
+          )}
         </MobileDrawer>
       </div>
     </SyncErrorProvider>

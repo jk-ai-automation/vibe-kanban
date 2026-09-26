@@ -1052,7 +1052,24 @@ pub trait ContainerService {
     ) -> Result<ExecutionProcess, ContainerError> {
         // Create container
         self.create(workspace).await?;
+        self.start_new_session(workspace, executor_config, prompt, true, Vec::new())
+            .await
+    }
 
+    /// 在已建好目录的工作区里开一个新会话并启动编码智能体。
+    ///
+    /// `run_setup = true` 时先跑仓库 setup 脚本（与原 `start_workspace` 完全一致）；
+    /// 流水线后续阶段在同一工作区开新会话时传 `false`，跳过 setup。
+    /// 智能体之后照常串上仓库 cleanup 脚本。
+    /// `plugin_dirs` 是会话级插件目录（技能包），只有 Claude Code 会用。
+    async fn start_new_session(
+        &self,
+        workspace: &Workspace,
+        executor_config: ExecutorConfig,
+        prompt: String,
+        run_setup: bool,
+        plugin_dirs: Vec<std::path::PathBuf>,
+    ) -> Result<ExecutionProcess, ContainerError> {
         let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
 
         let workspace = Workspace::find_by_id(&self.db().pool, workspace.id)
@@ -1071,7 +1088,11 @@ pub trait ContainerService {
         )
         .await?;
 
-        let repos_with_setup: Vec<_> = repos.iter().filter(|r| r.setup_script.is_some()).collect();
+        let repos_with_setup: Vec<_> = if run_setup {
+            repos.iter().filter(|r| r.setup_script.is_some()).collect()
+        } else {
+            Vec::new()
+        };
 
         let all_parallel = repos_with_setup.iter().all(|r| r.parallel_setup_script);
 
@@ -1088,6 +1109,7 @@ pub trait ContainerService {
                 prompt,
                 executor_config: executor_config.clone(),
                 working_dir,
+                plugin_dirs,
             }),
             cleanup_action.map(Box::new),
         );

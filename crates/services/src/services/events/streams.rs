@@ -11,6 +11,21 @@ use super::{
     types::{EventPatch, RecordTypes},
 };
 
+/// 需求流转发的 patch 路径前缀（契约 §3）。
+const ISSUE_STREAM_PREFIXES: [&str; 5] = [
+    "/issues",
+    "/project_statuses",
+    "/issue_comments",
+    "/pipeline_runs",
+    "/pipeline_stage_runs",
+];
+
+fn is_issue_stream_path(path: &str) -> bool {
+    ISSUE_STREAM_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
 impl EventService {
     /// Stream execution processes for a specific session with initial snapshot (raw LogMsg format for WebSocket)
     pub async fn stream_execution_processes_for_session_raw(
@@ -315,7 +330,7 @@ impl EventService {
         Ok(initial_stream.chain(filtered_stream).boxed())
     }
 
-    /// 需求看板流：首帧给出 issues / project_statuses 全量，
+    /// 需求看板流：首帧给出 issues / project_statuses / pipeline_runs / pipeline_stage_runs 全量，
     /// 之后只转发属于该项目的增量 patch。
     pub async fn stream_issues_raw(
         &self,
@@ -324,7 +339,11 @@ impl EventService {
         futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>,
         super::types::EventError,
     > {
-        use db::models::{issue::Issues, local_project_status::ProjectStatuses};
+        use db::models::{
+            issue::Issues,
+            local_project_status::ProjectStatuses,
+            pipeline::{PipelineRuns, PipelineStageRuns},
+        };
 
         let issues = Issues::find_by_project(&self.db.pool, project_id).await?;
         let issues_map: serde_json::Map<String, serde_json::Value> = issues
@@ -339,9 +358,23 @@ impl EventService {
             .map(|status| (status.id.to_string(), serde_json::to_value(status).unwrap()))
             .collect();
 
+        let runs = PipelineRuns::list_by_project(&self.db.pool, project_id).await?;
+        let runs_map: serde_json::Map<String, serde_json::Value> = runs
+            .into_iter()
+            .map(|run| (run.id.to_string(), serde_json::to_value(run).unwrap()))
+            .collect();
+
+        let stage_runs = PipelineStageRuns::list_by_project(&self.db.pool, project_id).await?;
+        let stage_runs_map: serde_json::Map<String, serde_json::Value> = stage_runs
+            .into_iter()
+            .map(|stage| (stage.id.to_string(), serde_json::to_value(stage).unwrap()))
+            .collect();
+
         let initial_patch = json!([
             { "op": "replace", "path": "/issues", "value": issues_map },
-            { "op": "replace", "path": "/project_statuses", "value": statuses_map }
+            { "op": "replace", "path": "/project_statuses", "value": statuses_map },
+            { "op": "replace", "path": "/pipeline_runs", "value": runs_map },
+            { "op": "replace", "path": "/pipeline_stage_runs", "value": stage_runs_map }
         ]);
         let initial_msg = LogMsg::JsonPatch(serde_json::from_value(initial_patch).unwrap());
 
@@ -355,10 +388,7 @@ impl EventService {
                     };
                     let op = patch.0.first()?;
                     let path = op.path().to_string();
-                    if !(path.starts_with("/issues")
-                        || path.starts_with("/project_statuses")
-                        || path.starts_with("/issue_comments"))
-                    {
+                    if !is_issue_stream_path(&path) {
                         return None;
                     }
 
@@ -383,5 +413,26 @@ impl EventService {
 
         let initial_stream = futures::stream::iter(vec![Ok(initial_msg), Ok(LogMsg::Ready)]);
         Ok(initial_stream.chain(filtered_stream).boxed())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_issue_stream_path;
+
+    #[test]
+    fn 需求流转发流水线两张表的路径() {
+        for path in [
+            "/issues/1",
+            "/project_statuses/1",
+            "/issue_comments/1",
+            "/pipeline_runs/1",
+            "/pipeline_stage_runs/1",
+        ] {
+            assert!(is_issue_stream_path(path), "{path} 应转发");
+        }
+        for path in ["/workspaces/1", "/execution_processes/1", "/scratch"] {
+            assert!(!is_issue_stream_path(path), "{path} 不应转发");
+        }
     }
 }
