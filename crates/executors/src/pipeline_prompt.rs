@@ -6,7 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
-pub const SKILL_PREFIX: &str = "使用技能 ";
+pub const SKILL_PREFIX: &str = "先用 Skill 工具加载技能 ";
+pub const SKILL_SUFFIX: &str = "，严格按它执行。";
 pub const REQUIREMENT_LABEL: &str = "需求：";
 pub const ARTIFACTS_DIR_LABEL: &str = "产出物目录（绝对路径）：";
 pub const REQUIRED_ARTIFACTS_LABEL: &str = "必须产出：";
@@ -266,7 +267,7 @@ mod tests {
 
     fn 提示词(dir: &std::path::Path, required: &str, title: &str) -> String {
         format!(
-            "使用技能 vk-review。\n需求：VK-7 {title}\n产出物目录（绝对路径）：{}\n必须产出：{required}\n上一阶段产出：spec.md\n这是自动流水线，不要向人提问；拿不准的写进产出物的「待澄清」一节。",
+            "先用 Skill 工具加载技能 vk-pipeline:vk-review，严格按它执行。\n需求：VK-7 {title}\n产出物目录（绝对路径）：{}\n必须产出：{required}\n上一阶段产出：spec.md\n这是自动流水线，不要向人提问；拿不准的写进产出物的「待澄清」一节。",
             dir.display()
         )
     }

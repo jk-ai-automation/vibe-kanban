@@ -150,6 +150,8 @@ pub(crate) struct FakeLaunch {
     /// 智能体是提示词，检查是脚本。
     pub prompt: String,
     pub run_setup: bool,
+    /// 会话级插件目录（检查脚本恒为空）。
+    pub plugin_dirs: Vec<PathBuf>,
 }
 
 /// 假启动器：不起进程，只记账；智能体启动时按提示词写 qa-mode 同款占位产出物。
@@ -215,6 +217,7 @@ impl StageLauncher for FakeLauncher {
         _executor_config: &ExecutorConfig,
         prompt: String,
         run_setup: bool,
+        plugin_dirs: Vec<PathBuf>,
     ) -> Result<LaunchedStep, PipelineError> {
         if self.skip_running_on_start.load(Ordering::SeqCst) {
             sqlx::query(
@@ -252,6 +255,7 @@ impl StageLauncher for FakeLauncher {
             execution_process_id,
             prompt,
             run_setup,
+            plugin_dirs,
         }))
     }
 
@@ -273,6 +277,7 @@ impl StageLauncher for FakeLauncher {
             execution_process_id,
             prompt: script,
             run_setup: false,
+            plugin_dirs: Vec::new(),
         }))
     }
 

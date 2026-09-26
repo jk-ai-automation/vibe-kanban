@@ -205,6 +205,7 @@ fn generate_types_content() -> String {
         db::models::pipeline::StartPipelineRequest::decl(),
         db::models::pipeline::GateDecisionRequest::decl(),
         db::models::pipeline::PendingPipelineItem::decl(),
+        services::services::pipeline::PipelineSkillInfo::decl(),
         git_host::UnifiedPrComment::decl(),
         git_host::ProviderKind::decl(),
         git_host::PullRequestDetail::decl(),

@@ -23,6 +23,8 @@
         "agentsDesc": "Configuraciones de agentes",
         "mcp": "Servidores MCP",
         "mcpDesc": "Servidores de Protocolo de Contexto de Modelo (MCP)",
+        "pipeline-skills": "Habilidades del flujo",
+        "pipeline-skillsDesc": "Habilidad que carga cada etapa",
         "organizations": "Organization Settings",
         "organizationsDesc": "Manage organization members and permissions",
         "remote-projects": "Proyectos",
@@ -390,6 +392,25 @@
         "successMessage": "✓ ¡Configuración MCP guardada exitosamente!",
         "loading": "Cargando configuración actual del servidor MCP...",
         "unsavedChanges": "• Tienes cambios sin guardar"
+      }
+    },
+    "pipelineSkills": {
+      "description": "Cada etapa del flujo carga una habilidad del complemento integrado vk-pipeline. El complemento se inyecta por sesión y nunca se escribe en tus repositorios.",
+      "readOnly": "Solo lectura. Las habilidades de terceros están fijadas por suma de verificación en skills.lock.json.",
+      "loading": "Cargando habilidades…",
+      "loadError": "No se pudieron cargar las habilidades: {{message}}",
+      "empty": "No se encontraron habilidades.",
+      "noStage": "Referenciada por otras habilidades",
+      "columns": {
+        "name": "Habilidad",
+        "source": "Origen",
+        "version": "Versión",
+        "stage": "Etapa"
+      },
+      "source": {
+        "platform": "Integrada",
+        "superpowers": "superpowers",
+        "atp": "atp"
       }
     },
     "projects": {

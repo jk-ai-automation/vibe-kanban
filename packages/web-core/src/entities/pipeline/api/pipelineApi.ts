@@ -4,6 +4,7 @@ import type {
   IssueArtifact,
   IssuePipelineView,
   PendingPipelineItem,
+  PipelineSkillInfo,
   StartPipelineRequest,
 } from 'shared/types';
 import type { CreateIssueRequest } from 'shared/remote-types';
@@ -41,6 +42,7 @@ export const PIPELINE_API_PATHS = {
     projectId
       ? `/api/local/pipeline/pending?project_id=${encodeURIComponent(projectId)}`
       : '/api/local/pipeline/pending',
+  skills: '/api/local/pipeline/skills',
 } as const;
 
 export class PipelineApiError extends Error {
@@ -189,4 +191,9 @@ export async function createIssueAndStartPipeline(args: {
     wrapped.issueId = issueId;
     throw wrapped;
   }
+}
+
+/** 设置页「流水线技能」的只读清单。 */
+export function getPipelineSkills(): Promise<PipelineSkillInfo[]> {
+  return requestEnvelope(PIPELINE_API_PATHS.skills);
 }

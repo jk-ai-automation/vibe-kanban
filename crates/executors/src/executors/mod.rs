@@ -1,4 +1,7 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use command_group::AsyncGroupChild;
@@ -223,6 +226,10 @@ pub trait StandardCodingAgentExecutor {
     fn apply_overrides(&mut self, _executor_config: &ExecutorConfig) {}
 
     fn use_approvals(&mut self, _approvals: Arc<dyn ExecutorApprovalService>) {}
+
+    /// 会话级插件目录（Claude Code 的 `--plugin-dir`，只对当次会话生效）。
+    /// 不支持插件的执行器忽略它——所以这里是空实现，不是 `unimplemented!()`。
+    fn set_plugin_dirs(&mut self, _dirs: &[PathBuf]) {}
 
     async fn spawn(
         &self,

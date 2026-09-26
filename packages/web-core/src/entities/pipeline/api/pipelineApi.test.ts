@@ -262,6 +262,7 @@ describe('后端路由契约测试（C13）能解析本文件', () => {
       '/api/local/pipeline/runs/{id}/resume',
       '/api/local/pipeline/runs/{id}/cancel',
       '/api/local/pipeline/pending',
+      '/api/local/pipeline/skills',
     ]);
     const seen = pathsSeenByRustContractTest(source);
     expect(seen.filter((path) => !registered.has(path))).toEqual([]);

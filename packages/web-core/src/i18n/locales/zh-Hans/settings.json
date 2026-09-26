@@ -23,6 +23,8 @@
         "agentsDesc": "编码代理配置",
         "mcp": "MCP 服务器",
         "mcpDesc": "模型上下文协议服务器",
+        "pipeline-skills": "流水线技能",
+        "pipeline-skillsDesc": "各阶段加载的技能",
         "organizations": "组织设置",
         "organizationsDesc": "管理组织成员和权限",
         "remote-projects": "项目",
@@ -390,6 +392,25 @@
         "successMessage": "✓ MCP 配置保存成功！",
         "loading": "加载当前 MCP 服务器配置...",
         "unsavedChanges": "• 您有未保存的更改"
+      }
+    },
+    "pipelineSkills": {
+      "description": "流水线的每个阶段都从内置的 vk-pipeline 插件里加载一个技能。插件按会话注入，不会写进你的仓库。",
+      "readOnly": "只读。外来技能由 skills.lock.json 按校验和锁定。",
+      "loading": "正在加载技能…",
+      "loadError": "加载技能失败：{{message}}",
+      "empty": "没有找到技能。",
+      "noStage": "被其它技能引用",
+      "columns": {
+        "name": "技能",
+        "source": "来源",
+        "version": "版本",
+        "stage": "阶段"
+      },
+      "source": {
+        "platform": "平台自带",
+        "superpowers": "superpowers",
+        "atp": "atp"
       }
     },
     "projects": {

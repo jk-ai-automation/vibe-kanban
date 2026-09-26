@@ -241,6 +241,9 @@ jobs:
           setup-node: 'true'
           setup-sqlx-cli: 'true'
 
+      - name: Check pipeline skills lock
+        run: npm run pipeline-skills:check
+
       - name: Check generated types
         run: npm run generate-types:check
 

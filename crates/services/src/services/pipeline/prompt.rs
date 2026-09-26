@@ -5,7 +5,7 @@ use std::path::Path;
 use executors::pipeline_prompt::{
     ARTIFACTS_DIR_LABEL, FEEDBACK_LABEL, PREVIOUS_ARTIFACTS_LABEL, PREVIOUS_VERSION_HINT,
     PREVIOUS_VERSION_LABEL, REQUIRED_ARTIFACTS_LABEL, REQUIREMENT_LABEL, SKILL_PREFIX,
-    format_artifact_list,
+    SKILL_SUFFIX, format_artifact_list,
 };
 
 pub const AUTOMATION_NOTICE: &str =
@@ -27,7 +27,7 @@ pub struct StagePromptInput<'a> {
 
 pub fn build_stage_prompt(input: &StagePromptInput<'_>) -> String {
     let mut lines = Vec::with_capacity(7);
-    lines.push(format!("{SKILL_PREFIX}{}。", input.skill));
+    lines.push(format!("{SKILL_PREFIX}{}{SKILL_SUFFIX}", input.skill));
     lines.push(format!(
         "{REQUIREMENT_LABEL}{} {}",
         input.simple_id,
@@ -120,13 +120,28 @@ mod tests {
         let prompt = build_stage_prompt(&输入(&required, &existing, None));
         assert_eq!(
             prompt,
-            "使用技能 vk-spec。\n\
+            "先用 Skill 工具加载技能 vk-spec，严格按它执行。\n\
              需求：VK-12 导出报表 [qa:review-blocker-once]\n\
              产出物目录（绝对路径）：/abs/ws/.vk/runs/VK-12\n\
              必须产出：spec.md, plan.md\n\
              上一阶段产出：requirement.md\n\
              这是自动流水线，不要向人提问；拿不准的写进产出物的「待澄清」一节。"
         );
+    }
+
+    #[test]
+    fn 带命名空间的技能名原样进首行且不影响解析() {
+        let required = vec!["review.json".to_string()];
+        let prompt = build_stage_prompt(&StagePromptInput {
+            skill: "vk-pipeline:vk-review",
+            ..输入(&required, &[], None)
+        });
+        assert!(
+            prompt.starts_with("先用 Skill 工具加载技能 vk-pipeline:vk-review，严格按它执行。\n"),
+            "{prompt}"
+        );
+        let parsed = parse_pipeline_prompt(&prompt).expect("模拟器仍要能解析");
+        assert_eq!(parsed.required, required);
     }
 
     #[test]

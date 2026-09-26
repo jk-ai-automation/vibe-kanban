@@ -626,6 +626,36 @@ export type PendingPipelineItem = { run: PipelineRun,
  */
 stage_run: PipelineStageRun, issue_simple_id: string, issue_title: string, };
 
+export type PipelineSkillInfo = { 
+/**
+ * 目录名，例：`vk-requirement`
+ */
+name: string, 
+/**
+ * 提示词里写的引用名，例：`vk-pipeline:vk-requirement`
+ */
+qualified_name: string, 
+/**
+ * `platform`（平台自写）或锁文件里的来源名（`superpowers` / `atp`）
+ */
+source: string, 
+/**
+ * 来源的发布版本或提交号；平台自写为 null
+ */
+source_version: string | null, 
+/**
+ * 来源许可证；平台自写为 null
+ */
+license: string | null, 
+/**
+ * 内置模板里用在哪个阶段；没被用到为 null
+ */
+stage: PipelineStageKey | null, 
+/**
+ * 该技能目录下的文件数（外来技能取锁文件白名单，平台技能恒为 1）
+ */
+file_count: number, };
+
 export type UnifiedPrComment = { "comment_type": "general", id: string, author: string, author_association: string | null, body: string, created_at: string, url: string | null, } | { "comment_type": "review", id: bigint, author: string, author_association: string | null, body: string, created_at: string, url: string | null, path: string, line: bigint | null, side: string | null, diff_hunk: string | null, };
 
 export type ProviderKind = "git_hub" | "azure_dev_ops" | "unknown";
@@ -898,7 +928,14 @@ executor_config: ExecutorConfig,
  * Optional relative path to execute the agent in (relative to container_ref).
  * If None, uses the container_ref directory directly.
  */
-working_dir: string | null, };
+working_dir: string | null, 
+/**
+ * 会话级插件目录（Claude Code `--plugin-dir`）。流水线用它注入技能包。
+ *
+ * **必须 `#[serde(default)]`**：库里 `execution_processes.executor_action` 的老 JSON
+ * 没有这个字段，反序列化不能失败。
+ */
+plugin_dirs: Array<string>, };
 
 export type CodingAgentFollowUpRequest = { prompt: string, session_id: string, reset_to_message_id: string | null, 
 /**

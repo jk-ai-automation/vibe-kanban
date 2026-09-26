@@ -23,6 +23,8 @@
         "agentsDesc": "Configurations des agents de codage",
         "mcp": "Serveurs MCP",
         "mcpDesc": "Serveurs Model Context Protocol",
+        "pipeline-skills": "Compétences du pipeline",
+        "pipeline-skillsDesc": "Compétence chargée par chaque étape",
         "organizations": "Paramètres de l'organisation",
         "organizationsDesc": "Gérer les membres et les permissions de l'organisation",
         "remote-projects": "Projets",
@@ -390,6 +392,25 @@
         "successMessage": "✓ Configuration MCP enregistrée avec succès !",
         "loading": "Chargement de la configuration actuelle des serveurs MCP...",
         "unsavedChanges": "• Vous avez des modifications non enregistrées"
+      }
+    },
+    "pipelineSkills": {
+      "description": "Chaque étape du pipeline charge une compétence depuis le plugin intégré vk-pipeline. Le plugin est injecté par session et n'est jamais écrit dans vos dépôts.",
+      "readOnly": "Lecture seule. Les compétences tierces sont verrouillées par somme de contrôle dans skills.lock.json.",
+      "loading": "Chargement des compétences…",
+      "loadError": "Impossible de charger les compétences : {{message}}",
+      "empty": "Aucune compétence trouvée.",
+      "noStage": "Référencée par d'autres compétences",
+      "columns": {
+        "name": "Compétence",
+        "source": "Source",
+        "version": "Version",
+        "stage": "Étape"
+      },
+      "source": {
+        "platform": "Intégrée",
+        "superpowers": "superpowers",
+        "atp": "atp"
       }
     },
     "projects": {

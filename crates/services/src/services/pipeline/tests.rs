@@ -884,6 +884,7 @@ async fn 退出事件读真实进程行_顺序_setup_链断按失败_并行_setu
             prompt: "p".to_string(),
             executor_config: ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
             working_dir: None,
+            plugin_dirs: Vec::new(),
         }),
         None,
     );
@@ -1244,5 +1245,88 @@ async fn 检查脚本失败后下一轮提示词带失败原因() {
     assert!(
         prompt.contains("上一次被打回的意见：检查脚本 进程未成功结束（状态：失败，退出码 1）"),
         "{prompt}"
+    );
+}
+
+#[tokio::test]
+async fn 阶段提示词带插件命名空间且注入插件目录() {
+    let s = 场景::新建("注入技能插件").await;
+    s.启动().await.unwrap();
+    let launch = s.launcher.last();
+    assert!(
+        launch
+            .prompt
+            .starts_with("先用 Skill 工具加载技能 vk-pipeline:vk-requirement，严格按它执行。\n"),
+        "{}",
+        launch.prompt
+    );
+    assert_eq!(launch.plugin_dirs.len(), 1, "应注入一个插件目录");
+    let dir = &launch.plugin_dirs[0];
+    assert!(
+        dir.join(".claude-plugin/plugin.json").is_file(),
+        "{dir:?} 应是插件根目录"
+    );
+    assert!(
+        dir.join("skills/vk-requirement/SKILL.md").is_file(),
+        "{dir:?} 里应有 vk-requirement"
+    );
+}
+
+/// 计划 §6 硬约束 1：技能只经 `--plugin-dir` 注入，绝不落进工作区（更不进用户仓库）。
+#[tokio::test]
+async fn 技能文件不落进工作区() {
+    let s = 场景::新建("技能不落盘").await;
+    s.启动().await.unwrap();
+    let launch = s.launcher.last();
+    let 工作区 = s.dir.path().join("workspace");
+    assert!(
+        !launch.plugin_dirs[0].starts_with(&工作区),
+        "插件目录 {:?} 不该在工作区里",
+        launch.plugin_dirs[0]
+    );
+    let mut stack = vec![工作区.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            assert_ne!(
+                path.file_name().and_then(|n| n.to_str()),
+                Some("SKILL.md"),
+                "工作区里出现了技能文件：{path:?}"
+            );
+            if path.is_dir() {
+                stack.push(path);
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "qa-mode"))]
+#[tokio::test]
+async fn 非_claude_code_执行器启动被拒() {
+    let s = 场景::新建("换个执行器").await;
+    let err = s
+        .service
+        .start(StartPipelineInput {
+            issue: s.issue.clone(),
+            workspace_id: s.workspace_id,
+            repo_root: s.仓库目录(),
+            executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+            template_key: None,
+        })
+        .await
+        .expect_err("非 Claude Code 应被拒");
+    match err {
+        PipelineError::BadRequest(message) => {
+            assert!(message.contains("只支持 Claude Code"), "{message}");
+        }
+        other => panic!("应是 BadRequest，实际 {other:?}"),
+    }
+    assert!(
+        s.service
+            .view_for_issue(s.issue.id)
+            .await
+            .unwrap()
+            .is_none(),
+        "被拒时不许留下运行记录"
     );
 }

@@ -1156,6 +1156,7 @@ impl LocalContainerService {
                 prompt: queued_data.message.clone(),
                 executor_config: queued_data.executor_config.clone(),
                 working_dir,
+                plugin_dirs: Vec::new(),
             })
         };
 

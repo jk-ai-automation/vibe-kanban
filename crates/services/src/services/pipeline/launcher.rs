@@ -32,12 +32,14 @@ pub trait StageLauncher: Send + Sync {
     async fn prepare_workspace(&self, workspace_id: Uuid) -> Result<PathBuf, PipelineError>;
 
     /// 在工作区里开新会话跑编码智能体；`run_setup` 为 true 时先跑 setup 脚本。
+    /// `plugin_dirs` 是会话级插件目录（技能包），只有 Claude Code 会用。
     async fn start_agent_session(
         &self,
         workspace_id: Uuid,
         executor_config: &ExecutorConfig,
         prompt: String,
         run_setup: bool,
+        plugin_dirs: Vec<PathBuf>,
     ) -> Result<LaunchedStep, PipelineError>;
 
     /// 在已有会话里跑检查脚本（run_reason = PipelineStep）。
@@ -108,11 +110,18 @@ where
         executor_config: &ExecutorConfig,
         prompt: String,
         run_setup: bool,
+        plugin_dirs: Vec<PathBuf>,
     ) -> Result<LaunchedStep, PipelineError> {
         let workspace = self.load_workspace(workspace_id).await?;
         let process = self
             .container
-            .start_new_session(&workspace, executor_config.clone(), prompt, run_setup)
+            .start_new_session(
+                &workspace,
+                executor_config.clone(),
+                prompt,
+                run_setup,
+                plugin_dirs,
+            )
             .await
             .map_err(launch_error)?;
         Ok(LaunchedStep {
@@ -178,6 +187,7 @@ impl StageLauncher for NoopStageLauncher {
         _executor_config: &ExecutorConfig,
         _prompt: String,
         _run_setup: bool,
+        _plugin_dirs: Vec<PathBuf>,
     ) -> Result<LaunchedStep, PipelineError> {
         Err(PipelineError::Launch("未接入执行层".to_string()))
     }
@@ -215,7 +225,8 @@ mod tests {
                     id,
                     &ExecutorConfig::new(executors::executors::BaseCodingAgent::ClaudeCode),
                     "p".to_string(),
-                    true
+                    true,
+                    Vec::new()
                 )
                 .await
                 .is_err()
