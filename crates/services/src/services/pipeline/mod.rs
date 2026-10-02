@@ -8,6 +8,7 @@ pub mod launcher;
 pub mod plugin;
 pub mod prompt;
 pub mod template;
+pub mod test_env;
 pub mod transition;
 
 #[cfg(test)]
