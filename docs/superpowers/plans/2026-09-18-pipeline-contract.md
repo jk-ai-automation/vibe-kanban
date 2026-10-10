@@ -184,6 +184,17 @@ develop 阶段不产出文件，关卡看 `checks`。**（C3）** `repos` 表没
 
 `test-report.json` 最小结构：`{"total":n,"passed":n,"failed":n,"cases":[{"id":"...","status":"passed|failed","attribution":"code|case|null","message":"..."}]}`；`all_cases_passed` = `failed == 0 && total > 0`。失败时：任一 `attribution == "case"` → 回到 test_design（人工关卡）；否则 → 回到 develop。
 
+**（U4）可选字段，全部向后兼容——旧报告不带也合法，关卡判定不读它们：**
+
+| 位置 | 字段 | 含义 |
+|---|---|---|
+| 用例 | `duration_s` | 耗时（秒，数字）；不知道写 `null` |
+| 用例 | `module` | 模块名（接口路为 atp 的模块名，仓库路可为 `null`） |
+| 用例 | `source` | `"atp"`（接口路）或 `"repo"`（仓库测试命令） |
+| 顶层 | `report_path` | atp 的 HTML 报告，**相对产出物目录**，必须在 `atp/test_results/` 下且以 `.html` 结尾；界面经 `GET /api/local/pipeline/artifacts/{id}/html-report` 打开 |
+
+任一路「没跑起来」（被测服务未就绪、atp 命令不可用、atp 退出码 2/3、测试命令起不来）必须记成一条 `failed` 用例并在 `message` 写明原因。接口路整体没跑起来时用例编号固定为 `service-not-ready`。
+
 ## 5. qa-mode 模拟执行器约定
 
 提示词中固定出现两行（引擎拼装，模拟器解析）：
@@ -207,6 +218,19 @@ develop 阶段不产出文件，关卡看 `checks`。**（C3）** `repos` 表没
 「第一次」按产出物目录里是否已存在同名文件的旧版本来判断（模拟器把旧文件改名为 `*.prev` 再写新文件）。
 
 **（C9）** 模拟器识别到上面两行（目录必须是绝对路径）即进入流水线模式：只写产出物，**不做**原来的随机删改文件；日志每行间隔 0.1 秒（原 1 秒）。标记从提示词的「需求：」行读取（引擎把 `{simple_id} {标题}` 写在这一行，标题压成单行）。提示词常量与解析函数在 `crates/executors/src/pipeline_prompt.rs`，引擎与模拟器共用。
+
+**（U4）测试阶段的提示词多三行**，排在「上一次被打回的意见：」之前，常量同在 `pipeline_prompt.rs`：
+
+```
+被测地址：http://127.0.0.1:43127
+atp 项目根：/abs/path/.vk/runs/ISS-12/atp
+atp 命令：atp
+```
+
+- 「被测地址」三种取值：地址（服务已就绪）、`无（原因）`（正当跳过接口路）、`未就绪（原因）`（应该跑但没跑起来）。
+- 「atp 项目根」是搭好的目录（`test_cases/vk_gen/vk_gen.csv`），接口路被跳过时为 `无`。
+- 模拟器看到「被测地址」以 `未就绪` 开头时，`test-report.json` 写一条 `service-not-ready` 失败用例（归因 code）；其它情况行为不变。
+- 模板的测试阶段可写 `ready_timeout_s`（1–600，默认 60）：等被测服务就绪的秒数上限。
 
 ## 6. 补充修订（2026-09-18，汇总计划 B 的疑问后由主控决定）
 
