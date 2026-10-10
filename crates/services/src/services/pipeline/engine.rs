@@ -314,6 +314,12 @@ impl PipelineService {
             self.fail_run(&run, &stage_run, &reason).await?;
             return Ok(());
         };
+        // 测试阶段的终点进程（智能体成功、失败或被手动停止）：被测服务不再需要。
+        if stage_run.stage_key == PipelineStageKey::Test
+            && let Some(workspace_id) = run.workspace_id
+        {
+            self.inner.launcher.stop_dev_servers(workspace_id).await;
+        }
         // 用户手动停止：不重跑、不计轮次，运行暂停等用户「继续」。
         if process.status == ExecutionProcessStatus::Killed {
             PipelineStageRuns::set_status(

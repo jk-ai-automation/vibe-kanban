@@ -1637,3 +1637,55 @@ async fn 测试阶段_等待期间尝试失败后继续_旧任务不碰新服务
         "旧任务不应停掉新尝试的开发服务器"
     );
 }
+
+// ---------------------------------------------------------------------------
+// U4：测试阶段结束时停掉开发服务器
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn 测试阶段_结束后停掉开发服务器() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    场.launcher.ready_urls.lock().unwrap().push("*".to_string());
+    let before = 场.走到测试阶段前().await;
+    场.等到智能体启动数(before + 1).await;
+    assert!(场.launcher.dev_servers_stopped.lock().unwrap().is_empty());
+
+    场.结束(&场.launcher.last(), true).await;
+
+    assert_eq!(
+        场.launcher.dev_servers_stopped.lock().unwrap().as_slice(),
+        &[场.workspace_id]
+    );
+}
+
+#[tokio::test]
+async fn 测试阶段_手动停止智能体也停掉开发服务器() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    场.launcher.ready_urls.lock().unwrap().push("*".to_string());
+    let before = 场.走到测试阶段前().await;
+    场.等到智能体启动数(before + 1).await;
+
+    场.结束为(
+        &场.launcher.last(),
+        ExecutionProcessRunReason::CodingAgent,
+        ExecutionProcessStatus::Killed,
+        None,
+    )
+    .await;
+
+    assert_eq!(场.视图().await.run.status, PipelineRunStatus::Paused);
+    assert_eq!(
+        场.launcher.dev_servers_stopped.lock().unwrap().as_slice(),
+        &[场.workspace_id]
+    );
+}
+
+#[tokio::test]
+async fn 其它阶段结束时不碰开发服务器() {
+    let 场 = 场景::新建("加法接口").await;
+    场.启动().await.unwrap();
+    场.结束(&场.launcher.last(), true).await;
+    assert!(场.launcher.dev_servers_stopped.lock().unwrap().is_empty());
+}
