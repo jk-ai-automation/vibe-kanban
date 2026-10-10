@@ -1026,7 +1026,7 @@ git commit -m "流水线模板：测试阶段可配就绪等待秒数 ready_time
         assert!(launcher.start_dev_server(id, &[]).await.is_err());
         assert!(!launcher.probe_http("http://127.0.0.1:1").await);
         assert_eq!(launcher.atp_command().await, "atp");
-        launcher.stop_dev_servers(id).await;
+        launcher.stop_dev_server(id).await;
 ```
 
 - [ ] **Step 2: 跑测试确认失败**
@@ -1069,34 +1069,44 @@ use crate::services::config::Config;
 `StageLauncher` 加四个方法：
 
 ```rust
-    /// 测试阶段：先停掉工作区里已有的开发服务器，再起**第一个**配置了开发服务器脚本的
-    /// 仓库，脚本前注入 `env`。没有仓库配脚本时返回 `Ok(None)`。
+    /// 测试阶段：先停掉工作区里已有的开发服务器（新一轮起服务前清场），再起**第一个**
+    /// 配置了开发服务器脚本的仓库，脚本前注入 `env`。没有仓库配脚本时返回 `Ok(None)`。
     async fn start_dev_server(
         &self,
         workspace_id: Uuid,
         env: &[(String, String)],
     ) -> Result<Option<Uuid>, PipelineError>;
 
-    /// 停掉工作区里所有开发服务器进程（`stop_workspace` 不停它们）。
-    async fn stop_dev_servers(&self, workspace_id: Uuid);
+    /// 只停这一个开发服务器进程（`stop_workspace` 不停开发服务器）；已不在运行就什么也不做。
+    async fn stop_dev_server(&self, execution_process_id: Uuid);
 
     /// 探测一次：能在超时内拿到任何 HTTP 响应（不看状态码）就算就绪。
     async fn probe_http(&self, url: &str) -> bool;
 
-    /// 进程到目前为止的输出文本（运行中读内存，已结束读库）。
-    async fn process_output(&self, execution_process_id: Uuid) -> String;
+    /// 进程从第 `offset` 条日志消息起的输出文本（只取标准输出与标准错误），以及目前的消息
+    /// 总数（下次从这里读）。运行中读内存，已结束读库。
+    async fn process_output_since(
+        &self,
+        execution_process_id: Uuid,
+        offset: usize,
+    ) -> (String, usize);
 
     /// 调用 atp 的命令（设置页可改）。
     async fn atp_command(&self) -> String;
 ```
 
-（五个方法——比小节标题多一个 `process_output`：运行中的进程日志还没落库，只有执行层的内存里有。）
+（五个方法——比小节标题多一个 `process_output_since`：运行中的进程日志还没落库，只有执行层的内存里有。）
+
+> 审查后修订：停服务原先是按工作区停的 `stop_dev_servers(workspace_id)`，会连带停掉用户在界面上对
+> 同一工作区手动起的开发服务器，改为按进程 id 停的 `stop_dev_server`；读日志原先是每轮全量复制的
+> `process_output`，改为增量的 `process_output_since`（`MsgStore` 配套新增 `history_since`，只克隆新消息）。
 
 模块级函数：
 
 ```rust
 pub const DEFAULT_ATP_COMMAND: &str = "atp";
-const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// 单次就绪探测的超时。引擎还会用就绪截止前的剩余时间进一步截断。
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// 在开发服务器脚本前导出环境变量。值用单引号包住，内部单引号写成 `'\''`。
 pub fn dev_server_script(script: &str, env: &[(String, String)]) -> String {
@@ -1129,17 +1139,27 @@ fn output_text(messages: &[utils::log_msg::LogMsg]) -> String {
 }
 ```
 
-`ContainerStageLauncher` 带上配置：
+`ContainerStageLauncher` 带上配置，并在构造时建一次探测用的 HTTP 客户端复用：
 
 ```rust
 pub struct ContainerStageLauncher<C> {
     container: C,
     config: Arc<RwLock<Config>>,
+    /// 就绪探测用的客户端，构造时建一次复用。建不出来时探测一律不就绪。
+    probe_client: Option<reqwest::Client>,
 }
 
 impl<C> ContainerStageLauncher<C> {
     pub fn new(container: C, config: Arc<RwLock<Config>>) -> Self {
-        Self { container, config }
+        // 不走系统代理：配了 HTTP_PROXY 时代理会替回环地址回 502，服务没起也被判成就绪。
+        let probe_client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(PROBE_TIMEOUT)
+            .danger_accept_invalid_certs(true)
+            .build()
+            .inspect_err(|e| tracing::warn!("构造就绪探测用的 HTTP 客户端失败: {e}"))
+            .ok();
+        Self { container, config, probe_client }
     }
 }
 ```
@@ -1162,7 +1182,15 @@ impl<C> ContainerStageLauncher<C> {
         }) else {
             return Ok(None);
         };
-        self.stop_dev_servers(workspace_id).await;
+        // 清场：停掉工作区里已有的开发服务器（stop_process 停一个进程，失败只记日志）。
+        match ExecutionProcess::find_running_dev_servers_by_workspace(pool, workspace_id).await {
+            Ok(running) => {
+                for process in running {
+                    self.stop_process(&process).await;
+                }
+            }
+            Err(e) => tracing::warn!(%workspace_id, "查询运行中的开发服务器失败: {e}"),
+        }
 
         // 独立会话：开发服务器的退出事件不会被当成某个阶段的终点进程。
         let session = Session::create(
@@ -1197,50 +1225,44 @@ impl<C> ContainerStageLauncher<C> {
         Ok(Some(process.id))
     }
 
-    async fn stop_dev_servers(&self, workspace_id: Uuid) {
-        let running = ExecutionProcess::find_running_dev_servers_by_workspace(
-            &self.container.db().pool,
-            workspace_id,
-        )
-        .await
-        .unwrap_or_default();
-        for process in running {
-            if let Err(e) = self
-                .container
-                .stop_execution(&process, ExecutionProcessStatus::Killed)
-                .await
-            {
-                tracing::warn!(execution_process_id = %process.id, "停止开发服务器失败: {e}");
+    async fn stop_dev_server(&self, execution_process_id: Uuid) {
+        match ExecutionProcess::find_by_id(&self.container.db().pool, execution_process_id).await {
+            Ok(Some(process)) if process.status == ExecutionProcessStatus::Running => {
+                self.stop_process(&process).await;
             }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(%execution_process_id, "读取开发服务器进程失败: {e}"),
         }
     }
 
     async fn probe_http(&self, url: &str) -> bool {
-        let Ok(client) = reqwest::Client::builder()
-            .timeout(PROBE_TIMEOUT)
-            .danger_accept_invalid_certs(true)
-            .build()
-        else {
-            return false;
-        };
-        client.get(url).send().await.is_ok()
+        match &self.probe_client {
+            Some(client) => client.get(url).send().await.is_ok(),
+            None => false,
+        }
     }
 
-    async fn process_output(&self, execution_process_id: Uuid) -> String {
+    async fn process_output_since(&self, execution_process_id: Uuid, offset: usize) -> (String, usize) {
         if let Some(store) = self
             .container
             .get_msg_store_by_id(&execution_process_id)
             .await
         {
-            return output_text(&store.get_history());
+            let (messages, total) = store.history_since(offset);
+            return (output_text(&messages), total);
         }
-        crate::services::execution_process::load_raw_log_messages(
+        match crate::services::execution_process::load_raw_log_messages(
             &self.container.db().pool,
             execution_process_id,
         )
         .await
-        .map(|messages| output_text(&messages))
-        .unwrap_or_default()
+        {
+            Some(messages) => (
+                output_text(messages.get(offset..).unwrap_or_default()),
+                messages.len().max(offset),
+            ),
+            None => (String::new(), offset),
+        }
     }
 
     async fn atp_command(&self) -> String {
@@ -1261,14 +1283,14 @@ impl<C> ContainerStageLauncher<C> {
         Err(PipelineError::Launch("未接入执行层".to_string()))
     }
 
-    async fn stop_dev_servers(&self, _workspace_id: Uuid) {}
+    async fn stop_dev_server(&self, _execution_process_id: Uuid) {}
 
     async fn probe_http(&self, _url: &str) -> bool {
         false
     }
 
-    async fn process_output(&self, _execution_process_id: Uuid) -> String {
-        String::new()
+    async fn process_output_since(&self, _execution_process_id: Uuid, offset: usize) -> (String, usize) {
+        (String::new(), offset)
     }
 
     async fn atp_command(&self) -> String {
@@ -1289,10 +1311,14 @@ impl<C> ContainerStageLauncher<C> {
     pub(crate) dev_server_processes: Mutex<Vec<Uuid>>,
     /// 这些地址探测成功；`"*"` 表示任何地址都成功。
     pub(crate) ready_urls: Mutex<Vec<String>>,
-    /// 开发服务器的输出。
+    /// 每次探测先睡这么多毫秒再返回（模拟连不上时卡到超时的探测）。
+    pub(crate) probe_delay_ms: AtomicU64,
+    /// 开发服务器的输出。按行拆成消息：每行（含换行）是一条。
     pub(crate) dev_server_output: Mutex<String>,
-    /// 被要求停开发服务器的工作区。
-    pub(crate) dev_servers_stopped: Mutex<Vec<Uuid>>,
+    /// 每次读开发服务器输出时引擎给的起始消息序号。
+    pub(crate) output_offsets: Mutex<Vec<usize>>,
+    /// 被要求停的开发服务器进程 id（按要求的先后）。
+    pub(crate) dev_server_stopped_ids: Mutex<Vec<Uuid>>,
 ```
 
 `impl StageLauncher for FakeLauncher` 加：
@@ -1324,11 +1350,21 @@ impl<C> ContainerStageLauncher<C> {
         Ok(Some(id))
     }
 
-    async fn stop_dev_servers(&self, workspace_id: Uuid) {
-        self.dev_servers_stopped.lock().unwrap().push(workspace_id);
+    async fn stop_dev_server(&self, execution_process_id: Uuid) {
+        self.dev_server_stopped_ids.lock().unwrap().push(execution_process_id);
+        // 把该进程标成 killed（与容器停进程一致）。
+        sqlx::query("UPDATE execution_processes SET status = 'killed' WHERE id = ? AND status = 'running'")
+            .bind(execution_process_id)
+            .execute(&self.pool)
+            .await
+            .expect("标记开发服务器已停");
     }
 
     async fn probe_http(&self, url: &str) -> bool {
+        let delay = self.probe_delay_ms.load(Ordering::SeqCst);
+        if delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
         self.ready_urls
             .lock()
             .unwrap()
@@ -1336,8 +1372,11 @@ impl<C> ContainerStageLauncher<C> {
             .any(|ready| ready == "*" || ready == url)
     }
 
-    async fn process_output(&self, _execution_process_id: Uuid) -> String {
-        self.dev_server_output.lock().unwrap().clone()
+    async fn process_output_since(&self, _execution_process_id: Uuid, offset: usize) -> (String, usize) {
+        self.output_offsets.lock().unwrap().push(offset);
+        let output = self.dev_server_output.lock().unwrap().clone();
+        let messages: Vec<&str> = output.split_inclusive('\n').collect();
+        (messages.get(offset..).unwrap_or_default().concat(), messages.len().max(offset))
     }
 
     async fn atp_command(&self) -> String {
@@ -1513,10 +1552,9 @@ async fn 测试阶段_超时没就绪时如实告诉技能并停掉服务() {
     let service = 场.提示词行("被测地址：");
     assert!(service.starts_with("未就绪（1 秒内 http://127.0.0.1:"), "{service}");
     assert!(service.ends_with("没有响应）"), "{service}");
-    assert_eq!(
-        场.launcher.dev_servers_stopped.lock().unwrap().as_slice(),
-        &[场.workspace_id]
-    );
+    // 停服务在锁外的任务里做，轮询等它；停的是本轮起的那个进程。
+    场.等到停掉开发服务器(process).await;
+    assert_eq!(场.停掉的开发服务器(), vec![process]);
 
     // 假启动器按提示词写出的是「未就绪」报告 → 关卡判失败，归因 code。
     场.结束(&场.launcher.last(), true).await;
@@ -1561,18 +1599,13 @@ async fn 测试阶段_等待期间取消则不再启动智能体() {
     );
     场.launcher.dev_server.store(true, Ordering::SeqCst);
     let before = 场.走到测试阶段前().await;
+    let process = 场.等到开发服务器(0).await;
     let run_id = 场.视图().await.run.id;
     场.service.cancel(run_id).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
     assert_eq!(场.智能体启动数(), before, "取消后不应再启动智能体");
-    assert!(
-        场.launcher
-            .dev_servers_stopped
-            .lock()
-            .unwrap()
-            .contains(&场.workspace_id)
-    );
+    assert_eq!(场.停掉的开发服务器(), vec![process]);
 }
 
 #[tokio::test]
@@ -1599,6 +1632,8 @@ async fn 测试阶段_全是人工用例时不起开发服务器() {
     assert!(场.launcher.dev_server_envs.lock().unwrap().is_empty());
 }
 ```
+
+（审查后修订：超时用例里的 `process` 取自 `等到开发服务器(0)`；`停掉的开发服务器` / `等到停掉开发服务器` 读假启动器的 `dev_server_stopped_ids`。另补了「探测很慢时也按就绪超时收尾」「后到的日志也能识别地址且只读新输出」「后台任务出错时尝试记失败」等用例。）
 
 `走到测试阶段前` 返回进入测试阶段**之前**的智能体启动数；`走到测试阶段前_并在进入前(f)` 是同一个辅助多一个钩子：在评审阶段 `结束` 之前调用 `f(&产出物目录)`（产出物目录 = `artifacts::artifacts_dir(&self.dir.path().join("workspace"), &self.issue.simple_id)`）。两者共用一个私有实现，`走到测试阶段前` 传空闭包。用例里模板写法（省掉哪些阶段）以能过 `parse_template_yaml` 为准——必须保持 requirement → … → deliver 的相对顺序，可以省略阶段。
 
@@ -1654,7 +1689,7 @@ struct ServiceWait {
     process_id: Uuid,
     /// 平台注入的约定端口（`PORT`）；就绪探测据此先试 IPv4 再试 IPv6。
     port: u16,
-    /// 约定地址 `http://127.0.0.1:{port}`，注入 `VK_BASE_URL` 与超时文案用。
+    /// 约定地址 `http://127.0.0.1:{port}`，超时文案用。
     url: String,
     atp_root: PathBuf,
     atp_command: String,
@@ -1701,7 +1736,7 @@ const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(300);
                 .await;
         }
         match self
-            .prepare_test_env(workspace_id, &dir, stage.ready_timeout_s)
+            .prepare_test_env(workspace_id, stage_run.id, &dir, stage.ready_timeout_s)
             .await?
         {
             TestPrep::Ready(env) => {
@@ -1767,6 +1802,7 @@ const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(300);
     async fn prepare_test_env(
         &self,
         workspace_id: Uuid,
+        stage_run_id: Uuid,
         dir: &std::path::Path,
         ready_timeout_s: u64,
     ) -> Result<TestPrep, PipelineError> {
@@ -1810,10 +1846,12 @@ const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(300);
                 atp_command,
             ));
         };
+        // 登记「测试尝试 → 开发服务器进程」，停服务时只停这一个进程。
+        self.inner.test_dev_servers.lock().unwrap().insert(stage_run_id, process_id);
         let atp_root = match test_env::prepare_atp_root(dir, &csv_text) {
             Ok(root) => root,
             Err(e) => {
-                launcher.stop_dev_servers(workspace_id).await;
+                self.stop_test_dev_server(stage_run_id);
                 return Err(e.into());
             }
         };
@@ -1830,41 +1868,61 @@ const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(300);
 
 - [ ] **Step 5: 实现——锁外等待、锁内启动**
 
+（审查后修订）停服务不按工作区停：`Inner` 里维护 `test_dev_servers: std::sync::Mutex<HashMap<Uuid /*测试尝试*/, Uuid /*开发服务器进程*/>>`，
+`prepare_test_env` 起服务后登记；`stop_test_dev_server(stage_run_id)` 取出并移除，再 `tokio::spawn` 调
+`launcher.stop_dev_server(id)`，不 await——容器停进程先发 SIGINT 再至少等 2 秒，不能占着全局锁。
+表只在内存里，服务重启后为空，不再停。
+
+日志增量读取用 `test_env::ServiceUrlScanner`：只扫新到的完整行（以换行或回车结尾），末尾不完整的一段留到
+下次拼起来再扫（超过 1 KB 直接扫完丢掉），候选按出现顺序去重累积。
+
 ```rust
-    /// 等被测服务就绪：每轮先依次探约定端口的 IPv4/IPv6 地址，再探日志里识别到的其余候选；
-    /// 开发服务器退出或超时即放弃。**不持有引擎锁**。
+    /// 等被测服务就绪：每轮先依次探约定端口的 IPv4/IPv6 地址，再探日志里累积识别到的其余候选；
+    /// 开发服务器退出或超时即放弃。每次探测前检查截止时间，并用剩余时间截断探测，
+    /// 一轮候选再多也不会远超 `ready_timeout_s`。**不持有引擎锁**。
     async fn wait_for_service(&self, wait: &ServiceWait) -> ServiceState {
         let launcher = &self.inner.launcher;
         let deadline = Instant::now() + wait.timeout;
+        let timed_out = || {
+            ServiceState::NotReady(format!(
+                "{} 秒内 {} 没有响应",
+                wait.timeout.as_secs(),
+                wait.url
+            ))
+        };
         let conventional = test_env::port_candidates(wait.port);
+        // 日志只读新到的消息（Vite 的 `Local:` 在最前面，不能只看尾部），候选累积在扫描器里。
+        let mut offset = 0;
+        let mut scanner = ServiceUrlScanner::default();
         loop {
-            for url in &conventional {
-                if launcher.probe_http(url).await {
+            let (text, next) = launcher.process_output_since(wait.process_id, offset).await;
+            offset = next;
+            scanner.feed(&text);
+            let discovered = scanner
+                .found()
+                .iter()
+                .filter(|url| !conventional.contains(url));
+            for url in conventional.iter().chain(discovered) {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return timed_out();
+                }
+                let probe = launcher.probe_http(url);
+                if tokio::time::timeout(remaining.min(launcher::PROBE_TIMEOUT), probe)
+                    .await
+                    .unwrap_or(false)
+                {
                     return ServiceState::Ready(url.clone());
                 }
             }
-            let output = launcher.process_output(wait.process_id).await;
-            for url in test_env::service_url_candidates(&output) {
-                if !conventional.contains(&url) && launcher.probe_http(&url).await {
-                    return ServiceState::Ready(url);
-                }
-            }
-            let exited = match ExecutionProcess::find_by_id(self.pool(), wait.process_id).await {
-                Ok(Some(process)) => process.status != ExecutionProcessStatus::Running,
-                Ok(None) => true,
-                Err(_) => false,
-            };
-            if exited {
+            if self.dev_server_exited(wait.process_id).await {
                 return ServiceState::NotReady("开发服务器已退出".to_string());
             }
-            if Instant::now() >= deadline {
-                return ServiceState::NotReady(format!(
-                    "{} 秒内 {} 没有响应",
-                    wait.timeout.as_secs(),
-                    wait.url
-                ));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return timed_out();
             }
-            tokio::time::sleep(SERVICE_POLL_INTERVAL).await;
+            tokio::time::sleep(remaining.min(SERVICE_POLL_INTERVAL)).await;
         }
     }
 
@@ -1873,8 +1931,18 @@ const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(300);
         tokio::spawn(async move {
             let state = service.wait_for_service(&pending.wait).await;
             let _guard = service.inner.lock.lock().await;
+            let (run_id, stage_run_id) = (pending.run_id, pending.stage_run_id);
             if let Err(e) = service.finish_test_launch_locked(pending, state).await {
                 tracing::error!("测试阶段启动智能体时出错: {e}");
+                service.stop_test_dev_server(stage_run_id);
+                // 兜底：错误不是「状态已改变」、尝试仍在等待（running、无会话、运行未结束）时记失败，
+                // 否则它会一直卡在 running（没有回调推进，「继续」也不重新启动）。
+                if let Err(db_error) = service
+                    .fail_waiting_test_attempt_locked(run_id, stage_run_id, &e)
+                    .await
+                {
+                    tracing::error!("记录测试阶段启动失败时出错: {db_error}");
+                }
             }
         });
     }
@@ -1886,18 +1954,18 @@ const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(300);
         state: ServiceState,
     ) -> Result<(), PipelineError> {
         let pool = self.pool();
-        let launcher = &self.inner.launcher;
         let run = self.load_run(pending.run_id).await?;
         let stage_run = PipelineStageRuns::find_by_id(pool, pending.stage_run_id).await?;
         let waiting = stage_run.as_ref().is_some_and(|stage_run| {
             stage_run.status == PipelineStageStatus::Running && stage_run.session_id.is_none()
         });
         let Some(stage_run) = stage_run.filter(|_| waiting && !run.status.is_finished()) else {
-            launcher.stop_dev_servers(pending.workspace_id).await;
+            // 只停本尝试起的那个进程，不会误杀同工作区新一轮测试的服务。
+            self.stop_test_dev_server(pending.stage_run_id);
             return Ok(());
         };
         if matches!(state, ServiceState::NotReady(_)) {
-            launcher.stop_dev_servers(pending.workspace_id).await;
+            self.stop_test_dev_server(stage_run.id);
         }
         let env = TestEnvironment {
             service: state,
@@ -1915,7 +1983,7 @@ const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(300);
             )
             .await
         {
-            launcher.stop_dev_servers(pending.workspace_id).await;
+            self.stop_test_dev_server(stage_run.id);
             if !is_state_changed(&e) {
                 self.fail_run(&run, &stage_run, &e.to_string()).await?;
             }
@@ -1937,16 +2005,14 @@ const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(300);
 改成
 
 ```rust
-        if was_running && let Some(workspace_id) = run.workspace_id {
+        if let Some(attempt) = running_attempt // 原 was_running，改成记下在跑尝试的 id
+            && let Some(workspace_id) = run.workspace_id
+        {
             self.inner.launcher.stop_workspace(workspace_id).await;
-            // stop_workspace 不停开发服务器；测试阶段起的要一并收掉。
-            if run.current_stage == Some(PipelineStageKey::Test) {
-                self.inner.launcher.stop_dev_servers(workspace_id).await;
-            }
+            // stop_workspace 不停开发服务器；测试尝试起的要一并收掉（含还在等就绪的）。
+            self.stop_test_dev_server(attempt);
         }
 ```
-
-（`run.current_stage` 的字段名以 `PipelineRun` 结构体为准。）
 
 - [ ] **Step 6: 跑测试确认通过**
 
@@ -1977,15 +2043,14 @@ async fn 测试阶段_结束后停掉开发服务器() {
     场.launcher.dev_server.store(true, Ordering::SeqCst);
     场.launcher.ready_urls.lock().unwrap().push("*".to_string());
     let before = 场.走到测试阶段前().await;
+    let process = 场.等到开发服务器(0).await;
     场.等到智能体启动数(before + 1).await;
-    assert!(场.launcher.dev_servers_stopped.lock().unwrap().is_empty());
+    场.稍候断言没停开发服务器().await;
 
     场.结束(&场.launcher.last(), true).await;
 
-    assert_eq!(
-        场.launcher.dev_servers_stopped.lock().unwrap().as_slice(),
-        &[场.workspace_id]
-    );
+    场.等到停掉开发服务器(process).await;
+    assert_eq!(场.停掉的开发服务器(), vec![process]);
 }
 
 #[tokio::test]
@@ -1993,27 +2058,36 @@ async fn 其它阶段结束时不碰开发服务器() {
     let 场 = 场景::新建("加法接口").await;
     场.启动().await.unwrap();
     场.结束(&场.launcher.last(), true).await;
-    assert!(场.launcher.dev_servers_stopped.lock().unwrap().is_empty());
+    场.稍候断言没停开发服务器().await;
 }
 ```
+
+（审查后修订：另有「测试阶段_配了检查脚本时检查结束后才停服务」：测试阶段模板带 `checks: ["true"]`，
+智能体成功后服务不停，检查脚本结束后才停。）
 
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p services pipeline::tests::测试阶段_结束后停掉开发服务器 2>&1 | tail -15`
-Expected: 失败，`dev_servers_stopped` 为空。
+Expected: 失败，没有要求停任何开发服务器进程。
 
 - [ ] **Step 3: 实现**
 
-`finish_stage_locked` 里，在「用户手动停止」分支**之前**（即拿到 `stage` 之后）加：
+`finish_stage_locked` 里，在「用户手动停止」分支**之前**（即拿到 `stage` 之后），把原先在后面计算的
+`setup_broken` / `ok` 提前，并加：
 
 ```rust
-        // 测试阶段的终点进程（智能体成功、失败或被手动停止）：被测服务不再需要。
-        if stage_run.stage_key == PipelineStageKey::Test
-            && let Some(workspace_id) = run.workspace_id
-        {
-            self.inner.launcher.stop_dev_servers(workspace_id).await;
+        // 智能体成功且阶段配了检查脚本：接着在同会话跑检查脚本，执行链还没到头。
+        let runs_checks = ok
+            && !stage.checks.is_empty()
+            && process.run_reason != ExecutionProcessRunReason::PipelineStep;
+        // 测试阶段执行链的终点（检查脚本结束，或智能体失败、被手动停止、成功且没有检查脚本）：
+        // 被测服务不再需要。要跑检查脚本时留着给检查脚本用。
+        if stage_run.stage_key == PipelineStageKey::Test && !runs_checks {
+            self.stop_test_dev_server(stage_run.id);
         }
 ```
+
+起检查脚本的分支条件改用 `runs_checks`；起检查脚本失败（`Err` 分支）时也 `stop_test_dev_server(stage_run.id)`。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -3004,5 +3078,5 @@ PR 描述写清：两路执行、与设计的偏差（本计划 §0）、人工�
 
 - **设计覆盖**：§4.1 → Task 2（地址识别、端口）、5（起服务、探测）、6（等待）；§4.2 → Task 2（项目根）、5（atp 命令配置）、11（设置页）、12（技能）；§4.3、§4.4 → Task 12；§4.5 → Task 8（契约与 Rust）、10（前端）、9（报告链接）；§6 → 各任务的单测 + Task 13（e2e）+ Task 14（人工验收）；§7 的 5 条验收标准 → Task 14 Step 2 与 Step 5。
 - **与设计的偏差**集中在 §0，实施中再发现偏差就追加到那张表。
-- **类型一致性**：`ServiceState` / `TestEnvironment`（Task 2）在 Task 3、6 使用；`ready_timeout_s`（Task 4）在 Task 6 使用；启动器的五个新方法（Task 5）在 Task 6、7 使用；`resolve_html_report`（Task 2）在 Task 9 使用；`artifactHtmlReportUrl`（Task 9）在 Task 10 使用；提示词常量（Task 1）在 Task 2、3、12 使用。
+- **类型一致性**：`ServiceState` / `TestEnvironment`（Task 2）在 Task 3、6 使用；`ready_timeout_s`（Task 4）在 Task 6 使用；启动器的五个新方法（Task 5，审查后为 `start_dev_server` / `stop_dev_server` / `probe_http` / `process_output_since` / `atp_command`）在 Task 6、7 使用；`resolve_html_report`（Task 2）在 Task 9 使用；`artifactHtmlReportUrl`（Task 9）在 Task 10 使用；提示词常量（Task 1）在 Task 2、3、12 使用。
 - **写计划时没法确认、已在对应步骤里标出要核对的地方**：几个 db 模型方法的精确签名（Task 5、6、9）、仓库更新接口的路径（Task 13）、atp `results.json` 的通过状态取值（Task 12）、前端现成的输入/按钮组件（Task 11）。
