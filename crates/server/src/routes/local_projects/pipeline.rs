@@ -8,7 +8,8 @@ use api_types::issue::Issue;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    response::Json as ResponseJson,
+    http::header,
+    response::{IntoResponse, Json as ResponseJson, Response},
     routing::{get, post},
 };
 use db::models::{
@@ -274,6 +275,47 @@ async fn get_artifact(
     Ok(ResponseJson(ApiResponse::success(artifact)))
 }
 
+/// atp 的 HTML 报告。内容来自被测仓库里跑出来的文件，按不可信处理：
+/// 用 CSP sandbox 把它关进独立源，脚本可以跑（报告的折叠交互要用），但碰不到本站的接口与存储。
+async fn get_html_report(
+    State(deployment): State<DeploymentImpl>,
+    Path(artifact_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let artifact = handle_get_artifact(&deployment.db().pool, artifact_id).await?;
+    let path = deployment
+        .pipeline()
+        .test_html_report(&artifact)
+        .await
+        .map_err(map_pipeline_error)?;
+    read_html_report(&path).await
+}
+
+/// 读出已校验过的报告文件并加上响应头。
+/// - CSP `sandbox allow-scripts allow-popups`：报告里 `target=_blank` 的链接要能打开；
+///   不给 `allow-same-origin`（否则脚本回到本站源）、不给 `allow-popups-to-escape-sandbox`
+///   （否则弹出的页面脱离沙箱）。
+/// - `no-store`：重跑后同一地址的内容会变。
+/// - 校验之后文件被删（例如下一轮测试清空了结果目录）按 404 处理，不是服务端错误。
+pub(crate) async fn read_html_report(path: &std::path::Path) -> Result<Response, ApiError> {
+    let body = tokio::fs::read(path).await.map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => ApiError::NotFound,
+        _ => ApiError::Io(e),
+    })?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "sandbox allow-scripts allow-popups",
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response())
+}
+
 async fn decide_gate(
     State(deployment): State<DeploymentImpl>,
     current_user: CurrentUser,
@@ -343,6 +385,11 @@ async fn list_stage_runs(
 pub fn router() -> Router<DeploymentImpl> {
     let pipeline = LocalRoutes::new("/pipeline")
         .route("/artifacts/{id}", &["GET"], get(get_artifact))
+        .route(
+            "/artifacts/{id}/html-report",
+            &["GET"],
+            get(get_html_report),
+        )
         .route("/stage-runs/{id}/gate", &["POST"], post(decide_gate))
         .route("/runs/{id}/pause", &["POST"], post(pause))
         .route("/runs/{id}/resume", &["POST"], post(resume))
@@ -387,6 +434,33 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    #[tokio::test]
+    async fn html_报告_响应头带沙箱与不缓存() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_report.html");
+        std::fs::write(&path, "<p>ok</p>").unwrap();
+
+        let response = read_html_report(&path).await.unwrap();
+
+        let headers = response.headers();
+        assert_eq!(
+            headers[header::CONTENT_SECURITY_POLICY],
+            "sandbox allow-scripts allow-popups"
+        );
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+    }
+
+    #[tokio::test]
+    async fn html_报告_校验后文件被删时回_404() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = read_html_report(&dir.path().join("gone.html"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ApiError::NotFound), "{error:?}");
+    }
 
     async fn 准备需求(test_db: &TestDb) -> Issue {
         let project = LocalProjects::create(
@@ -851,6 +925,7 @@ mod tests {
             ("/api/local/issues/{id}/pipeline", "GET"),
             ("/api/local/issues/{id}/pipeline", "POST"),
             ("/api/local/pipeline/artifacts/{id}", "GET"),
+            ("/api/local/pipeline/artifacts/{id}/html-report", "GET"),
             ("/api/local/pipeline/stage-runs/{id}/gate", "POST"),
             ("/api/local/pipeline/runs/{id}/pause", "POST"),
             ("/api/local/pipeline/runs/{id}/resume", "POST"),

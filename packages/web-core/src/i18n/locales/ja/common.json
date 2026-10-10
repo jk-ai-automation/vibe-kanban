@@ -966,9 +966,16 @@
     },
     "testCols": {
       "case": "Case",
+      "source": "実行元",
       "status": "Result",
+      "duration": "所要時間",
       "attribution": "Attribution",
       "message": "Notes"
+    },
+    "testFullReport": "完全なレポートを見る",
+    "testSource": {
+      "atp": "API ケース",
+      "repo": "リポジトリのテスト"
     },
     "attribution": {
       "code": "Code defect",

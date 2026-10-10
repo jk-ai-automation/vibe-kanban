@@ -138,6 +138,7 @@ export function parseReview(content: string): ParseResult<ReviewFinding[]> {
 }
 
 export type TestCaseStatus = 'passed' | 'failed' | 'unknown';
+export type TestSource = 'atp' | 'repo' | null;
 export type TestAttribution = 'code' | 'case' | null;
 
 export interface TestCaseResult {
@@ -145,6 +146,11 @@ export interface TestCaseResult {
   status: TestCaseStatus;
   attribution: TestAttribution;
   message: string;
+  /** 耗时（秒）；报告没给或不合法时为 null。 */
+  durationS: number | null;
+  module: string | null;
+  /** 哪一路跑出来的：atp（接口路）或 repo（仓库测试命令）。 */
+  source: TestSource;
 }
 
 export interface TestReport {
@@ -152,6 +158,8 @@ export interface TestReport {
   passed: number;
   failed: number;
   cases: TestCaseResult[];
+  /** atp 完整 HTML 报告，相对产出物目录。 */
+  reportPath: string | null;
 }
 
 /** 测试报告（契约 §4 `test-report.json`）。 */
@@ -162,16 +170,22 @@ export function parseTestReport(content: string): ParseResult<TestReport> {
   if (!hasCases && num(data.total) === null) return { ok: false };
 
   const rawCases: unknown[] = hasCases ? (data.cases as unknown[]) : [];
-  const cases: TestCaseResult[] = rawCases.filter(isRecord).map((c) => ({
-    id: text(c.id) ?? '',
-    status:
-      c.status === 'passed' || c.status === 'failed' ? c.status : 'unknown',
-    attribution:
-      c.attribution === 'code' || c.attribution === 'case'
-        ? c.attribution
-        : null,
-    message: typeof c.message === 'string' ? c.message : '',
-  }));
+  const cases: TestCaseResult[] = rawCases.filter(isRecord).map((c) => {
+    const duration = num(c.duration_s);
+    return {
+      id: text(c.id) ?? '',
+      status:
+        c.status === 'passed' || c.status === 'failed' ? c.status : 'unknown',
+      attribution:
+        c.attribution === 'code' || c.attribution === 'case'
+          ? c.attribution
+          : null,
+      message: typeof c.message === 'string' ? c.message : '',
+      durationS: duration !== null && duration >= 0 ? duration : null,
+      module: text(c.module),
+      source: c.source === 'atp' || c.source === 'repo' ? c.source : null,
+    };
+  });
   return {
     ok: true,
     value: {
@@ -181,6 +195,19 @@ export function parseTestReport(content: string): ParseResult<TestReport> {
       failed:
         num(data.failed) ?? cases.filter((c) => c.status === 'failed').length,
       cases,
+      reportPath:
+        typeof data.report_path === 'string' && data.report_path.trim() !== ''
+          ? data.report_path
+          : null,
     },
   };
+}
+
+/** 耗时的展示文本：不到 1 秒用毫秒，不到 1 分钟用秒，否则分加秒。 */
+export function formatDuration(seconds: number | null): string {
+  if (seconds === null) return '—';
+  if (seconds < 1) return `${Math.round(seconds * 1000)} ms`;
+  if (seconds < 60) return `${seconds.toFixed(2)} s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} min ${Math.round(seconds - minutes * 60)} s`;
 }

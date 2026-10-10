@@ -419,6 +419,12 @@
         "platform": "Built-in",
         "superpowers": "superpowers",
         "atp": "atp"
+      },
+      "atpCommand": {
+        "label": "atp command",
+        "save": "Save",
+        "help": "Used by the test stage to run API cases. Leave empty for `atp`; without a global install use `uv run --project /path/to/atp atp`.",
+        "saveError": "Failed to save the atp command. Please try again."
       }
     },
     "projects": {

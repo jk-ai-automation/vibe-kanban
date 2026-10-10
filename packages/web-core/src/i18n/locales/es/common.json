@@ -966,9 +966,16 @@
     },
     "testCols": {
       "case": "Case",
+      "source": "Origen",
       "status": "Result",
+      "duration": "Duración",
       "attribution": "Attribution",
       "message": "Notes"
+    },
+    "testFullReport": "Ver informe completo",
+    "testSource": {
+      "atp": "Casos de API",
+      "repo": "Pruebas del repositorio"
     },
     "attribution": {
       "code": "Code defect",

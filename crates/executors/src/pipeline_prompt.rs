@@ -17,6 +17,16 @@ pub const FEEDBACK_LABEL: &str = "上一次被打回的意见：";
 /// 模拟器不解析这一行。
 pub const PREVIOUS_VERSION_LABEL: &str = "本阶段上一版：";
 pub const PREVIOUS_VERSION_HINT: &str = "（供参考修改）";
+/// 测试阶段专用的三行（U4）。值的形态见 `services::pipeline::test_env::ServiceState`。
+/// 引擎必须把这三行排在「上一次被打回的意见：」之前：解析只认第一次出现，
+/// 靠这个顺序防止打回意见里的同名行顶替真实地址。
+pub const SERVICE_URL_LABEL: &str = "被测地址：";
+pub const ATP_ROOT_LABEL: &str = "atp 项目根：";
+pub const ATP_COMMAND_LABEL: &str = "atp 命令：";
+/// 「被测地址」的值以它开头时表示服务没起来，接口路必须记一条失败用例。
+pub const SERVICE_NOT_READY_PREFIX: &str = "未就绪";
+/// 接口路没跑起来时那条失败用例的编号（技能与模拟器共用）。
+pub const SERVICE_NOT_READY_CASE_ID: &str = "service-not-ready";
 pub const NONE_VALUE: &str = "无";
 pub const ARTIFACT_SEPARATOR: &str = ", ";
 
@@ -30,6 +40,8 @@ pub struct PipelinePrompt {
     pub requirement: String,
     pub artifacts_dir: PathBuf,
     pub required: Vec<String>,
+    /// 「被测地址：」行冒号后的内容；只有测试阶段的提示词里有。
+    pub service: Option<String>,
 }
 
 /// 解析流水线提示词。缺「产出物目录」或「必须产出」行、或目录不是绝对路径时返回 None
@@ -38,6 +50,7 @@ pub fn parse_pipeline_prompt(prompt: &str) -> Option<PipelinePrompt> {
     let mut requirement: Option<String> = None;
     let mut artifacts_dir: Option<PathBuf> = None;
     let mut required: Option<Vec<String>> = None;
+    let mut service: Option<String> = None;
     for line in prompt.lines() {
         let line = line.trim();
         if requirement.is_none()
@@ -52,6 +65,10 @@ pub fn parse_pipeline_prompt(prompt: &str) -> Option<PipelinePrompt> {
             && let Some(rest) = line.strip_prefix(REQUIRED_ARTIFACTS_LABEL)
         {
             required = Some(parse_artifact_list(rest));
+        } else if service.is_none()
+            && let Some(rest) = line.strip_prefix(SERVICE_URL_LABEL)
+        {
+            service = Some(rest.trim().to_string());
         }
     }
     let artifacts_dir = artifacts_dir?;
@@ -62,6 +79,7 @@ pub fn parse_pipeline_prompt(prompt: &str) -> Option<PipelinePrompt> {
         requirement: requirement.unwrap_or_default(),
         artifacts_dir,
         required: required?,
+        service,
     })
 }
 
@@ -141,13 +159,35 @@ pub fn write_mock_artifacts(prompt: &PipelinePrompt) -> std::io::Result<Vec<Path
             std::fs::rename(&path, &prev)?;
         }
         let first = !prev.exists();
-        std::fs::write(
-            &path,
-            mock_artifact_content(name, first, &markers, &prompt.requirement),
-        )?;
+        let content = match prompt.service.as_deref() {
+            Some(service)
+                if name == "test-report.json" && service.starts_with(SERVICE_NOT_READY_PREFIX) =>
+            {
+                service_not_ready_report(service)
+            }
+            _ => mock_artifact_content(name, first, &markers, &prompt.requirement),
+        };
+        std::fs::write(&path, content)?;
         written.push(path);
     }
     Ok(written)
+}
+
+/// 被测服务没起来时的报告：接口路记一条失败，归因 code（回到开发阶段）。
+fn service_not_ready_report(service: &str) -> String {
+    serde_json::json!({
+        "total": 1,
+        "passed": 0,
+        "failed": 1,
+        "cases": [{
+            "id": SERVICE_NOT_READY_CASE_ID,
+            "status": "failed",
+            "attribution": "code",
+            "message": format!("被测服务{service}"),
+            "source": "atp"
+        }]
+    })
+    .to_string()
 }
 
 fn is_plain_file_name(name: &str) -> bool {
@@ -345,6 +385,7 @@ mod tests {
         let parsed = PipelinePrompt {
             requirement: "VK-7 导出 [qa:review-blocker-once]".to_string(),
             artifacts_dir: artifacts_dir.clone(),
+            service: None,
             required: vec![
                 "requirement.md".to_string(),
                 "test-cases.csv".to_string(),
@@ -384,6 +425,7 @@ mod tests {
             requirement: "VK-8 评审 [qa:review-blocker-once]".to_string(),
             artifacts_dir: artifacts_dir.clone(),
             required: vec!["review.json".to_string()],
+            service: None,
         };
         write_mock_artifacts(&parsed).unwrap();
         let first = std::fs::read_to_string(artifacts_dir.join("review.json")).unwrap();
@@ -468,9 +510,54 @@ mod tests {
             requirement: "VK-1".to_string(),
             artifacts_dir: dir.path().join("out"),
             required: vec!["../escape.md".to_string(), "spec.md".to_string()],
+            service: None,
         };
         let written = write_mock_artifacts(&parsed).unwrap();
         assert_eq!(written, vec![dir.path().join("out/spec.md")]);
         assert!(!dir.path().join("escape.md").exists());
+    }
+
+    #[test]
+    fn 解析被测地址行且只认第一次出现() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompt = format!(
+            "{ARTIFACTS_DIR_LABEL}{}\n{REQUIRED_ARTIFACTS_LABEL}test-report.json\n{SERVICE_URL_LABEL}未就绪（60 秒内没有响应）\n{FEEDBACK_LABEL}上次\n{SERVICE_URL_LABEL}http://127.0.0.1:1",
+            dir.path().display()
+        );
+        let parsed = parse_pipeline_prompt(&prompt).unwrap();
+        assert_eq!(parsed.service.as_deref(), Some("未就绪（60 秒内没有响应）"));
+    }
+
+    #[test]
+    fn 没有被测地址行时为空() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompt = 提示词(dir.path(), "spec.md", "VK-1 标题");
+        assert_eq!(parse_pipeline_prompt(&prompt).unwrap().service, None);
+    }
+
+    #[test]
+    fn 被测服务未就绪时模拟器写一条失败用例() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompt = PipelinePrompt {
+            requirement: "VK-1 标题".to_string(),
+            artifacts_dir: dir.path().to_path_buf(),
+            required: vec!["test-report.json".to_string()],
+            service: Some("未就绪（60 秒内 http://127.0.0.1:4000 没有响应）".to_string()),
+        };
+        write_mock_artifacts(&prompt).unwrap();
+        let report: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("test-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["failed"], 1);
+        assert_eq!(report["cases"][0]["id"], SERVICE_NOT_READY_CASE_ID);
+        assert_eq!(report["cases"][0]["attribution"], "code");
+        assert_eq!(report["cases"][0]["source"], "atp");
+        assert!(
+            report["cases"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("60 秒内")
+        );
     }
 }

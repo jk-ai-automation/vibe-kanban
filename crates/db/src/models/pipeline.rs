@@ -723,6 +723,17 @@ impl PipelineStageRuns {
             .await
     }
 
+    /// 有没有「running 但还没记会话」的尝试：引擎正在启动它的智能体（锁内先起进程、后记会话），
+    /// 或测试阶段正在等被测服务就绪。
+    pub async fn any_running_without_session(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+        let found: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM pipeline_stage_runs WHERE status = 'running' AND session_id IS NULL LIMIT 1",
+        )
+        .fetch_optional(pool)
+        .await?;
+        Ok(found.is_some())
+    }
+
     pub async fn list_running(pool: &SqlitePool) -> Result<Vec<PipelineStageRun>, sqlx::Error> {
         let sql = format!(
             "SELECT {STAGE_COLUMNS} FROM pipeline_stage_runs WHERE status = 'running' ORDER BY rowid"

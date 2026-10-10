@@ -639,4 +639,25 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn 带耗时模块来源与报告路径的新报告照常判定() {
+        let text = r#"{
+          "total": 2, "passed": 1, "failed": 1,
+          "report_path": "atp/test_results/test_report_1.html",
+          "cases": [
+            {"id":"vk_gen_001","status":"passed","attribution":null,"message":"",
+             "duration_s":0.42,"module":"vk_gen","source":"atp"},
+            {"id":"service-not-ready","status":"failed","attribution":"code",
+             "message":"被测服务未就绪","duration_s":null,"module":null,"source":"atp"}
+          ]
+        }"#;
+        assert!(matches!(
+            check_all_cases_passed(text),
+            StageVerdict::FailBackTo {
+                stage: PipelineStageKey::Develop,
+                ..
+            }
+        ));
+    }
 }

@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -166,6 +166,22 @@ pub(crate) struct FakeLauncher {
     pub(crate) fail_start: AtomicBool,
     /// 打开后智能体启动期间把 running 的尝试改成 skipped，模拟「启动途中状态被别的路径改掉」。
     pub(crate) skip_running_on_start: AtomicBool,
+    /// 打开后 `start_dev_server` 会「起」一个开发服务器（落一条 running 的进程）。
+    pub(crate) dev_server: AtomicBool,
+    /// 每次起开发服务器时注入的环境变量。
+    pub(crate) dev_server_envs: Mutex<Vec<Vec<(String, String)>>>,
+    /// 起出来的开发服务器进程 id。
+    pub(crate) dev_server_processes: Mutex<Vec<Uuid>>,
+    /// 这些地址探测成功；`"*"` 表示任何地址都成功。
+    pub(crate) ready_urls: Mutex<Vec<String>>,
+    /// 每次探测先睡这么多毫秒再返回（模拟连不上时卡到超时的探测）。
+    pub(crate) probe_delay_ms: AtomicU64,
+    /// 开发服务器的输出。按行拆成消息：每行（含换行）是一条。
+    pub(crate) dev_server_output: Mutex<String>,
+    /// 每次读开发服务器输出时引擎给的起始消息序号。
+    pub(crate) output_offsets: Mutex<Vec<usize>>,
+    /// 被要求停的开发服务器进程 id（按要求的先后）。
+    pub(crate) dev_server_stopped_ids: Mutex<Vec<Uuid>>,
 }
 
 impl FakeLauncher {
@@ -178,6 +194,14 @@ impl FakeLauncher {
             write_artifacts: AtomicBool::new(true),
             fail_start: AtomicBool::new(false),
             skip_running_on_start: AtomicBool::new(false),
+            dev_server: AtomicBool::new(false),
+            dev_server_envs: Mutex::new(Vec::new()),
+            dev_server_processes: Mutex::new(Vec::new()),
+            ready_urls: Mutex::new(Vec::new()),
+            probe_delay_ms: AtomicU64::new(0),
+            dev_server_output: Mutex::new(String::new()),
+            output_offsets: Mutex::new(Vec::new()),
+            dev_server_stopped_ids: Mutex::new(Vec::new()),
         }
     }
 
@@ -187,6 +211,20 @@ impl FakeLauncher {
 
     pub(crate) fn last(&self) -> FakeLaunch {
         self.launches().last().cloned().expect("还没有任何启动")
+    }
+
+    /// 把起过的、仍在运行的开发服务器进程标成 killed（模拟容器停进程）。
+    async fn kill_dev_servers(&self) {
+        let ids = self.dev_server_processes.lock().unwrap().clone();
+        for id in ids {
+            sqlx::query(
+                "UPDATE execution_processes SET status = 'killed' WHERE id = ? AND status = 'running'",
+            )
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .expect("标记开发服务器已停");
+        }
     }
 
     fn record(&self, launch: FakeLaunch) -> LaunchedStep {
@@ -283,6 +321,76 @@ impl StageLauncher for FakeLauncher {
 
     async fn stop_workspace(&self, workspace_id: Uuid) {
         self.stopped.lock().unwrap().push(workspace_id);
+    }
+
+    async fn start_dev_server(
+        &self,
+        workspace_id: Uuid,
+        env: &[(String, String)],
+    ) -> Result<Option<Uuid>, PipelineError> {
+        if !self.dev_server.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        // 与容器实现一致：起新的之前先停掉旧的（只改进程状态，不记进 dev_server_stopped_ids）。
+        self.kill_dev_servers().await;
+        let session_id = Uuid::new_v4();
+        Session::create(
+            &self.pool,
+            &CreateSession {
+                executor: Some("dev-server".to_string()),
+                name: None,
+            },
+            session_id,
+            workspace_id,
+        )
+        .await
+        .map_err(|e| PipelineError::Launch(e.to_string()))?;
+        let id = 落进程(&self.pool, session_id, ExecutionProcessRunReason::DevServer).await?;
+        self.dev_server_envs.lock().unwrap().push(env.to_vec());
+        self.dev_server_processes.lock().unwrap().push(id);
+        Ok(Some(id))
+    }
+
+    async fn stop_dev_server(&self, execution_process_id: Uuid) {
+        self.dev_server_stopped_ids
+            .lock()
+            .unwrap()
+            .push(execution_process_id);
+        sqlx::query(
+            "UPDATE execution_processes SET status = 'killed' WHERE id = ? AND status = 'running'",
+        )
+        .bind(execution_process_id)
+        .execute(&self.pool)
+        .await
+        .expect("标记开发服务器已停");
+    }
+
+    async fn probe_http(&self, url: &str) -> bool {
+        let delay = self.probe_delay_ms.load(Ordering::SeqCst);
+        if delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+        self.ready_urls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|ready| ready == "*" || ready == url)
+    }
+
+    async fn process_output_since(
+        &self,
+        _execution_process_id: Uuid,
+        offset: usize,
+    ) -> (String, usize) {
+        self.output_offsets.lock().unwrap().push(offset);
+        let output = self.dev_server_output.lock().unwrap().clone();
+        let messages: Vec<&str> = output.split_inclusive('\n').collect();
+        let text = messages.get(offset..).unwrap_or_default().concat();
+        (text, messages.len().max(offset))
+    }
+
+    async fn atp_command(&self) -> String {
+        "atp".to_string()
     }
 }
 

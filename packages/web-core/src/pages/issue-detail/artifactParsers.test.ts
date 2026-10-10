@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { parseCsv, parseReview, parseTestReport } from './artifactParsers';
+import {
+  formatDuration,
+  parseCsv,
+  parseReview,
+  parseTestReport,
+} from './artifactParsers';
+
+/** 旧报告没有 U4 新字段时，用例上这三项都是空。 */
+const NEW_EMPTY = { durationS: null, module: null, source: null };
 
 describe('parseCsv', () => {
   it('第一行是表头', () => {
@@ -95,14 +103,22 @@ describe('parseTestReport', () => {
         total: 2,
         passed: 1,
         failed: 1,
+        reportPath: null,
         cases: [
           {
+            ...NEW_EMPTY,
             id: 'kline_021',
             status: 'failed',
             attribution: 'code',
             message: 'next_cursor 应为空',
           },
-          { id: 'kline_020', status: 'passed', attribution: null, message: '' },
+          {
+            ...NEW_EMPTY,
+            id: 'kline_020',
+            status: 'passed',
+            attribution: null,
+            message: '',
+          },
         ],
       },
     });
@@ -155,9 +171,22 @@ describe('宽松解析：字段类型不符不崩溃（后端对非判定字段�
         total: 2,
         passed: 1,
         failed: 1,
+        reportPath: null,
         cases: [
-          { id: '7', status: 'failed', attribution: null, message: '' },
-          { id: '', status: 'unknown', attribution: null, message: '' },
+          {
+            ...NEW_EMPTY,
+            id: '7',
+            status: 'failed',
+            attribution: null,
+            message: '',
+          },
+          {
+            ...NEW_EMPTY,
+            id: '',
+            status: 'unknown',
+            attribution: null,
+            message: '',
+          },
         ],
       },
     });
@@ -166,7 +195,105 @@ describe('宽松解析：字段类型不符不崩溃（后端对非判定字段�
   it('测试报告：cases 缺失时当作空列表，计数照读', () => {
     expect(parseTestReport('{"total":3,"passed":3,"failed":0}')).toEqual({
       ok: true,
-      value: { total: 3, passed: 3, failed: 0, cases: [] },
+      value: { total: 3, passed: 3, failed: 0, cases: [], reportPath: null },
     });
+  });
+});
+
+describe('parseTestReport（U4 新字段）', () => {
+  it('读出耗时、模块、来源与报告路径', () => {
+    const result = parseTestReport(
+      JSON.stringify({
+        total: 2,
+        passed: 1,
+        failed: 1,
+        report_path: 'atp/test_results/test_report_1.html',
+        cases: [
+          {
+            id: 'vk_gen_001',
+            status: 'passed',
+            attribution: null,
+            message: '',
+            duration_s: 0.42,
+            module: 'vk_gen',
+            source: 'atp',
+          },
+          {
+            id: 'tests::add',
+            status: 'failed',
+            attribution: 'code',
+            message: '断言失败',
+            source: 'repo',
+          },
+        ],
+      })
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.reportPath).toBe('atp/test_results/test_report_1.html');
+    expect(result.value.cases[0]).toMatchObject({
+      durationS: 0.42,
+      module: 'vk_gen',
+      source: 'atp',
+    });
+    expect(result.value.cases[1]).toMatchObject({
+      durationS: null,
+      module: null,
+      source: 'repo',
+    });
+  });
+
+  it('旧报告没有新字段时全部为空', () => {
+    const result = parseTestReport(
+      JSON.stringify({
+        total: 1,
+        passed: 1,
+        failed: 0,
+        cases: [{ id: 'a', status: 'passed', attribution: null, message: '' }],
+      })
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.reportPath).toBeNull();
+    expect(result.value.cases[0]).toMatchObject({
+      durationS: null,
+      module: null,
+      source: null,
+    });
+  });
+
+  it('来源不是 atp 或 repo 时当作未知，耗时为负或非数字时为空', () => {
+    const result = parseTestReport(
+      JSON.stringify({
+        total: 1,
+        cases: [
+          {
+            id: 'a',
+            status: 'passed',
+            source: 'other',
+            duration_s: -1,
+            module: 3,
+          },
+        ],
+        report_path: 42,
+      })
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.reportPath).toBeNull();
+    expect(result.value.cases[0]).toMatchObject({
+      durationS: null,
+      module: '3',
+      source: null,
+    });
+  });
+});
+
+describe('formatDuration', () => {
+  it('按量级取单位', () => {
+    expect(formatDuration(null)).toBe('—');
+    expect(formatDuration(0.0421)).toBe('42 ms');
+    expect(formatDuration(1.234)).toBe('1.23 s');
+    expect(formatDuration(75)).toBe('1 min 15 s');
   });
 });

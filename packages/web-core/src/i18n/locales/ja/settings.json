@@ -411,6 +411,12 @@
         "platform": "内蔵",
         "superpowers": "superpowers",
         "atp": "atp"
+      },
+      "atpCommand": {
+        "label": "atp コマンド",
+        "save": "保存",
+        "help": "テスト段階で API ケースの実行に使います。空欄なら `atp` を使います。グローバルにインストールしていない場合は `uv run --project /path/to/atp atp` のように指定できます。",
+        "saveError": "atp コマンドを保存できませんでした。もう一度お試しください。"
       }
     },
     "projects": {

@@ -966,9 +966,16 @@
     },
     "testCols": {
       "case": "Case",
+      "source": "출처",
       "status": "Result",
+      "duration": "소요 시간",
       "attribution": "Attribution",
       "message": "Notes"
+    },
+    "testFullReport": "전체 보고서 보기",
+    "testSource": {
+      "atp": "API 케이스",
+      "repo": "저장소 테스트"
     },
     "attribution": {
       "code": "Code defect",
