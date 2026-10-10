@@ -11,6 +11,8 @@ use db::models::pipeline::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::test_env::{DEFAULT_READY_TIMEOUT_S, MAX_READY_TIMEOUT_S};
+
 pub const BUILTIN_TEMPLATE_KEY: &str = "standard";
 pub const REPO_TEMPLATE_KEY: &str = "repo";
 /// 相对仓库根目录。
@@ -102,6 +104,13 @@ pub struct StageTemplate {
     pub checks: Vec<String>,
     pub gate: StageGate,
     pub max_rounds: i64,
+    /// 测试阶段等被测服务就绪的秒数上限；其它阶段不用。旧快照没有这个键，按默认值读。
+    #[serde(default = "default_ready_timeout_s")]
+    pub ready_timeout_s: u64,
+}
+
+fn default_ready_timeout_s() -> u64 {
+    DEFAULT_READY_TIMEOUT_S
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +200,8 @@ pub enum TemplateError {
     EmptySkill(String),
     #[error("阶段 {0} 的 checks 里有空命令")]
     EmptyCheck(String),
+    #[error("阶段 {stage} 的 ready_timeout_s 必须在 1 到 600 之间，实际 {value}")]
+    BadReadyTimeout { stage: String, value: i64 },
 }
 
 pub fn builtin_template() -> PipelineTemplate {
@@ -207,6 +218,7 @@ pub fn builtin_template() -> PipelineTemplate {
             checks: Vec::new(),
             gate,
             max_rounds: DEFAULT_MAX_ROUNDS,
+            ready_timeout_s: DEFAULT_READY_TIMEOUT_S,
         }
     }
     fn human(label: &str) -> StageGate {
@@ -288,6 +300,8 @@ struct RawStage {
     gate: Option<RawGate>,
     #[serde(default)]
     retry: Option<RawRetry>,
+    #[serde(default)]
+    ready_timeout_s: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -408,6 +422,17 @@ pub fn parse_template_yaml(text: &str) -> Result<PipelineTemplate, TemplateError
             });
         }
 
+        let ready_timeout_s = match raw_stage.ready_timeout_s {
+            None => DEFAULT_READY_TIMEOUT_S,
+            Some(value) => u64::try_from(value)
+                .ok()
+                .filter(|seconds| (1..=MAX_READY_TIMEOUT_S).contains(seconds))
+                .ok_or(TemplateError::BadReadyTimeout {
+                    stage: name.clone(),
+                    value,
+                })?,
+        };
+
         stages.push(StageTemplate {
             key,
             skill: raw_stage.skill,
@@ -415,6 +440,7 @@ pub fn parse_template_yaml(text: &str) -> Result<PipelineTemplate, TemplateError
             checks: raw_stage.checks,
             gate,
             max_rounds,
+            ready_timeout_s,
         });
     }
 
@@ -771,5 +797,47 @@ stages:
                 );
             }
         }
+    }
+
+    #[test]
+    fn 就绪超时默认六十秒且可在模板里改() {
+        assert_eq!(
+            builtin_template()
+                .stage(PipelineStageKey::Test)
+                .unwrap()
+                .ready_timeout_s,
+            60
+        );
+        let template = parse_template_yaml(
+            "version: 1\nstages:\n  - key: test\n    skill: atp-run\n    artifacts: [test-report.json]\n    ready_timeout_s: 5\n",
+        )
+        .unwrap();
+        assert_eq!(template.stages[0].ready_timeout_s, 5);
+    }
+
+    #[test]
+    fn 就绪超时越界报错() {
+        for value in ["0", "601", "-1"] {
+            let yaml = format!(
+                "version: 1\nstages:\n  - key: test\n    skill: atp-run\n    ready_timeout_s: {value}\n"
+            );
+            assert!(
+                matches!(
+                    parse_template_yaml(&yaml),
+                    Err(TemplateError::BadReadyTimeout { .. })
+                ),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn 旧快照没有就绪超时字段也能读() {
+        let mut value = serde_json::to_value(builtin_template()).unwrap();
+        for stage in value["stages"].as_array_mut().unwrap() {
+            stage.as_object_mut().unwrap().remove("ready_timeout_s");
+        }
+        let template: PipelineTemplate = serde_json::from_value(value).unwrap();
+        assert_eq!(template.stages[0].ready_timeout_s, 60);
     }
 }
