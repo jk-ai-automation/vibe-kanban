@@ -22,6 +22,7 @@
 | §4.1 就绪探测 | 在后台任务里做，不占引擎锁 | 引擎所有状态变更共用一把全局锁，在锁里等 60 秒会卡住所有需求的关卡、暂停、取消 |
 | （新增）| CSV 里没有可自动化用例（全部 `NOAUTO=Y`）时不起开发服务器，直接跳过接口路 | 纯函数需求不该白等一个服务 |
 | （新增）| 多个仓库都配了开发服务器脚本时，只起**第一个** | 一个端口只能给一个服务；多服务编排不在本期 |
+| 地址识别返回全部候选、localhost 同时探 IPv4/IPv6 | 审查发现：日志里先出现数据库地址会误判；Node 17+ 上 localhost 可能只绑 ::1 |
 | U3 技能文件里写「U4 换成 atp 仓库维护的正式版」 | `atp-run` 仍由本仓库维护 | 它依赖平台提示词的固定行，放在 atp 仓库会形成跨仓库契约 |
 
 **环境约束（必须遵守）:** 这台机器 8 核 8GB，**同一时间只允许一个 cargo 进程**；不要另建 worktree 或独立 `target`；长命令后台运行并定时看输出。
@@ -297,25 +298,119 @@ mod tests {
         assert!(error.contains("NOAUTO"), "{error}");
     }
 
+    fn candidates(log: &str) -> Vec<String> {
+        service_url_candidates(log)
+    }
+
     #[test]
-    fn 从日志里识别本机地址() {
+    fn localhost_同时给出_ipv4_与_ipv6_候选() {
+        assert_eq!(
+            candidates("  ➜  Local:   http://localhost:5173/"),
+            ["http://127.0.0.1:5173", "http://[::1]:5173"]
+        );
+    }
+
+    #[test]
+    fn 从日志里识别各种本机地址() {
         for (log, expected) in [
-            ("  ➜  Local:   http://localhost:5173/", Some("http://127.0.0.1:5173")),
-            ("Listening on 0.0.0.0:8080", Some("http://127.0.0.1:8080")),
-            ("server at https://127.0.0.1:8443/app", Some("https://127.0.0.1:8443")),
-            ("\u{1b}[32mready\u{1b}[0m http://[::1]:3000", Some("http://127.0.0.1:3000")),
-            ("proxy 4000.localhost:3009 up", None),
-            ("see https://example.com:443/docs", None),
-            ("nothing here", None),
+            ("Listening on 0.0.0.0:8080", vec!["http://127.0.0.1:8080"]),
+            (
+                "server at https://127.0.0.1:8443/app",
+                vec!["https://127.0.0.1:8443"],
+            ),
+            ("[::1]:3000", vec!["http://[::1]:3000"]),
+            (
+                "\u{1b}[32mready\u{1b}[0m http://[::1]:3000",
+                vec!["http://[::1]:3000"],
+            ),
+            ("proxy 4000.localhost:3009 up", vec![]),
+            ("see https://example.com:443/docs", vec![]),
+            ("localhost:00", vec![]),
+            ("nothing here", vec![]),
+            (
+                "http://localhost:3000端口",
+                vec!["http://127.0.0.1:3000", "http://[::1]:3000"],
+            ),
         ] {
-            assert_eq!(detect_service_url(log).as_deref(), expected, "{log}");
+            assert_eq!(candidates(log), expected, "{log}");
         }
     }
 
     #[test]
-    fn 多个地址取第一个() {
-        let log = "Local: http://localhost:3000\nNetwork: http://127.0.0.1:3001";
-        assert_eq!(detect_service_url(log).as_deref(), Some("http://127.0.0.1:3000"));
+    fn 带协议的地址排在裸地址之前() {
+        let log = "ECONNREFUSED 127.0.0.1:5432\n  Local: http://localhost:5173/\n";
+        let found = candidates(log);
+        assert_eq!(found[0], "http://127.0.0.1:5173");
+        assert!(found.contains(&"http://127.0.0.1:5432".to_string()));
+    }
+
+    #[test]
+    fn 端口非法的地址跳过且不影响后面的() {
+        let found = candidates("localhost:70000 ... http://localhost:3000");
+        assert_eq!(found, ["http://127.0.0.1:3000", "http://[::1]:3000"]);
+    }
+
+    #[test]
+    fn 重复地址只保留一次() {
+        let log = "Local: http://localhost:3000\nagain http://127.0.0.1:3000\n0.0.0.0:3000";
+        assert_eq!(
+            candidates(log),
+            ["http://127.0.0.1:3000", "http://[::1]:3000"]
+        );
+    }
+
+    #[test]
+    fn 约定端口先_ipv4_再_ipv6() {
+        assert_eq!(
+            port_candidates(4000),
+            ["http://127.0.0.1:4000", "http://[::1]:4000"]
+        );
+    }
+
+    #[test]
+    fn 带字节序标记的_csv_也能数用例() {
+        assert_eq!(
+            count_automatable_cases("\u{feff}CaseID,NOAUTO\na_001,\n"),
+            Ok(1)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 搭项目根不跟随结果目录的符号链接() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("keep.txt"), "x").unwrap();
+        let atp = dir.path().join("atp");
+        std::fs::create_dir_all(&atp).unwrap();
+        std::os::unix::fs::symlink(outside.path(), atp.join("test_results")).unwrap();
+
+        let root = prepare_atp_root(dir.path(), "CaseID\na_001\n").unwrap();
+
+        assert!(outside.path().join("keep.txt").exists(), "外部文件不能被删");
+        let meta = std::fs::symlink_metadata(root.join("test_results")).unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 搭项目根遇到指向外部的_atp_链接或悬空链接() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("keep.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("atp")).unwrap();
+        let root = prepare_atp_root(dir.path(), "CaseID\na_001\n").unwrap();
+        assert!(outside.path().join("keep.txt").exists());
+        assert!(
+            !outside.path().join("test_cases").exists(),
+            "不能写进外部目录"
+        );
+        assert!(root.join("test_cases/vk_gen/vk_gen.csv").is_file());
+
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("atp")).unwrap();
+        let root = prepare_atp_root(dir.path(), "CaseID\na_001\n").unwrap();
+        assert!(root.join("test_cases/vk_gen/vk_gen.csv").is_file());
     }
 
     #[test]
@@ -374,6 +469,17 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("outside.html"), results.join("link.html"))
             .unwrap();
         assert!(resolve_html_report(dir.path(), "atp/test_results/link.html").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 结果目录本身是链接时读不到外部报告() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("r.html"), "x").unwrap();
+        std::fs::create_dir_all(dir.path().join("atp")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("atp/test_results")).unwrap();
+        assert!(resolve_html_report(dir.path(), "atp/test_results/r.html").is_none());
     }
 }
 ```
@@ -480,22 +586,74 @@ static ANSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-9;?]*[A-Za
 /// （挡住 `4000.localhost:3009` 这种把 `localhost:3009` 当后缀的情况）。
 static LOCAL_URL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)(?:^|[^A-Za-z0-9_.\-])(?:(https?)://)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d{2,5})\b",
+        r"(?i)(?:^|[^A-Za-z0-9_.\-])(?:(https?)://)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d{1,6})(?-u:\b)",
     )
     .unwrap()
 });
 
-/// 从开发服务器日志里找第一个本机地址，统一成 `scheme://127.0.0.1:port`。
-/// 是前端 `usePreviewUrl` 识别规则的后端简化版：只要回环地址，不要局域网 IP。
-pub fn detect_service_url(log: &str) -> Option<String> {
+/// 从开发服务器日志里找出全部本机地址候选，按出现顺序去重；带 `http(s)://` 的排在裸 `host:port` 之前。
+/// `localhost` 同时给出 `127.0.0.1` 与 `[::1]` 两个候选（Node 17+ 上 localhost 可能只绑 IPv6）；
+/// 显式写 `[::1]` 的保留 IPv6；`0.0.0.0` / `127.0.0.1` 给 `127.0.0.1`。端口 0 或超过 65535 的跳过。
+pub fn service_url_candidates(log: &str) -> Vec<String> {
     let clean = ANSI.replace_all(log, "");
-    let found = LOCAL_URL.captures(&clean)?;
-    let scheme = found
-        .get(1)
-        .map(|scheme| scheme.as_str().to_ascii_lowercase())
-        .unwrap_or_else(|| "http".to_string());
-    let port: u16 = found.get(2)?.as_str().parse().ok()?;
-    Some(format!("{scheme}://127.0.0.1:{port}"))
+    let mut with_scheme = Vec::new();
+    let mut bare = Vec::new();
+    for found in LOCAL_URL.captures_iter(&clean) {
+        let Some(port) = found
+            .get(3)
+            .and_then(|port| port.as_str().parse::<u16>().ok())
+            .filter(|port| *port > 0)
+        else {
+            continue;
+        };
+        let scheme = found
+            .get(1)
+            .map(|scheme| scheme.as_str().to_ascii_lowercase());
+        let host = found[2].to_ascii_lowercase();
+        let hosts: &[&str] = match host.as_str() {
+            "localhost" => &["127.0.0.1", "[::1]"],
+            "[::1]" => &["[::1]"],
+            _ => &["127.0.0.1"],
+        };
+        let target = if scheme.is_some() {
+            &mut with_scheme
+        } else {
+            &mut bare
+        };
+        for host in hosts {
+            target.push(format!(
+                "{}://{host}:{port}",
+                scheme.as_deref().unwrap_or("http")
+            ));
+        }
+    }
+    let mut seen = BTreeSet::new();
+    with_scheme
+        .into_iter()
+        .chain(bare)
+        .filter(|url| seen.insert(url.clone()))
+        .collect()
+}
+
+/// 平台注入的 `PORT` 对应的探测地址：先 IPv4 再 IPv6。
+pub fn port_candidates(port: u16) -> Vec<String> {
+    vec![
+        format!("http://127.0.0.1:{port}"),
+        format!("http://[::1]:{port}"),
+    ]
+}
+
+/// 路径本身是符号链接（含悬空链接）时只删链接，不碰目标。
+fn remove_symlink(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            std::fs::remove_file(path)?;
+            Ok(true)
+        }
+        Ok(_) => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 /// 在产出物目录下搭 atp 项目根，返回根目录。上一轮的结果目录整个删掉：
@@ -503,9 +661,12 @@ pub fn detect_service_url(log: &str) -> Option<String> {
 pub fn prepare_atp_root(artifacts_dir: &Path, csv_text: &str) -> std::io::Result<PathBuf> {
     let root = artifacts_dir.join(ATP_DIR);
     let results = root.join(ATP_RESULTS_DIR);
-    if results.exists() {
+    // 链接只删链接本身，不跟随到目标目录里删东西。
+    remove_symlink(&root)?;
+    if !remove_symlink(&results)? && results.exists() {
         std::fs::remove_dir_all(&results)?;
     }
+    std::fs::create_dir_all(&results)?;
     let module_dir = root.join(ATP_CASES_DIR).join(ATP_MODULE);
     std::fs::create_dir_all(&module_dir)?;
     std::fs::write(module_dir.join(format!("{ATP_MODULE}.csv")), csv_text)?;
@@ -539,11 +700,18 @@ pub fn resolve_html_report(artifacts_dir: &Path, report_path: &str) -> Option<Pa
     if !is_html {
         return None;
     }
-    let allowed = artifacts_dir
-        .join(ATP_DIR)
-        .join(ATP_RESULTS_DIR)
-        .canonicalize()
-        .ok()?;
+    // 基准只对产出物目录本身做规范化，atp 与 atp/test_results 两级必须是真实目录。
+    let atp = artifacts_dir.canonicalize().ok()?.join(ATP_DIR);
+    let allowed = atp.join(ATP_RESULTS_DIR);
+    for level in [&atp, &allowed] {
+        if std::fs::symlink_metadata(level)
+            .ok()?
+            .file_type()
+            .is_symlink()
+        {
+            return None;
+        }
+    }
     let resolved = artifacts_dir.join(relative).canonicalize().ok()?;
     (resolved.starts_with(&allowed) && resolved.is_file()).then_some(resolved)
 }
@@ -759,8 +927,8 @@ fn default_ready_timeout_s() -> u64 {
 `TemplateError` 加：
 
 ```rust
-    #[error("阶段 {stage} 的 ready_timeout_s 必须在 1 到 600 之间，实际 {value}")]
-    BadReadyTimeout { stage: String, value: i64 },
+    #[error("阶段 {stage} 的 ready_timeout_s 必须在 1 到 {max} 之间，实际 {value}")]
+    BadReadyTimeout { stage: String, value: i64, max: u64 },
 ```
 
 `RawStage` 加：
@@ -783,6 +951,7 @@ fn default_ready_timeout_s() -> u64 {
                 .ok_or(TemplateError::BadReadyTimeout {
                     stage: name.clone(),
                     value,
+                    max: MAX_READY_TIMEOUT_S,
                 })?,
         };
 ```
@@ -1315,6 +1484,23 @@ async fn 测试阶段_脚本忽略端口时从日志识别地址() {
 }
 
 #[tokio::test]
+async fn 测试阶段_日志里先出现数据库地址也能找到真实地址() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    场.launcher
+        .ready_urls
+        .lock()
+        .unwrap()
+        .push("http://127.0.0.1:5173".to_string());
+    *场.launcher.dev_server_output.lock().unwrap() =
+        "ECONNREFUSED 127.0.0.1:5432\n  ➜  Local:   http://localhost:5173/\n".to_string();
+    let before = 场.走到测试阶段前().await;
+    场.等到智能体启动数(before + 1).await;
+
+    assert_eq!(场.提示词行("被测地址："), "http://127.0.0.1:5173");
+}
+
+#[tokio::test]
 async fn 测试阶段_超时没就绪时如实告诉技能并停掉服务() {
     let 场 = 场景::新建("加法接口").await;
     场.写仓库模板(
@@ -1466,6 +1652,9 @@ enum TestPrep {
 
 struct ServiceWait {
     process_id: Uuid,
+    /// 平台注入的约定端口（`PORT`）；就绪探测据此先试 IPv4 再试 IPv6。
+    port: u16,
+    /// 约定地址 `http://127.0.0.1:{port}`，注入 `VK_BASE_URL` 与超时文案用。
     url: String,
     atp_root: PathBuf,
     atp_command: String,
@@ -1630,6 +1819,7 @@ const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(300);
         };
         Ok(TestPrep::Waiting(ServiceWait {
             process_id,
+            port,
             url,
             atp_root,
             atp_command,
@@ -1641,21 +1831,23 @@ const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(300);
 - [ ] **Step 5: 实现——锁外等待、锁内启动**
 
 ```rust
-    /// 等被测服务就绪：先探约定端口，再探日志里识别到的地址；开发服务器退出或超时即放弃。
-    /// **不持有引擎锁**。
+    /// 等被测服务就绪：每轮先依次探约定端口的 IPv4/IPv6 地址，再探日志里识别到的其余候选；
+    /// 开发服务器退出或超时即放弃。**不持有引擎锁**。
     async fn wait_for_service(&self, wait: &ServiceWait) -> ServiceState {
         let launcher = &self.inner.launcher;
         let deadline = Instant::now() + wait.timeout;
+        let conventional = test_env::port_candidates(wait.port);
         loop {
-            if launcher.probe_http(&wait.url).await {
-                return ServiceState::Ready(wait.url.clone());
+            for url in &conventional {
+                if launcher.probe_http(url).await {
+                    return ServiceState::Ready(url.clone());
+                }
             }
             let output = launcher.process_output(wait.process_id).await;
-            if let Some(found) = test_env::detect_service_url(&output)
-                && found != wait.url
-                && launcher.probe_http(&found).await
-            {
-                return ServiceState::Ready(found);
+            for url in test_env::service_url_candidates(&output) {
+                if !conventional.contains(&url) && launcher.probe_http(&url).await {
+                    return ServiceState::Ready(url);
+                }
             }
             let exited = match ExecutionProcess::find_by_id(self.pool(), wait.process_id).await {
                 Ok(Some(process)) => process.status != ExecutionProcessStatus::Running,
