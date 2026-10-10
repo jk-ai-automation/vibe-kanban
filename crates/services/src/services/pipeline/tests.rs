@@ -41,7 +41,7 @@ use super::{
     FinishedProcess, PipelineError, PipelineExitEvent, PipelineService, StartPipelineInput,
     artifacts,
     test_support::{
-        FakeLaunch, FakeLaunchKind, FakeLauncher, 准备工作区, 准备需求, 落进程
+        FakeLaunch, FakeLaunchKind, FakeLauncher, 准备工作区, 准备运行与阶段, 准备需求, 落进程,
     },
     transition::stage_column,
 };
@@ -1887,4 +1887,30 @@ async fn 报告没有路径或路径越界时找不到() {
         场.service.test_html_report(&artifact).await,
         Err(PipelineError::NotFound(_))
     ));
+}
+
+#[tokio::test]
+async fn 正在启动的尝试还没记会话时退出事件不在锁外丢掉() {
+    // 引擎在锁内先起进程、后记会话；进程在两步之间秒退时，锁外按会话查不到它。
+    // 此时必须进锁再查，否则尝试会永远卡在 running。
+    let 场 = 场景::新建("秒退").await;
+    let (_run, stage) = 准备运行与阶段(&场.test_db, &场.issue, PipelineStageKey::Spec).await;
+    let 秒退 = FinishedProcess {
+        execution_process_id: Uuid::new_v4(),
+        session_id: Uuid::new_v4(),
+        run_reason: ExecutionProcessRunReason::CodingAgent,
+        status: ExecutionProcessStatus::Failed,
+        exit_code: Some(1),
+        has_next_action: false,
+        chain_continues: false,
+    };
+    assert!(场.service.exit_may_belong_to_pipeline(&秒退).await.unwrap());
+
+    PipelineStageRuns::set_status(场.test_db.pool(), stage.id, Failed, None, None)
+        .await
+        .unwrap();
+    assert!(
+        !场.service.exit_may_belong_to_pipeline(&秒退).await.unwrap(),
+        "没有正在启动的尝试时，不属于流水线会话的进程直接放过"
+    );
 }

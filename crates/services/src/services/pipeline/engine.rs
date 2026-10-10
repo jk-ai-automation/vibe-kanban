@@ -295,12 +295,7 @@ impl PipelineService {
         if !transition::is_stage_terminal(&process) {
             return Ok(());
         }
-        // 锁外先过滤：不是流水线会话（绝大多数普通工作区进程）直接返回，不去抢全局锁。
-        // 锁内还会再查一次，以锁内结果为准。
-        if PipelineStageRuns::find_running_by_session(self.pool(), process.session_id)
-            .await?
-            .is_none()
-        {
+        if !self.exit_may_belong_to_pipeline(&process).await? {
             return Ok(());
         }
         let _guard = self.inner.lock.lock().await;
@@ -314,6 +309,26 @@ impl PipelineService {
             }
             other => other,
         }
+    }
+
+    /// 锁外先过滤：不是流水线会话（绝大多数普通工作区进程）直接返回，不去抢全局锁。
+    /// 锁内还会再查一次，以锁内结果为准。
+    ///
+    /// 查不到会话时还要看有没有正在启动的尝试：引擎在锁内先起进程、后记会话，进程在这两步之间
+    /// 就退出（秒退）时，它的会话此刻还查不到；若在这里丢掉事件，尝试会永远卡在 running。
+    /// 这种情况进锁再查——拿到锁时会话已经记好了。
+    pub(super) async fn exit_may_belong_to_pipeline(
+        &self,
+        process: &FinishedProcess,
+    ) -> Result<bool, PipelineError> {
+        let pool = self.pool();
+        if PipelineStageRuns::find_running_by_session(pool, process.session_id)
+            .await?
+            .is_some()
+        {
+            return Ok(true);
+        }
+        Ok(PipelineStageRuns::any_running_without_session(pool).await?)
     }
 
     async fn finish_stage_locked(&self, process: &FinishedProcess) -> Result<(), PipelineError> {
