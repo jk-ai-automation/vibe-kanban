@@ -8,7 +8,8 @@ use api_types::issue::Issue;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    response::Json as ResponseJson,
+    http::header,
+    response::{IntoResponse, Json as ResponseJson, Response},
     routing::{get, post},
 };
 use db::models::{
@@ -274,6 +275,30 @@ async fn get_artifact(
     Ok(ResponseJson(ApiResponse::success(artifact)))
 }
 
+/// atp 的 HTML 报告。内容来自被测仓库里跑出来的文件，按不可信处理：
+/// 用 CSP sandbox 把它关进独立源，脚本可以跑（报告的折叠交互要用），但碰不到本站的接口与存储。
+async fn get_html_report(
+    State(deployment): State<DeploymentImpl>,
+    Path(artifact_id): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    let artifact = handle_get_artifact(&deployment.db().pool, artifact_id).await?;
+    let path = deployment
+        .pipeline()
+        .test_html_report(&artifact)
+        .await
+        .map_err(map_pipeline_error)?;
+    let body = tokio::fs::read(&path).await.map_err(ApiError::Io)?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CONTENT_SECURITY_POLICY, "sandbox allow-scripts"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        body,
+    )
+        .into_response())
+}
+
 async fn decide_gate(
     State(deployment): State<DeploymentImpl>,
     current_user: CurrentUser,
@@ -343,6 +368,11 @@ async fn list_stage_runs(
 pub fn router() -> Router<DeploymentImpl> {
     let pipeline = LocalRoutes::new("/pipeline")
         .route("/artifacts/{id}", &["GET"], get(get_artifact))
+        .route(
+            "/artifacts/{id}/html-report",
+            &["GET"],
+            get(get_html_report),
+        )
         .route("/stage-runs/{id}/gate", &["POST"], post(decide_gate))
         .route("/runs/{id}/pause", &["POST"], post(pause))
         .route("/runs/{id}/resume", &["POST"], post(resume))
@@ -851,6 +881,7 @@ mod tests {
             ("/api/local/issues/{id}/pipeline", "GET"),
             ("/api/local/issues/{id}/pipeline", "POST"),
             ("/api/local/pipeline/artifacts/{id}", "GET"),
+            ("/api/local/pipeline/artifacts/{id}/html-report", "GET"),
             ("/api/local/pipeline/stage-runs/{id}/gate", "POST"),
             ("/api/local/pipeline/runs/{id}/pause", "POST"),
             ("/api/local/pipeline/runs/{id}/resume", "POST"),

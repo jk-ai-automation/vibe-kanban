@@ -18,7 +18,7 @@ use db::{
         local_project::DEFAULT_USER_ID,
         local_project_status::{ProjectStatuses, StageType},
         pipeline::{
-            ArtifactKind, GateDecisionKind, GateDecisionRequest, IssuePipelineView,
+            ArtifactKind, GateDecisionKind, GateDecisionRequest, IssueArtifacts, IssuePipelineView,
             PipelineRunStatus, PipelineRuns, PipelineStageKey, PipelineStageRuns,
             PipelineStageStatus,
         },
@@ -1845,4 +1845,46 @@ async fn 测试阶段_配了检查脚本时检查结束后才停服务() {
     场.结束(&场.launcher.last(), true).await;
     场.等到停掉开发服务器(process).await;
     assert_eq!(场.停掉的开发服务器(), vec![process]);
+}
+
+#[tokio::test]
+async fn 报告链接只解析到结果目录里的_html() {
+    let 场 = 场景::新建("加法接口").await;
+    场.走到测试阶段前().await;
+    // 测试阶段智能体启动时假启动器已写过模拟报告：这里用手写的覆盖，并关掉后续重写。
+    let dir = 场.产出物目录();
+    let results = dir.join("atp/test_results");
+    std::fs::create_dir_all(&results).unwrap();
+    std::fs::write(results.join("test_report_1.html"), "<html>ok</html>").unwrap();
+    std::fs::write(
+        dir.join("test-report.json"),
+        r#"{"total":1,"passed":1,"failed":0,"report_path":"atp/test_results/test_report_1.html","cases":[{"id":"a","status":"passed","attribution":null,"message":""}]}"#,
+    )
+    .unwrap();
+    场.launcher.write_artifacts.store(false, Ordering::SeqCst);
+    场.结束最近一次启动(true).await;
+
+    let artifact =
+        IssueArtifacts::latest_for_kind(场.test_db.pool(), 场.issue.id, ArtifactKind::TestReport)
+            .await
+            .unwrap()
+            .expect("测试报告应已入库");
+    let path = 场.service.test_html_report(&artifact).await.unwrap();
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "<html>ok</html>");
+}
+
+#[tokio::test]
+async fn 报告没有路径或路径越界时找不到() {
+    let 场 = 场景::新建("加法接口").await;
+    场.走到测试阶段前().await;
+    场.结束最近一次启动(true).await; // 假启动器写的报告没有 report_path
+    let artifact =
+        IssueArtifacts::latest_for_kind(场.test_db.pool(), 场.issue.id, ArtifactKind::TestReport)
+            .await
+            .unwrap()
+            .expect("测试报告应已入库");
+    assert!(matches!(
+        场.service.test_html_report(&artifact).await,
+        Err(PipelineError::NotFound(_))
+    ));
 }

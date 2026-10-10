@@ -34,6 +34,8 @@ export const PIPELINE_API_PATHS = {
   issuePipeline: (issueId: string) => `/api/local/issues/${issueId}/pipeline`,
   artifact: (artifactId: string) =>
     `/api/local/pipeline/artifacts/${artifactId}`,
+  artifactHtmlReport: (artifactId: string) =>
+    `/api/local/pipeline/artifacts/${artifactId}/html-report`,
   gate: (stageRunId: string) =>
     `/api/local/pipeline/stage-runs/${stageRunId}/gate`,
   runAction: (runId: string, action: PipelineRunAction) =>
@@ -44,6 +46,11 @@ export const PIPELINE_API_PATHS = {
       : '/api/local/pipeline/pending',
   skills: '/api/local/pipeline/skills',
 } as const;
+
+/** atp 完整 HTML 报告的地址（新标签页打开，不走 JSON 封装）。 */
+export function artifactHtmlReportUrl(artifactId: string): string {
+  return PIPELINE_API_PATHS.artifactHtmlReport(artifactId);
+}
 
 export class PipelineApiError extends Error {
   /**

@@ -20,10 +20,10 @@ use db::{
         issue::Issues,
         local_project_status::StageType,
         pipeline::{
-            CreatePipelineRun, CreateStageRun, GateDecisionKind, GateDecisionRequest,
-            IssueArtifacts, IssuePipelineView, MANUAL_STOP_ERROR, PipelineGateDecisions,
-            PipelineRun, PipelineRunStatus, PipelineRuns, PipelineStageKey, PipelineStageRun,
-            PipelineStageRuns, PipelineStageStatus,
+            ArtifactKind, CreatePipelineRun, CreateStageRun, GateDecisionKind, GateDecisionRequest,
+            IssueArtifact, IssueArtifacts, IssuePipelineView, MANUAL_STOP_ERROR,
+            PipelineGateDecisions, PipelineRun, PipelineRunStatus, PipelineRuns, PipelineStageKey,
+            PipelineStageRun, PipelineStageRuns, PipelineStageStatus,
         },
         workspace::Workspace,
     },
@@ -121,6 +121,30 @@ impl PipelineService {
     pub async fn view_for_run_id(&self, run_id: Uuid) -> Result<IssuePipelineView, PipelineError> {
         let run = self.load_run(run_id).await?;
         self.view_for_run(run).await
+    }
+
+    /// 测试报告对应的 atp HTML 报告文件。报告没写 `report_path`、路径不在
+    /// `atp/test_results/` 下、文件不存在，一律按找不到处理。
+    pub async fn test_html_report(
+        &self,
+        artifact: &IssueArtifact,
+    ) -> Result<PathBuf, PipelineError> {
+        let not_found = || PipelineError::NotFound("完整测试报告".to_string());
+        if artifact.summary.kind != ArtifactKind::TestReport {
+            return Err(not_found());
+        }
+        let report_path = serde_json::from_str::<serde_json::Value>(&artifact.content)
+            .ok()
+            .and_then(|report| report.get("report_path")?.as_str().map(str::to_string))
+            .ok_or_else(not_found)?;
+        let stage_run = PipelineStageRuns::find_by_id(self.pool(), artifact.summary.stage_run_id)
+            .await?
+            .ok_or_else(not_found)?;
+        let run = self.load_run(stage_run.run_id).await?;
+        let root = self.workspace_root(&run).await?.ok_or_else(not_found)?;
+        let issue = self.load_issue(run.issue_id).await?;
+        let dir = artifacts::artifacts_dir(&root, &issue.simple_id);
+        test_env::resolve_html_report(&dir, &report_path).ok_or_else(not_found)
     }
 
     async fn view_for_run(&self, run: PipelineRun) -> Result<IssuePipelineView, PipelineError> {
