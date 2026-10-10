@@ -415,7 +415,8 @@
       "atpCommand": {
         "label": "atp 命令",
         "save": "保存",
-        "help": "测试阶段用它执行接口用例。留空用 `atp`；没有全局安装时可填 `uv run --project /path/to/atp atp`。"
+        "help": "测试阶段用它执行接口用例。留空用 `atp`；没有全局安装时可填 `uv run --project /path/to/atp atp`。",
+        "saveError": "atp 命令保存失败，请重试。"
       }
     },
     "projects": {

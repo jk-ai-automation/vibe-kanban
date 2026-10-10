@@ -415,7 +415,8 @@
       "atpCommand": {
         "label": "atp 指令",
         "save": "儲存",
-        "help": "測試階段用它執行介面用例。留空用 `atp`；沒有全域安裝時可填 `uv run --project /path/to/atp atp`。"
+        "help": "測試階段用它執行介面用例。留空用 `atp`；沒有全域安裝時可填 `uv run --project /path/to/atp atp`。",
+        "saveError": "atp 命令儲存失敗，請重試。"
       }
     },
     "projects": {

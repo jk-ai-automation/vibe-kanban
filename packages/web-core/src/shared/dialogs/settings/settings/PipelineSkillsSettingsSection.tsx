@@ -22,6 +22,7 @@ export function PipelineSkillsSettingsSection() {
   const savedCommand = config?.pipeline_atp_command ?? '';
   const [atpCommand, setAtpCommand] = useState(savedCommand);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   // 配置从服务端刷新后，输入框跟着同步
   useEffect(() => {
     setAtpCommand(savedCommand);
@@ -29,11 +30,19 @@ export function PipelineSkillsSettingsSection() {
 
   const saveAtpCommand = async () => {
     setSaving(true);
+    setSaveError(null);
     try {
       const trimmed = atpCommand.trim();
-      await updateAndSaveConfig({
+      // 保存失败时 updateAndSaveConfig 返回 false（不抛），两种情况都要提示
+      const saved = await updateAndSaveConfig({
         pipeline_atp_command: trimmed === '' ? null : trimmed,
       });
+      if (!saved) {
+        setSaveError(t('settings.pipelineSkills.atpCommand.saveError'));
+      }
+    } catch (err) {
+      console.error('Error saving atp command:', err);
+      setSaveError(t('settings.pipelineSkills.atpCommand.saveError'));
     } finally {
       setSaving(false);
     }
@@ -89,6 +98,11 @@ export function PipelineSkillsSettingsSection() {
           />
         </div>
       </SettingsField>
+      {saveError && (
+        <div className="bg-error/10 border border-error/50 rounded-sm p-4 text-error">
+          {saveError}
+        </div>
+      )}
       <p className="text-xs text-low">
         {t('settings.pipelineSkills.readOnly')}
       </p>

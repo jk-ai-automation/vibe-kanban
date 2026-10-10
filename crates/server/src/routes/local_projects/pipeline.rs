@@ -287,12 +287,29 @@ async fn get_html_report(
         .test_html_report(&artifact)
         .await
         .map_err(map_pipeline_error)?;
-    let body = tokio::fs::read(&path).await.map_err(ApiError::Io)?;
+    read_html_report(&path).await
+}
+
+/// 读出已校验过的报告文件并加上响应头。
+/// - CSP `sandbox allow-scripts allow-popups`：报告里 `target=_blank` 的链接要能打开；
+///   不给 `allow-same-origin`（否则脚本回到本站源）、不给 `allow-popups-to-escape-sandbox`
+///   （否则弹出的页面脱离沙箱）。
+/// - `no-store`：重跑后同一地址的内容会变。
+/// - 校验之后文件被删（例如下一轮测试清空了结果目录）按 404 处理，不是服务端错误。
+pub(crate) async fn read_html_report(path: &std::path::Path) -> Result<Response, ApiError> {
+    let body = tokio::fs::read(path).await.map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => ApiError::NotFound,
+        _ => ApiError::Io(e),
+    })?;
     Ok((
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-            (header::CONTENT_SECURITY_POLICY, "sandbox allow-scripts"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "sandbox allow-scripts allow-popups",
+            ),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CACHE_CONTROL, "no-store"),
         ],
         body,
     )
@@ -417,6 +434,33 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    #[tokio::test]
+    async fn html_报告_响应头带沙箱与不缓存() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_report.html");
+        std::fs::write(&path, "<p>ok</p>").unwrap();
+
+        let response = read_html_report(&path).await.unwrap();
+
+        let headers = response.headers();
+        assert_eq!(
+            headers[header::CONTENT_SECURITY_POLICY],
+            "sandbox allow-scripts allow-popups"
+        );
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
+    }
+
+    #[tokio::test]
+    async fn html_报告_校验后文件被删时回_404() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = read_html_report(&dir.path().join("gone.html"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ApiError::NotFound), "{error:?}");
+    }
 
     async fn 准备需求(test_db: &TestDb) -> Issue {
         let project = LocalProjects::create(

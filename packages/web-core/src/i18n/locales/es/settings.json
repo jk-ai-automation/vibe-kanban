@@ -415,7 +415,8 @@
       "atpCommand": {
         "label": "Comando atp",
         "save": "Guardar",
-        "help": "La etapa de pruebas lo usa para ejecutar los casos de API. Déjalo vacío para usar `atp`; sin instalación global usa `uv run --project /path/to/atp atp`."
+        "help": "La etapa de pruebas lo usa para ejecutar los casos de API. Déjalo vacío para usar `atp`; sin instalación global usa `uv run --project /path/to/atp atp`.",
+        "saveError": "No se pudo guardar el comando de atp. Inténtalo de nuevo."
       }
     },
     "projects": {
