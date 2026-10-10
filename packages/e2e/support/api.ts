@@ -25,6 +25,8 @@ export interface PipelineViewLike {
     attempt: number;
     status: string;
     gate_kind: string;
+    summary: string | null;
+    error: string | null;
   }[];
   decisions: {
     id: string;
@@ -136,6 +138,13 @@ export class VkApi {
         display_name: displayName,
       }
     );
+  }
+
+  /** 给仓库配开发服务器脚本（`PUT /api/repos/{id}`，没给的字段保持不变）。 */
+  async setDevServerScript(repoId: string, script: string): Promise<void> {
+    await this.envelope('PUT', `/api/repos/${repoId}`, {
+      dev_server_script: script,
+    });
   }
 
   async createProject(name: string): Promise<{ id: string; name: string }> {

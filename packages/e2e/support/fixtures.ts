@@ -19,12 +19,21 @@ export interface E2eProject {
  * （`crates/services/src/services/filesystem.rs:101-105`），`POST /api/repos`
  * 注册任意路径不受影响，所以这里注册本地临时仓库，不触发任何外网 clone。
  */
-export function createGitRepo(dir: string): string {
+export function createGitRepo(
+  dir: string,
+  files: Record<string, string> = {}
+): string {
   fs.mkdirSync(dir, { recursive: true });
   const git = (...args: string[]) =>
     execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
   git('init', '-b', 'main');
   fs.writeFileSync(path.join(dir, 'README.md'), '# vk e2e fixture\n');
+  // 额外文件（如仓库模板 `.vibe/pipeline.yaml`）一并进初始提交
+  for (const [name, content] of Object.entries(files)) {
+    const file = path.join(dir, name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  }
   git('add', '.');
   git(
     '-c',

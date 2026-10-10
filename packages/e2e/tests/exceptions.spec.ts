@@ -1,4 +1,11 @@
-import { expect, test } from '../support/fixtures';
+import path from 'node:path';
+import { REPOS_DIR } from '../support/env';
+import {
+  createGitRepo,
+  expect,
+  test,
+  type E2eProject,
+} from '../support/fixtures';
 import {
   GATE_LABELS,
   gotoPath,
@@ -226,4 +233,103 @@ test('刷新后状态恢复：工作台、看板、详情', async ({ page, api, 
     'data-current',
     'requirement'
   );
+});
+
+/**
+ * 仓库模板：与内置七阶段相同，只是测试阶段把就绪等待缩到 2 秒、失败一次就转人工
+ * （不在「开发 → 评审 → 测试」里空转）。
+ */
+const NOT_READY_TEMPLATE = [
+  'version: 1',
+  'stages:',
+  '  - key: requirement',
+  '    skill: vk-requirement',
+  '    artifacts: [requirement.md]',
+  '    gate: { human: 需求确认 }',
+  '  - key: spec',
+  '    skill: vk-spec',
+  '    artifacts: [spec.md, plan.md]',
+  '    gate: { human: 设计规格确认 }',
+  '  - key: test_design',
+  '    skill: prd2testcase',
+  '    artifacts: [test-cases.csv, trace-matrix.md]',
+  '    gate: { human: 用例设计确认 }',
+  '  - key: develop',
+  '    skill: vk-develop',
+  '    gate: { auto: checks_passed }',
+  '  - key: review',
+  '    skill: vk-review',
+  '    artifacts: [review.json]',
+  '    gate: { auto: no_blocking_findings }',
+  '  - key: test',
+  '    skill: atp-run',
+  '    artifacts: [test-report.json]',
+  '    ready_timeout_s: 2',
+  '    gate: { auto: all_cases_passed }',
+  '    retry: { max_rounds: 1 }',
+  '  - key: deliver',
+  '    skill: vk-deliver',
+  '    artifacts: [delivery-report.md]',
+  '    gate: { auto: artifacts_present }',
+  '',
+].join('\n');
+
+test('被测服务起不来：测试报告如实标失败并转人工', async ({ page, api }) => {
+  test.setTimeout(10 * 60_000);
+  await api.prepareConfig();
+  // 模拟器的用例 CSV 有一条可自动化用例（NOAUTO 为空），平台会起开发服务器；
+  // 脚本只睡觉、不监听端口，2 秒内等不到响应。
+  const repoName = `e2e-notready-${Date.now().toString(36)}`;
+  const repo = await api.registerRepo(
+    createGitRepo(path.join(REPOS_DIR, repoName), {
+      '.vibe/pipeline.yaml': NOT_READY_TEMPLATE,
+    }),
+    repoName
+  );
+  await api.setDevServerScript(repo.id, 'sleep 600');
+  const projectName = 'E2E 被测服务起不来';
+  const created = await api.createProject(projectName);
+  const project: E2eProject = {
+    projectId: created.id,
+    projectName,
+    repoId: repo.id,
+    repoName,
+  };
+  const title = `被测服务起不来 ${Date.now()}`;
+
+  await openWorkbench(page, project);
+  await startRequirement(page, project, title);
+  await approveGate(page, title, GATE_LABELS.requirement);
+  await approveGate(page, title, GATE_LABELS.spec);
+  await approveGate(page, title, GATE_LABELS.testDesign);
+
+  // 开发 → 评审 → 测试：等 2 秒超时 → 模拟器写未就绪报告 → 关卡失败、转人工
+  await expect(
+    workbenchCard(page, 'confirm', title).filter({ hasText: '需要你处理' })
+  ).toBeVisible({ timeout: 5 * STAGE_TIMEOUT });
+
+  const issue = await api.findIssueByTitle(project.projectId, title);
+  const view = await api.issuePipeline(issue.id);
+  expect(view?.run.status).toBe('failed');
+  expect(view?.run.current_stage_key).toBe('test');
+  const testRuns = view!.stages.filter((stage) => stage.stage_key === 'test');
+  expect(testRuns).toHaveLength(1);
+  expect(testRuns[0].status).toBe('failed');
+  expect(testRuns[0].error ?? '').toContain('service-not-ready');
+  expect(testRuns[0].error ?? '').toContain('被测服务未就绪（2 秒内');
+
+  // 详情「测试」页签：用例表里能看到这条失败、归因与原因
+  await openDetail(page, project.projectId, issue.id);
+  await expect(page.getByTestId('gate-bar')).toHaveAttribute(
+    'data-kind',
+    'failed'
+  );
+  await page.getByRole('tab', { name: '测试', exact: true }).click();
+  const report = page.locator(
+    '[data-testid="artifact-section"][data-kind="test_report"]'
+  );
+  await expect(report).toContainText('0 通过 · 1 失败 · 共 1');
+  await expect(report).toContainText('service-not-ready');
+  await expect(report).toContainText('代码缺陷');
+  await expect(report).toContainText(/被测服务未就绪（2 秒内 \S+ 没有响应）/);
 });
