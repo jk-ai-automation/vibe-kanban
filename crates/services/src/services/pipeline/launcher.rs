@@ -58,7 +58,7 @@ pub trait StageLauncher: Send + Sync {
     /// 停掉工作区里正在跑的进程（取消运行时用）。
     async fn stop_workspace(&self, workspace_id: Uuid);
 
-    /// 测试阶段：先停掉工作区里已有的开发服务器（新一轮起服务前清场），再起**第一个**
+    /// 测试阶段：先清场（查出工作区里已有的开发服务器，交给后台任务停，不等它停完），再起**第一个**
     /// 配置了开发服务器脚本的仓库，脚本前注入 `env`。没有仓库配脚本时返回 `Ok(None)`。
     async fn start_dev_server(
         &self,
@@ -165,16 +165,15 @@ where
             .await?
             .ok_or_else(|| PipelineError::NotFound(format!("工作区 {workspace_id}")))
     }
+}
 
-    /// 停一个进程，失败只记日志。
-    async fn stop_process(&self, process: &ExecutionProcess) {
-        if let Err(e) = self
-            .container
-            .stop_execution(process, ExecutionProcessStatus::Killed)
-            .await
-        {
-            tracing::warn!(execution_process_id = %process.id, "停止开发服务器失败: {e}");
-        }
+/// 停一个进程，失败只记日志。
+async fn stop_process<C: ContainerService>(container: &C, process: &ExecutionProcess) {
+    if let Err(e) = container
+        .stop_execution(process, ExecutionProcessStatus::Killed)
+        .await
+    {
+        tracing::warn!(execution_process_id = %process.id, "停止开发服务器失败: {e}");
     }
 }
 
@@ -185,7 +184,7 @@ fn launch_error(error: impl std::fmt::Display) -> PipelineError {
 #[async_trait]
 impl<C> StageLauncher for ContainerStageLauncher<C>
 where
-    C: ContainerService + Send + Sync + 'static,
+    C: ContainerService + Clone + Send + Sync + 'static,
 {
     async fn prepare_workspace(&self, workspace_id: Uuid) -> Result<PathBuf, PipelineError> {
         let workspace = self.load_workspace(workspace_id).await?;
@@ -280,13 +279,19 @@ where
         }) else {
             return Ok(None);
         };
-        // 清场：停掉工作区里已有的开发服务器。
+        // 清场：停掉工作区里已有的开发服务器。调用方持有引擎全局锁，而每个进程的停止至少
+        // 要等 2 秒，所以放到锁外的后台任务里停；新服务用的是新分配的端口，不必等旧的停完。
+        // 「先清场」的语义保留：要停的进程在这里、新服务起之前就查定了。
         match ExecutionProcess::find_running_dev_servers_by_workspace(pool, workspace_id).await {
-            Ok(running) => {
-                for process in running {
-                    self.stop_process(&process).await;
-                }
+            Ok(running) if !running.is_empty() => {
+                let container = self.container.clone();
+                tokio::spawn(async move {
+                    for process in running {
+                        stop_process(&container, &process).await;
+                    }
+                });
             }
+            Ok(_) => {}
             Err(e) => tracing::warn!(%workspace_id, "查询运行中的开发服务器失败: {e}"),
         }
 
@@ -327,7 +332,7 @@ where
     async fn stop_dev_server(&self, execution_process_id: Uuid) {
         match ExecutionProcess::find_by_id(&self.container.db().pool, execution_process_id).await {
             Ok(Some(process)) if process.status == ExecutionProcessStatus::Running => {
-                self.stop_process(&process).await;
+                stop_process(&self.container, &process).await;
             }
             Ok(_) => {}
             Err(e) => {
