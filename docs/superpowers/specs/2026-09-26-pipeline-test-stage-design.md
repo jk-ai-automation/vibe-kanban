@@ -1,6 +1,6 @@
 # 流水线测试阶段接入真实执行设计（U4）
 
-> 状态：已确认方向，待实施｜日期：2026-09-26
+> 状态：已实施（计划见 `docs/superpowers/plans/2026-10-02-pipeline-test-stage.md`，与设计的偏差见该计划 §0）｜日期：2026-09-26
 > 上级：`docs/superpowers/specs/2026-09-18-personal-pipeline-design.md` §9.2
 > 前置：U1–U3 已合并 main（PR #7、#8、#9）；技能以插件形式注入已验证
 
