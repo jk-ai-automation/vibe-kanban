@@ -966,9 +966,16 @@
     },
     "testCols": {
       "case": "用例",
+      "source": "来源",
       "status": "结果",
+      "duration": "耗时",
       "attribution": "归因",
       "message": "说明"
+    },
+    "testFullReport": "查看完整报告",
+    "testSource": {
+      "atp": "接口用例",
+      "repo": "仓库测试"
     },
     "attribution": {
       "code": "代码缺陷",

@@ -966,9 +966,16 @@
     },
     "testCols": {
       "case": "用例",
+      "source": "來源",
       "status": "結果",
+      "duration": "耗時",
       "attribution": "歸因",
       "message": "說明"
+    },
+    "testFullReport": "查看完整報告",
+    "testSource": {
+      "atp": "介面用例",
+      "repo": "倉庫測試"
     },
     "attribution": {
       "code": "程式缺陷",

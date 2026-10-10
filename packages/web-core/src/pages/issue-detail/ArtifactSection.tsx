@@ -3,15 +3,18 @@ import type { ArtifactKind, IssueArtifactSummary } from 'shared/types';
 import { MarkdownPreview } from '@/shared/components/MarkdownPreview';
 import { getResolvedTheme, useTheme } from '@/shared/hooks/useTheme';
 import { useArtifact } from '@/entities/pipeline/model/hooks/usePipelineData';
+import { artifactHtmlReportUrl } from '@/entities/pipeline/api/pipelineApi';
 import { CsvTableView } from '@vibe/ui/components/CsvTableView';
 import { Skeleton } from '@vibe/ui/components/Skeleton';
 import { artifactKindLabelKey, artifactRenderMode } from './issueDetailModel';
 import {
+  formatDuration,
   parseCsv,
   parseReview,
   parseTestReport,
   type ReviewSeverity,
   type TestCaseStatus,
+  type TestSource,
 } from './artifactParsers';
 
 const SEVERITY_KEYS: Record<ReviewSeverity, string> = {
@@ -24,6 +27,11 @@ const SEVERITY_KEYS: Record<ReviewSeverity, string> = {
 const ATTRIBUTION_KEYS: Record<'code' | 'case', string> = {
   code: 'issueDetail.attribution.code',
   case: 'issueDetail.attribution.case',
+};
+
+const SOURCE_KEYS: Record<NonNullable<TestSource>, string> = {
+  atp: 'issueDetail.testSource.atp',
+  repo: 'issueDetail.testSource.repo',
 };
 
 const CASE_STATUS_KEYS: Record<TestCaseStatus, string> = {
@@ -45,10 +53,12 @@ function RawContent({ content }: { content: string }) {
 }
 
 function ArtifactBody({
+  artifactId,
   kind,
   content,
   theme,
 }: {
+  artifactId: string;
   kind: ArtifactKind;
   content: string;
   theme: 'light' | 'dark';
@@ -112,23 +122,39 @@ function ArtifactBody({
       const report = result.value;
       return (
         <div className="flex flex-col gap-half">
-          <p className="m-0 text-sm text-normal">
-            {t('issueDetail.testSummary', {
-              passed: report.passed,
-              failed: report.failed,
-              total: report.total,
-            })}
-          </p>
+          <div className="flex items-center justify-between gap-base">
+            <p className="m-0 text-sm text-normal">
+              {t('issueDetail.testSummary', {
+                passed: report.passed,
+                failed: report.failed,
+                total: report.total,
+              })}
+            </p>
+            {report.reportPath !== null && (
+              <a
+                className="text-sm text-brand hover:underline"
+                href={artifactHtmlReportUrl(artifactId)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {t('issueDetail.testFullReport')}
+              </a>
+            )}
+          </div>
           <CsvTableView
             header={[
               t('issueDetail.testCols.case'),
+              t('issueDetail.testCols.source'),
               t('issueDetail.testCols.status'),
+              t('issueDetail.testCols.duration'),
               t('issueDetail.testCols.attribution'),
               t('issueDetail.testCols.message'),
             ]}
             rows={report.cases.map((testCase) => [
               testCase.id,
+              testCase.source ? t(SOURCE_KEYS[testCase.source]) : '—',
               t(CASE_STATUS_KEYS[testCase.status]),
+              formatDuration(testCase.durationS),
               testCase.attribution
                 ? t(ATTRIBUTION_KEYS[testCase.attribution])
                 : '—',
@@ -177,6 +203,7 @@ export function ArtifactSection({
         </p>
       ) : (
         <ArtifactBody
+          artifactId={summary.id}
           kind={summary.kind}
           content={data.content}
           theme={getResolvedTheme(theme)}
