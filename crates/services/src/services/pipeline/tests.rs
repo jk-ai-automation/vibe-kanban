@@ -1689,3 +1689,65 @@ async fn 其它阶段结束时不碰开发服务器() {
     场.结束(&场.launcher.last(), true).await;
     assert!(场.launcher.dev_servers_stopped.lock().unwrap().is_empty());
 }
+
+/// 后台任务在启动智能体之前出错（读库失败等）时，尝试不能卡在「running 且无会话」：兜底记失败。
+/// 读库错误在测试里难以构造，直接调用兜底方法。
+#[tokio::test]
+async fn 测试阶段_后台任务出错时尝试记失败而不是卡住() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    场.走到测试阶段前().await;
+    场.等到开发服务器(0).await;
+    let view = 场.视图().await;
+    let stage_run_id = view.stages.last().unwrap().id;
+
+    场.service
+        .fail_waiting_test_attempt(
+            view.run.id,
+            stage_run_id,
+            &PipelineError::Database(sqlx::Error::PoolTimedOut),
+        )
+        .await
+        .unwrap();
+
+    let view = 场.视图().await;
+    assert_eq!(view.run.status, PipelineRunStatus::Failed);
+    let test = view.stages.last().unwrap();
+    assert_eq!(test.status, Failed);
+    let error = test.error.clone().unwrap_or_default();
+    assert!(error.starts_with("测试阶段启动智能体时出错："), "{error}");
+}
+
+/// 兜底只处理仍在等待的尝试：状态已被改变的错误、已经有会话的尝试都不动。
+#[tokio::test]
+async fn 测试阶段_后台任务出错兜底不覆盖已推进的尝试() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    let before = 场.走到测试阶段前().await;
+    场.等到开发服务器(0).await;
+    let view = 场.视图().await;
+    let (run_id, stage_run_id) = (view.run.id, view.stages.last().unwrap().id);
+
+    场.service
+        .fail_waiting_test_attempt(
+            run_id,
+            stage_run_id,
+            &PipelineError::Database(sqlx::Error::RowNotFound),
+        )
+        .await
+        .unwrap();
+    assert_eq!(场.当前().await, (Test, Running));
+
+    场.launcher.ready_urls.lock().unwrap().push("*".to_string());
+    场.等到智能体启动数(before + 1).await;
+    场.service
+        .fail_waiting_test_attempt(
+            run_id,
+            stage_run_id,
+            &PipelineError::Database(sqlx::Error::PoolTimedOut),
+        )
+        .await
+        .unwrap();
+    assert_eq!(场.当前().await, (Test, Running));
+    assert_eq!(场.视图().await.run.status, PipelineRunStatus::Running);
+}

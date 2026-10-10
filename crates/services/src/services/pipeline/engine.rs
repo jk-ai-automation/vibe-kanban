@@ -1144,12 +1144,63 @@ impl PipelineService {
         tokio::spawn(async move {
             let state = service.wait_for_service(&pending.wait).await;
             let _guard = service.inner.lock.lock().await;
+            let (run_id, stage_run_id) = (pending.run_id, pending.stage_run_id);
             let workspace_id = pending.workspace_id;
             if let Err(e) = service.finish_test_launch_locked(pending, state).await {
                 tracing::error!("测试阶段启动智能体时出错: {e}");
                 service.inner.launcher.stop_dev_servers(workspace_id).await;
+                if let Err(db_error) = service
+                    .fail_waiting_test_attempt_locked(run_id, stage_run_id, &e)
+                    .await
+                {
+                    tracing::error!("记录测试阶段启动失败时出错: {db_error}");
+                }
             }
         });
+    }
+
+    /// 后台任务在启动智能体之前出错（读库失败等）时的兜底：尝试仍在等待（running 且没有会话）
+    /// 就记失败。否则它会一直卡在 running——不会再有进程退出回调推进它，「继续」对 running 的
+    /// 尝试也不会重新启动，用户只能取消。状态已被别的路径改变时什么也不做。
+    async fn fail_waiting_test_attempt_locked(
+        &self,
+        run_id: Uuid,
+        stage_run_id: Uuid,
+        error: &PipelineError,
+    ) -> Result<(), PipelineError> {
+        if is_state_changed(error) {
+            return Ok(());
+        }
+        let run = self.load_run(run_id).await?;
+        let Some(stage_run) = PipelineStageRuns::find_by_id(self.pool(), stage_run_id).await?
+        else {
+            return Ok(());
+        };
+        if run.status.is_finished()
+            || stage_run.status != PipelineStageStatus::Running
+            || stage_run.session_id.is_some()
+        {
+            return Ok(());
+        }
+        self.fail_run(
+            &run,
+            &stage_run,
+            &format!("测试阶段启动智能体时出错：{error}"),
+        )
+        .await
+    }
+
+    /// 测试用：持锁调用 [`Self::fail_waiting_test_attempt_locked`]（读库错误在测试里难以构造）。
+    #[cfg(test)]
+    pub(super) async fn fail_waiting_test_attempt(
+        &self,
+        run_id: Uuid,
+        stage_run_id: Uuid,
+        error: &PipelineError,
+    ) -> Result<(), PipelineError> {
+        let _guard = self.inner.lock.lock().await;
+        self.fail_waiting_test_attempt_locked(run_id, stage_run_id, error)
+            .await
     }
 
     /// 服务就绪（或确定起不来）之后：尝试仍在等待中才启动智能体，否则只收拾开发服务器。
