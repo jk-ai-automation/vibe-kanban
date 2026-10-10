@@ -411,6 +411,11 @@
         "platform": "平台自带",
         "superpowers": "superpowers",
         "atp": "atp"
+      },
+      "atpCommand": {
+        "label": "atp 命令",
+        "save": "保存",
+        "help": "测试阶段用它执行接口用例。留空用 `atp`；没有全局安装时可填 `uv run --project /path/to/atp atp`。"
       }
     },
     "projects": {

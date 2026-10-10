@@ -411,6 +411,11 @@
         "platform": "Integrada",
         "superpowers": "superpowers",
         "atp": "atp"
+      },
+      "atpCommand": {
+        "label": "Comando atp",
+        "save": "Guardar",
+        "help": "La etapa de pruebas lo usa para ejecutar los casos de API. Déjalo vacío para usar `atp`; sin instalación global usa `uv run --project /path/to/atp atp`."
       }
     },
     "projects": {

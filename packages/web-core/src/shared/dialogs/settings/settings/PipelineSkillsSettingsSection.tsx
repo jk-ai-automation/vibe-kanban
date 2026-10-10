@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { PipelineSkillInfo, PipelineStageKey } from 'shared/types';
 import { getPipelineSkills } from '@/entities/pipeline/api/pipelineApi';
+import { useUserSystem } from '@/shared/hooks/useUserSystem';
+import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
+import { SettingsField, SettingsInput } from './SettingsComponents';
 
 /** 来源 → i18n 键。锁文件里出现新来源时回落到来源名本身。 */
 const SOURCE_KEYS: Record<string, string> = {
@@ -14,6 +17,27 @@ export function PipelineSkillsSettingsSection() {
   const { t } = useTranslation('settings');
   const [skills, setSkills] = useState<PipelineSkillInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const { config, updateAndSaveConfig } = useUserSystem();
+  const savedCommand = config?.pipeline_atp_command ?? '';
+  const [atpCommand, setAtpCommand] = useState(savedCommand);
+  const [saving, setSaving] = useState(false);
+  // 配置从服务端刷新后，输入框跟着同步
+  useEffect(() => {
+    setAtpCommand(savedCommand);
+  }, [savedCommand]);
+
+  const saveAtpCommand = async () => {
+    setSaving(true);
+    try {
+      const trimmed = atpCommand.trim();
+      await updateAndSaveConfig({
+        pipeline_atp_command: trimmed === '' ? null : trimmed,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -44,6 +68,27 @@ export function PipelineSkillsSettingsSection() {
       <p className="text-sm text-normal">
         {t('settings.pipelineSkills.description')}
       </p>
+      <SettingsField
+        label={t('settings.pipelineSkills.atpCommand.label')}
+        description={t('settings.pipelineSkills.atpCommand.help')}
+      >
+        <div className="flex gap-2">
+          <div className="flex-1">
+            <SettingsInput
+              value={atpCommand}
+              onChange={setAtpCommand}
+              placeholder="atp"
+              disabled={saving}
+            />
+          </div>
+          <PrimaryButton
+            variant="tertiary"
+            value={t('settings.pipelineSkills.atpCommand.save')}
+            disabled={saving || atpCommand.trim() === savedCommand.trim()}
+            onClick={() => void saveAtpCommand()}
+          />
+        </div>
+      </SettingsField>
       <p className="text-xs text-low">
         {t('settings.pipelineSkills.readOnly')}
       </p>
