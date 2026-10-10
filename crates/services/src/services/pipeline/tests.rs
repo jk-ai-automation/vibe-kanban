@@ -1824,3 +1824,25 @@ async fn 测试阶段_后到的日志也能识别地址且只读新输出() {
         "{offsets:?}"
     );
 }
+
+/// 测试阶段配了检查脚本：智能体成功后服务还要留给检查脚本用，检查脚本结束后才停。
+#[tokio::test]
+async fn 测试阶段_配了检查脚本时检查结束后才停服务() {
+    let 场 = 场景::新建("加法接口").await;
+    场.写仓库模板(
+        "version: 1\nstages:\n  - key: test_design\n    skill: prd2testcase\n    artifacts: [test-cases.csv, trace-matrix.md]\n  - key: test\n    skill: atp-run\n    artifacts: [test-report.json]\n    checks: [\"true\"]\n",
+    );
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    场.launcher.ready_urls.lock().unwrap().push("*".to_string());
+    let before = 场.走到测试阶段前().await;
+    let process = 场.等到开发服务器(0).await;
+    场.等到智能体启动数(before + 1).await;
+
+    场.结束(&场.launcher.last(), true).await;
+    assert_eq!(场.launcher.last().kind, FakeLaunchKind::Checks);
+    场.稍候断言没停开发服务器().await;
+
+    场.结束(&场.launcher.last(), true).await;
+    场.等到停掉开发服务器(process).await;
+    assert_eq!(场.停掉的开发服务器(), vec![process]);
+}

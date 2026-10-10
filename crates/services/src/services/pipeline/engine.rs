@@ -319,8 +319,16 @@ impl PipelineService {
             self.fail_run(&run, &stage_run, &reason).await?;
             return Ok(());
         };
-        // 测试阶段的终点进程（智能体成功、失败或被手动停止）：被测服务不再需要。
-        if stage_run.stage_key == PipelineStageKey::Test {
+        // setup 脚本成为终点 = 顺序 setup 链断了，智能体没有启动，按失败处理。
+        let setup_broken = process.run_reason == ExecutionProcessRunReason::SetupScript;
+        let ok = !setup_broken && transition::process_succeeded(process);
+        // 智能体成功且阶段配了检查脚本：接着在同会话跑检查脚本，执行链还没到头。
+        let runs_checks = ok
+            && !stage.checks.is_empty()
+            && process.run_reason != ExecutionProcessRunReason::PipelineStep;
+        // 测试阶段执行链的终点（检查脚本结束，或智能体失败、被手动停止、成功且没有检查脚本）：
+        // 被测服务不再需要。要跑检查脚本时留着给检查脚本用。
+        if stage_run.stage_key == PipelineStageKey::Test && !runs_checks {
             self.stop_test_dev_server(stage_run.id);
         }
         // 用户手动停止：不重跑、不计轮次，运行暂停等用户「继续」。
@@ -336,15 +344,8 @@ impl PipelineService {
             PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Paused, None).await?;
             return Ok(());
         }
-        // setup 脚本成为终点 = 顺序 setup 链断了，智能体没有启动，按失败处理。
-        let setup_broken = process.run_reason == ExecutionProcessRunReason::SetupScript;
-        let ok = !setup_broken && transition::process_succeeded(process);
-
         // 开发阶段：智能体成功后先在同会话跑检查脚本，检查脚本退出后再判关卡。
-        if ok
-            && !stage.checks.is_empty()
-            && process.run_reason != ExecutionProcessRunReason::PipelineStep
-        {
+        if runs_checks {
             let Some(workspace_id) = run.workspace_id else {
                 self.fail_run(&run, &stage_run, "流水线没有关联工作区")
                     .await?;
@@ -369,6 +370,7 @@ impl PipelineService {
                     .await?;
                 }
                 Err(e) => {
+                    self.stop_test_dev_server(stage_run.id);
                     let reason = format!("启动检查脚本失败：{e}");
                     self.fail_run(&run, &stage_run, &reason).await?;
                 }
