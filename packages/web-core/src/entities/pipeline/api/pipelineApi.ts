@@ -8,7 +8,11 @@ import type {
   StartPipelineRequest,
 } from 'shared/types';
 import type { CreateIssueRequest } from 'shared/remote-types';
-import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
+import {
+  canLinkLocalApiDirectly,
+  makeLocalApiRequest,
+  scopedLocalApiPath,
+} from '@/shared/lib/localApiTransport';
 import { parseEnvelopeError } from '@/shared/lib/local/apiEnvelope';
 
 export type PipelineRunAction = 'pause' | 'resume' | 'cancel';
@@ -47,9 +51,15 @@ export const PIPELINE_API_PATHS = {
   skills: '/api/local/pipeline/skills',
 } as const;
 
-/** atp 完整 HTML 报告的地址（新标签页打开，不走 JSON 封装）。 */
-export function artifactHtmlReportUrl(artifactId: string): string {
-  return PIPELINE_API_PATHS.artifactHtmlReport(artifactId);
+/**
+ * atp 完整 HTML 报告的地址（新标签页打开，不走 JSON 封装），按当前主机改写。
+ * 当前传输不是默认 HTTP（远程网页端走 WebRTC）时普通链接到不了后端，返回
+ * `null`，界面就不显示链接。不要改成 fetch + blob URL：blob 与应用同源，
+ * 会绕过报告接口的 CSP sandbox。
+ */
+export function artifactHtmlReportUrl(artifactId: string): string | null {
+  if (!canLinkLocalApiDirectly()) return null;
+  return scopedLocalApiPath(PIPELINE_API_PATHS.artifactHtmlReport(artifactId));
 }
 
 export class PipelineApiError extends Error {

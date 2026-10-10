@@ -120,6 +120,8 @@ function ArtifactBody({
       const result = parseTestReport(content);
       if (!result.ok) return <RawContent content={content} />;
       const report = result.value;
+      const fullReportUrl =
+        report.reportPath !== null ? artifactHtmlReportUrl(artifactId) : null;
       return (
         <div className="flex flex-col gap-half">
           <div className="flex items-center justify-between gap-base">
@@ -130,10 +132,10 @@ function ArtifactBody({
                 total: report.total,
               })}
             </p>
-            {report.reportPath !== null && (
+            {fullReportUrl !== null && (
               <a
                 className="text-sm text-brand hover:underline"
-                href={artifactHtmlReportUrl(artifactId)}
+                href={fullReportUrl}
                 target="_blank"
                 rel="noreferrer"
               >

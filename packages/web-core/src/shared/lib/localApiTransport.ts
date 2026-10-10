@@ -149,6 +149,25 @@ export function setLocalApiTransport(nextTransport: LocalApiTransport | null) {
 }
 
 /**
+ * 与 `makeLocalApiRequest` 同样的主机改写（选中远端主机时 `/api/x` →
+ * `/api/host/<id>/x`，本机专属接口不改写），给不经传输层的普通链接用。
+ */
+export function scopedLocalApiPath(
+  pathOrUrl: string,
+  options: { hostScope?: LocalApiHostScope; hostId?: string | null } = {}
+): string {
+  return resolveScopedPath(pathOrUrl, options);
+}
+
+/**
+ * 普通链接（`<a href>`、新标签页）能不能直接打到后端：只有默认 HTTP 传输时能。
+ * 远程网页端换成了 WebRTC 传输，浏览器直接发的请求到不了那台机器的后端。
+ */
+export function canLinkLocalApiDirectly(): boolean {
+  return transport === defaultTransport;
+}
+
+/**
  * 本地 `/api/*` 请求的唯一收口。
  *
  * 这里做两件跟认证有关的事：
