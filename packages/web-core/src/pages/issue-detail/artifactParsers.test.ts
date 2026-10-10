@@ -230,9 +230,7 @@ describe('parseTestReport（U4 新字段）', () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.reportPath).toBe(
-      'atp/test_results/test_report_1.html'
-    );
+    expect(result.value.reportPath).toBe('atp/test_results/test_report_1.html');
     expect(result.value.cases[0]).toMatchObject({
       durationS: 0.42,
       module: 'vk_gen',

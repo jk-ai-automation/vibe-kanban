@@ -257,6 +257,7 @@ describe('后端路由契约测试（C13）能解析本文件', () => {
       '/api/local/issues',
       '/api/local/issues/{id}/pipeline',
       '/api/local/pipeline/artifacts/{id}',
+      '/api/local/pipeline/artifacts/{id}/html-report',
       '/api/local/pipeline/stage-runs/{id}/gate',
       '/api/local/pipeline/runs/{id}/pause',
       '/api/local/pipeline/runs/{id}/resume',
