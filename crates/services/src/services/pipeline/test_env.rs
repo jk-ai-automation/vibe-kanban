@@ -139,6 +139,44 @@ pub fn service_url_candidates(log: &str) -> Vec<String> {
         .collect()
 }
 
+/// 不完整的行最多留这么多字节等后续输出；更长的（进度条之类）直接认完丢掉。
+const MAX_PARTIAL_LINE: usize = 1024;
+
+/// 增量识别开发服务器日志里的地址候选：每次只扫新到的输出，按出现顺序去重累积。
+/// 只扫完整的行（以换行或回车结尾）；末尾不完整的一段留到下次与新输出拼起来再扫，
+/// 免得把被截断的 `localhost:51` 当成候选。
+#[derive(Debug, Default)]
+pub struct ServiceUrlScanner {
+    partial: String,
+    found: Vec<String>,
+}
+
+impl ServiceUrlScanner {
+    pub fn feed(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.partial.push_str(text);
+        let complete_end = self.partial.rfind(['\n', '\r']).map_or(0, |at| at + 1);
+        let scan_end = if self.partial.len() - complete_end > MAX_PARTIAL_LINE {
+            self.partial.len()
+        } else {
+            complete_end
+        };
+        for url in service_url_candidates(&self.partial[..scan_end]) {
+            if !self.found.contains(&url) {
+                self.found.push(url);
+            }
+        }
+        self.partial.drain(..scan_end);
+    }
+
+    /// 到目前为止认出的候选，按出现顺序。
+    pub fn found(&self) -> &[String] {
+        &self.found
+    }
+}
+
 /// 平台注入的 `PORT` 对应的探测地址：先 IPv4 再 IPv6。
 pub fn port_candidates(port: u16) -> Vec<String> {
     vec![
@@ -226,6 +264,46 @@ mod tests {
     use executors::pipeline_prompt::MOCK_TEST_CASES_HEADER;
 
     use super::*;
+
+    #[test]
+    fn 增量识别_跨两段输出的行拼起来再认() {
+        let mut scanner = ServiceUrlScanner::default();
+        scanner.feed("ECONNREFUSED 127.0.0.1:5432\n  ➜  Local:   http://local");
+        assert_eq!(scanner.found(), ["http://127.0.0.1:5432"]);
+        scanner.feed("host:5173/\n");
+        assert_eq!(
+            scanner.found(),
+            [
+                "http://127.0.0.1:5432",
+                "http://127.0.0.1:5173",
+                "http://[::1]:5173"
+            ]
+        );
+    }
+
+    #[test]
+    fn 增量识别_不完整的行先不认_重复地址只记一次() {
+        let mut scanner = ServiceUrlScanner::default();
+        scanner.feed("listening on http://localhost:51");
+        assert!(scanner.found().is_empty(), "{:?}", scanner.found());
+        scanner.feed("73\nagain http://127.0.0.1:5173\r");
+        assert_eq!(
+            scanner.found(),
+            ["http://127.0.0.1:5173", "http://[::1]:5173"]
+        );
+    }
+
+    #[test]
+    fn 增量识别_超长的不完整行也会被认并丢弃() {
+        let mut scanner = ServiceUrlScanner::default();
+        scanner.feed(&format!("http://localhost:3000 {}", "x".repeat(2000)));
+        assert_eq!(
+            scanner.found(),
+            ["http://127.0.0.1:3000", "http://[::1]:3000"]
+        );
+        scanner.feed("y\n");
+        assert_eq!(scanner.found().len(), 2);
+    }
 
     fn csv_with(rows: &[(&str, &str)]) -> String {
         let columns: Vec<&str> = MOCK_TEST_CASES_HEADER.split(',').collect();

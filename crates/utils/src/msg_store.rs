@@ -97,6 +97,19 @@ impl MsgStore {
             .collect()
     }
 
+    /// History from the `offset`-th stored message on, plus the current number of stored
+    /// messages (pass it back as the next `offset`). Only the new messages are cloned.
+    pub fn history_since(&self, offset: usize) -> (Vec<LogMsg>, usize) {
+        let inner = self.inner.read().unwrap();
+        let messages = inner
+            .history
+            .iter()
+            .skip(offset)
+            .map(|s| s.msg.clone())
+            .collect();
+        (messages, inner.history.len().max(offset))
+    }
+
     /// History then live, as `LogMsg`.
     pub fn history_plus_stream(
         &self,

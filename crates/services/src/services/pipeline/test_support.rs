@@ -176,8 +176,10 @@ pub(crate) struct FakeLauncher {
     pub(crate) ready_urls: Mutex<Vec<String>>,
     /// 每次探测先睡这么多毫秒再返回（模拟连不上时卡到超时的探测）。
     pub(crate) probe_delay_ms: AtomicU64,
-    /// 开发服务器的输出。
+    /// 开发服务器的输出。按行拆成消息：每行（含换行）是一条。
     pub(crate) dev_server_output: Mutex<String>,
+    /// 每次读开发服务器输出时引擎给的起始消息序号。
+    pub(crate) output_offsets: Mutex<Vec<usize>>,
     /// 被要求停的开发服务器进程 id（按要求的先后）。
     pub(crate) dev_server_stopped_ids: Mutex<Vec<Uuid>>,
 }
@@ -198,6 +200,7 @@ impl FakeLauncher {
             ready_urls: Mutex::new(Vec::new()),
             probe_delay_ms: AtomicU64::new(0),
             dev_server_output: Mutex::new(String::new()),
+            output_offsets: Mutex::new(Vec::new()),
             dev_server_stopped_ids: Mutex::new(Vec::new()),
         }
     }
@@ -374,8 +377,16 @@ impl StageLauncher for FakeLauncher {
             .any(|ready| ready == "*" || ready == url)
     }
 
-    async fn process_output(&self, _execution_process_id: Uuid) -> String {
-        self.dev_server_output.lock().unwrap().clone()
+    async fn process_output_since(
+        &self,
+        _execution_process_id: Uuid,
+        offset: usize,
+    ) -> (String, usize) {
+        self.output_offsets.lock().unwrap().push(offset);
+        let output = self.dev_server_output.lock().unwrap().clone();
+        let messages: Vec<&str> = output.split_inclusive('\n').collect();
+        let text = messages.get(offset..).unwrap_or_default().concat();
+        (text, messages.len().max(offset))
     }
 
     async fn atp_command(&self) -> String {

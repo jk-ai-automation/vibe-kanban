@@ -1794,3 +1794,33 @@ async fn 测试阶段_探测很慢时也按就绪超时收尾() {
     let service = 场.提示词行("被测地址：");
     assert!(service.starts_with("未就绪（1 秒内"), "{service}");
 }
+
+/// 日志按消息增量读取：后到的输出也能识别出地址，且不会每轮从头读。
+#[tokio::test]
+async fn 测试阶段_后到的日志也能识别地址且只读新输出() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    *场.launcher.dev_server_output.lock().unwrap() = "> vite\n".to_string();
+    let before = 场.走到测试阶段前().await;
+    场.等到开发服务器(0).await;
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    场.launcher
+        .ready_urls
+        .lock()
+        .unwrap()
+        .push("http://127.0.0.1:5173".to_string());
+    场.launcher
+        .dev_server_output
+        .lock()
+        .unwrap()
+        .push_str("  ➜  Local:   http://localhost:5173/\n");
+    场.等到智能体启动数(before + 1).await;
+
+    assert_eq!(场.提示词行("被测地址："), "http://127.0.0.1:5173");
+    let offsets = 场.launcher.output_offsets.lock().unwrap().clone();
+    assert_eq!(offsets.first(), Some(&0));
+    assert!(
+        offsets.iter().skip(1).all(|offset| *offset >= 1),
+        "{offsets:?}"
+    );
+}

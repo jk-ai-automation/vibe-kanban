@@ -72,8 +72,13 @@ pub trait StageLauncher: Send + Sync {
     /// 探测一次：能在超时内拿到任何 HTTP 响应（不看状态码）就算就绪。
     async fn probe_http(&self, url: &str) -> bool;
 
-    /// 进程到目前为止的输出文本（运行中读内存，已结束读库）。
-    async fn process_output(&self, execution_process_id: Uuid) -> String;
+    /// 进程从第 `offset` 条日志消息起的输出文本（只取标准输出与标准错误），以及目前的消息
+    /// 总数（下次从这里读）。运行中读内存，已结束读库。
+    async fn process_output_since(
+        &self,
+        execution_process_id: Uuid,
+        offset: usize,
+    ) -> (String, usize);
 
     /// 调用 atp 的命令（设置页可改）。
     async fn atp_command(&self) -> String;
@@ -338,21 +343,31 @@ where
         }
     }
 
-    async fn process_output(&self, execution_process_id: Uuid) -> String {
+    async fn process_output_since(
+        &self,
+        execution_process_id: Uuid,
+        offset: usize,
+    ) -> (String, usize) {
         if let Some(store) = self
             .container
             .get_msg_store_by_id(&execution_process_id)
             .await
         {
-            return output_text(&store.get_history());
+            let (messages, total) = store.history_since(offset);
+            return (output_text(&messages), total);
         }
-        crate::services::execution_process::load_raw_log_messages(
+        match crate::services::execution_process::load_raw_log_messages(
             &self.container.db().pool,
             execution_process_id,
         )
         .await
-        .map(|messages| output_text(&messages))
-        .unwrap_or_default()
+        {
+            Some(messages) => (
+                output_text(messages.get(offset..).unwrap_or_default()),
+                messages.len().max(offset),
+            ),
+            None => (String::new(), offset),
+        }
     }
 
     async fn atp_command(&self) -> String {
@@ -405,8 +420,12 @@ impl StageLauncher for NoopStageLauncher {
         false
     }
 
-    async fn process_output(&self, _execution_process_id: Uuid) -> String {
-        String::new()
+    async fn process_output_since(
+        &self,
+        _execution_process_id: Uuid,
+        offset: usize,
+    ) -> (String, usize) {
+        (String::new(), offset)
     }
 
     async fn atp_command(&self) -> String {

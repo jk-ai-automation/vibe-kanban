@@ -42,7 +42,7 @@ use super::{
     plugin,
     prompt::{self, StagePromptInput},
     template::{self, PipelineTemplate},
-    test_env::{self, ServiceState, TestEnvironment},
+    test_env::{self, ServiceState, ServiceUrlScanner, TestEnvironment},
     transition::{self, FinishedProcess, PipelineExitEvent, Transition},
 };
 
@@ -1107,7 +1107,7 @@ impl PipelineService {
         }))
     }
 
-    /// 等被测服务就绪：每轮先依次探约定端口的 IPv4/IPv6 地址，再探日志里识别到的其余候选；
+    /// 等被测服务就绪：每轮先依次探约定端口的 IPv4/IPv6 地址，再探日志里累积识别到的其余候选；
     /// 开发服务器退出或超时即放弃。每次探测前检查截止时间，并用剩余时间截断探测，
     /// 一轮候选再多也不会远超 `ready_timeout_s`。**不持有引擎锁**。
     async fn wait_for_service(&self, wait: &ServiceWait) -> ServiceState {
@@ -1121,13 +1121,18 @@ impl PipelineService {
             ))
         };
         let conventional = test_env::port_candidates(wait.port);
+        // 日志只读新到的消息（Vite 的 `Local:` 在最前面，不能只看尾部），候选累积在扫描器里。
+        let mut offset = 0;
+        let mut scanner = ServiceUrlScanner::default();
         loop {
-            let output = launcher.process_output(wait.process_id).await;
-            let discovered: Vec<String> = test_env::service_url_candidates(&output)
-                .into_iter()
-                .filter(|url| !conventional.contains(url))
-                .collect();
-            for url in conventional.iter().chain(&discovered) {
+            let (text, next) = launcher.process_output_since(wait.process_id, offset).await;
+            offset = next;
+            scanner.feed(&text);
+            let discovered = scanner
+                .found()
+                .iter()
+                .filter(|url| !conventional.contains(url));
+            for url in conventional.iter().chain(discovered) {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     return timed_out();
