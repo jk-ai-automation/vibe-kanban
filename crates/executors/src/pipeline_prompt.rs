@@ -18,6 +18,8 @@ pub const FEEDBACK_LABEL: &str = "上一次被打回的意见：";
 pub const PREVIOUS_VERSION_LABEL: &str = "本阶段上一版：";
 pub const PREVIOUS_VERSION_HINT: &str = "（供参考修改）";
 /// 测试阶段专用的三行（U4）。值的形态见 `services::pipeline::test_env::ServiceState`。
+/// 引擎必须把这三行排在「上一次被打回的意见：」之前：解析只认第一次出现，
+/// 靠这个顺序防止打回意见里的同名行顶替真实地址。
 pub const SERVICE_URL_LABEL: &str = "被测地址：";
 pub const ATP_ROOT_LABEL: &str = "atp 项目根：";
 pub const ATP_COMMAND_LABEL: &str = "atp 命令：";

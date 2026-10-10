@@ -200,8 +200,8 @@ pub enum TemplateError {
     EmptySkill(String),
     #[error("阶段 {0} 的 checks 里有空命令")]
     EmptyCheck(String),
-    #[error("阶段 {stage} 的 ready_timeout_s 必须在 1 到 600 之间，实际 {value}")]
-    BadReadyTimeout { stage: String, value: i64 },
+    #[error("阶段 {stage} 的 ready_timeout_s 必须在 1 到 {max} 之间，实际 {value}")]
+    BadReadyTimeout { stage: String, value: i64, max: u64 },
 }
 
 pub fn builtin_template() -> PipelineTemplate {
@@ -430,6 +430,7 @@ pub fn parse_template_yaml(text: &str) -> Result<PipelineTemplate, TemplateError
                 .ok_or(TemplateError::BadReadyTimeout {
                     stage: name.clone(),
                     value,
+                    max: MAX_READY_TIMEOUT_S,
                 })?,
         };
 

@@ -90,22 +90,74 @@ static ANSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-9;?]*[A-Za
 /// （挡住 `4000.localhost:3009` 这种把 `localhost:3009` 当后缀的情况）。
 static LOCAL_URL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)(?:^|[^A-Za-z0-9_.\-])(?:(https?)://)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d{2,5})\b",
+        r"(?i)(?:^|[^A-Za-z0-9_.\-])(?:(https?)://)?(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d{1,6})(?-u:\b)",
     )
     .unwrap()
 });
 
-/// 从开发服务器日志里找第一个本机地址，统一成 `scheme://127.0.0.1:port`。
-/// 是前端 `usePreviewUrl` 识别规则的后端简化版：只要回环地址，不要局域网 IP。
-pub fn detect_service_url(log: &str) -> Option<String> {
+/// 从开发服务器日志里找出全部本机地址候选，按出现顺序去重；带 `http(s)://` 的排在裸 `host:port` 之前。
+/// `localhost` 同时给出 `127.0.0.1` 与 `[::1]` 两个候选（Node 17+ 上 localhost 可能只绑 IPv6）；
+/// 显式写 `[::1]` 的保留 IPv6；`0.0.0.0` / `127.0.0.1` 给 `127.0.0.1`。端口 0 或超过 65535 的跳过。
+pub fn service_url_candidates(log: &str) -> Vec<String> {
     let clean = ANSI.replace_all(log, "");
-    let found = LOCAL_URL.captures(&clean)?;
-    let scheme = found
-        .get(1)
-        .map(|scheme| scheme.as_str().to_ascii_lowercase())
-        .unwrap_or_else(|| "http".to_string());
-    let port: u16 = found.get(2)?.as_str().parse().ok()?;
-    Some(format!("{scheme}://127.0.0.1:{port}"))
+    let mut with_scheme = Vec::new();
+    let mut bare = Vec::new();
+    for found in LOCAL_URL.captures_iter(&clean) {
+        let Some(port) = found
+            .get(3)
+            .and_then(|port| port.as_str().parse::<u16>().ok())
+            .filter(|port| *port > 0)
+        else {
+            continue;
+        };
+        let scheme = found
+            .get(1)
+            .map(|scheme| scheme.as_str().to_ascii_lowercase());
+        let host = found[2].to_ascii_lowercase();
+        let hosts: &[&str] = match host.as_str() {
+            "localhost" => &["127.0.0.1", "[::1]"],
+            "[::1]" => &["[::1]"],
+            _ => &["127.0.0.1"],
+        };
+        let target = if scheme.is_some() {
+            &mut with_scheme
+        } else {
+            &mut bare
+        };
+        for host in hosts {
+            target.push(format!(
+                "{}://{host}:{port}",
+                scheme.as_deref().unwrap_or("http")
+            ));
+        }
+    }
+    let mut seen = BTreeSet::new();
+    with_scheme
+        .into_iter()
+        .chain(bare)
+        .filter(|url| seen.insert(url.clone()))
+        .collect()
+}
+
+/// 平台注入的 `PORT` 对应的探测地址：先 IPv4 再 IPv6。
+pub fn port_candidates(port: u16) -> Vec<String> {
+    vec![
+        format!("http://127.0.0.1:{port}"),
+        format!("http://[::1]:{port}"),
+    ]
+}
+
+/// 路径本身是符号链接（含悬空链接）时只删链接，不碰目标。
+fn remove_symlink(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            std::fs::remove_file(path)?;
+            Ok(true)
+        }
+        Ok(_) => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 /// 在产出物目录下搭 atp 项目根，返回根目录。上一轮的结果目录整个删掉：
@@ -113,9 +165,12 @@ pub fn detect_service_url(log: &str) -> Option<String> {
 pub fn prepare_atp_root(artifacts_dir: &Path, csv_text: &str) -> std::io::Result<PathBuf> {
     let root = artifacts_dir.join(ATP_DIR);
     let results = root.join(ATP_RESULTS_DIR);
-    if results.exists() {
+    // 链接只删链接本身，不跟随到目标目录里删东西。
+    remove_symlink(&root)?;
+    if !remove_symlink(&results)? && results.exists() {
         std::fs::remove_dir_all(&results)?;
     }
+    std::fs::create_dir_all(&results)?;
     let module_dir = root.join(ATP_CASES_DIR).join(ATP_MODULE);
     std::fs::create_dir_all(&module_dir)?;
     std::fs::write(module_dir.join(format!("{ATP_MODULE}.csv")), csv_text)?;
@@ -149,11 +204,18 @@ pub fn resolve_html_report(artifacts_dir: &Path, report_path: &str) -> Option<Pa
     if !is_html {
         return None;
     }
-    let allowed = artifacts_dir
-        .join(ATP_DIR)
-        .join(ATP_RESULTS_DIR)
-        .canonicalize()
-        .ok()?;
+    // 基准只对产出物目录本身做规范化，atp 与 atp/test_results 两级必须是真实目录。
+    let atp = artifacts_dir.canonicalize().ok()?.join(ATP_DIR);
+    let allowed = atp.join(ATP_RESULTS_DIR);
+    for level in [&atp, &allowed] {
+        if std::fs::symlink_metadata(level)
+            .ok()?
+            .file_type()
+            .is_symlink()
+        {
+            return None;
+        }
+    }
     let resolved = artifacts_dir.join(relative).canonicalize().ok()?;
     (resolved.starts_with(&allowed) && resolved.is_file()).then_some(resolved)
 }
@@ -236,37 +298,119 @@ mod tests {
         assert!(error.contains("NOAUTO"), "{error}");
     }
 
+    fn candidates(log: &str) -> Vec<String> {
+        service_url_candidates(log)
+    }
+
     #[test]
-    fn 从日志里识别本机地址() {
+    fn localhost_同时给出_ipv4_与_ipv6_候选() {
+        assert_eq!(
+            candidates("  ➜  Local:   http://localhost:5173/"),
+            ["http://127.0.0.1:5173", "http://[::1]:5173"]
+        );
+    }
+
+    #[test]
+    fn 从日志里识别各种本机地址() {
         for (log, expected) in [
-            (
-                "  ➜  Local:   http://localhost:5173/",
-                Some("http://127.0.0.1:5173"),
-            ),
-            ("Listening on 0.0.0.0:8080", Some("http://127.0.0.1:8080")),
+            ("Listening on 0.0.0.0:8080", vec!["http://127.0.0.1:8080"]),
             (
                 "server at https://127.0.0.1:8443/app",
-                Some("https://127.0.0.1:8443"),
+                vec!["https://127.0.0.1:8443"],
             ),
+            ("[::1]:3000", vec!["http://[::1]:3000"]),
             (
                 "\u{1b}[32mready\u{1b}[0m http://[::1]:3000",
-                Some("http://127.0.0.1:3000"),
+                vec!["http://[::1]:3000"],
             ),
-            ("proxy 4000.localhost:3009 up", None),
-            ("see https://example.com:443/docs", None),
-            ("nothing here", None),
+            ("proxy 4000.localhost:3009 up", vec![]),
+            ("see https://example.com:443/docs", vec![]),
+            ("localhost:00", vec![]),
+            ("nothing here", vec![]),
+            (
+                "http://localhost:3000端口",
+                vec!["http://127.0.0.1:3000", "http://[::1]:3000"],
+            ),
         ] {
-            assert_eq!(detect_service_url(log).as_deref(), expected, "{log}");
+            assert_eq!(candidates(log), expected, "{log}");
         }
     }
 
     #[test]
-    fn 多个地址取第一个() {
-        let log = "Local: http://localhost:3000\nNetwork: http://127.0.0.1:3001";
+    fn 带协议的地址排在裸地址之前() {
+        let log = "ECONNREFUSED 127.0.0.1:5432\n  Local: http://localhost:5173/\n";
+        let found = candidates(log);
+        assert_eq!(found[0], "http://127.0.0.1:5173");
+        assert!(found.contains(&"http://127.0.0.1:5432".to_string()));
+    }
+
+    #[test]
+    fn 端口非法的地址跳过且不影响后面的() {
+        let found = candidates("localhost:70000 ... http://localhost:3000");
+        assert_eq!(found, ["http://127.0.0.1:3000", "http://[::1]:3000"]);
+    }
+
+    #[test]
+    fn 重复地址只保留一次() {
+        let log = "Local: http://localhost:3000\nagain http://127.0.0.1:3000\n0.0.0.0:3000";
         assert_eq!(
-            detect_service_url(log).as_deref(),
-            Some("http://127.0.0.1:3000")
+            candidates(log),
+            ["http://127.0.0.1:3000", "http://[::1]:3000"]
         );
+    }
+
+    #[test]
+    fn 约定端口先_ipv4_再_ipv6() {
+        assert_eq!(
+            port_candidates(4000),
+            ["http://127.0.0.1:4000", "http://[::1]:4000"]
+        );
+    }
+
+    #[test]
+    fn 带字节序标记的_csv_也能数用例() {
+        assert_eq!(
+            count_automatable_cases("\u{feff}CaseID,NOAUTO\na_001,\n"),
+            Ok(1)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 搭项目根不跟随结果目录的符号链接() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("keep.txt"), "x").unwrap();
+        let atp = dir.path().join("atp");
+        std::fs::create_dir_all(&atp).unwrap();
+        std::os::unix::fs::symlink(outside.path(), atp.join("test_results")).unwrap();
+
+        let root = prepare_atp_root(dir.path(), "CaseID\na_001\n").unwrap();
+
+        assert!(outside.path().join("keep.txt").exists(), "外部文件不能被删");
+        let meta = std::fs::symlink_metadata(root.join("test_results")).unwrap();
+        assert!(meta.is_dir() && !meta.file_type().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 搭项目根遇到指向外部的_atp_链接或悬空链接() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("keep.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("atp")).unwrap();
+        let root = prepare_atp_root(dir.path(), "CaseID\na_001\n").unwrap();
+        assert!(outside.path().join("keep.txt").exists());
+        assert!(
+            !outside.path().join("test_cases").exists(),
+            "不能写进外部目录"
+        );
+        assert!(root.join("test_cases/vk_gen/vk_gen.csv").is_file());
+
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("atp")).unwrap();
+        let root = prepare_atp_root(dir.path(), "CaseID\na_001\n").unwrap();
+        assert!(root.join("test_cases/vk_gen/vk_gen.csv").is_file());
     }
 
     #[test]
@@ -325,5 +469,16 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("outside.html"), results.join("link.html"))
             .unwrap();
         assert!(resolve_html_report(dir.path(), "atp/test_results/link.html").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 结果目录本身是链接时读不到外部报告() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("r.html"), "x").unwrap();
+        std::fs::create_dir_all(dir.path().join("atp")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("atp/test_results")).unwrap();
+        assert!(resolve_html_report(dir.path(), "atp/test_results/r.html").is_none());
     }
 }
