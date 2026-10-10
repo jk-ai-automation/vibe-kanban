@@ -200,7 +200,12 @@ mod tests {
 
     #[test]
     fn 可自动化用例按编号去重且跳过人工用例() {
-        let text = csv_with(&[("a_001", ""), ("a_001", ""), ("a_002", "Y"), ("a_003", " y ")]);
+        let text = csv_with(&[
+            ("a_001", ""),
+            ("a_001", ""),
+            ("a_002", "Y"),
+            ("a_003", " y "),
+        ]);
         assert_eq!(count_automatable_cases(&text), Ok(1));
     }
 
@@ -234,10 +239,19 @@ mod tests {
     #[test]
     fn 从日志里识别本机地址() {
         for (log, expected) in [
-            ("  ➜  Local:   http://localhost:5173/", Some("http://127.0.0.1:5173")),
+            (
+                "  ➜  Local:   http://localhost:5173/",
+                Some("http://127.0.0.1:5173"),
+            ),
             ("Listening on 0.0.0.0:8080", Some("http://127.0.0.1:8080")),
-            ("server at https://127.0.0.1:8443/app", Some("https://127.0.0.1:8443")),
-            ("\u{1b}[32mready\u{1b}[0m http://[::1]:3000", Some("http://127.0.0.1:3000")),
+            (
+                "server at https://127.0.0.1:8443/app",
+                Some("https://127.0.0.1:8443"),
+            ),
+            (
+                "\u{1b}[32mready\u{1b}[0m http://[::1]:3000",
+                Some("http://127.0.0.1:3000"),
+            ),
             ("proxy 4000.localhost:3009 up", None),
             ("see https://example.com:443/docs", None),
             ("nothing here", None),
@@ -249,7 +263,10 @@ mod tests {
     #[test]
     fn 多个地址取第一个() {
         let log = "Local: http://localhost:3000\nNetwork: http://127.0.0.1:3001";
-        assert_eq!(detect_service_url(log).as_deref(), Some("http://127.0.0.1:3000"));
+        assert_eq!(
+            detect_service_url(log).as_deref(),
+            Some("http://127.0.0.1:3000")
+        );
     }
 
     #[test]

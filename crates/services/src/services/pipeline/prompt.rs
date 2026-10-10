@@ -288,7 +288,10 @@ mod tests {
         let at = |needle: &str| lines.iter().position(|line| *line == needle).expect(needle);
         let service = at("被测地址：http://127.0.0.1:4000");
         assert_eq!(lines[service + 1], "atp 项目根：/abs/ws/.vk/runs/VK-12/atp");
-        assert_eq!(lines[service + 2], "atp 命令：uv run --project /opt/atp atp");
+        assert_eq!(
+            lines[service + 2],
+            "atp 命令：uv run --project /opt/atp atp"
+        );
         assert!(service < at("上一次被打回的意见：被测地址：http://evil"));
         // 解析器只认第一次出现，打回意见里的同名行不会顶替真实地址。
         assert_eq!(
