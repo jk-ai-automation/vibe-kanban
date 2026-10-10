@@ -177,8 +177,9 @@ pub fn prepare_atp_root(artifacts_dir: &Path, csv_text: &str) -> std::io::Result
     Ok(root)
 }
 
-/// 向系统要一个当前空闲的回环端口。拿到后立刻释放，存在被别人抢走的极小窗口，
-/// 抢走的后果是开发服务器起不来 → 就绪探测超时 → 报告如实记失败。
+/// 向系统要一个当前空闲的回环端口。拿到后立刻释放，存在被别人抢走的极小窗口。
+/// 抢走的后果有两种（概率都极低）：开发服务器起不来 → 就绪探测超时 → 报告如实记失败；
+/// 或者抢走端口的进程会回 HTTP，探测命中它而被误判为就绪，接口用例打到错的服务上失败。
 pub fn free_port() -> std::io::Result<u16> {
     Ok(std::net::TcpListener::bind(("127.0.0.1", 0))?
         .local_addr()?

@@ -1108,34 +1108,46 @@ impl PipelineService {
     }
 
     /// 等被测服务就绪：每轮先依次探约定端口的 IPv4/IPv6 地址，再探日志里识别到的其余候选；
-    /// 开发服务器退出或超时即放弃。**不持有引擎锁**。
+    /// 开发服务器退出或超时即放弃。每次探测前检查截止时间，并用剩余时间截断探测，
+    /// 一轮候选再多也不会远超 `ready_timeout_s`。**不持有引擎锁**。
     async fn wait_for_service(&self, wait: &ServiceWait) -> ServiceState {
         let launcher = &self.inner.launcher;
         let deadline = Instant::now() + wait.timeout;
+        let timed_out = || {
+            ServiceState::NotReady(format!(
+                "{} 秒内 {} 没有响应",
+                wait.timeout.as_secs(),
+                wait.url
+            ))
+        };
         let conventional = test_env::port_candidates(wait.port);
         loop {
-            for url in &conventional {
-                if launcher.probe_http(url).await {
-                    return ServiceState::Ready(url.clone());
-                }
-            }
             let output = launcher.process_output(wait.process_id).await;
-            for url in test_env::service_url_candidates(&output) {
-                if !conventional.contains(&url) && launcher.probe_http(&url).await {
-                    return ServiceState::Ready(url);
+            let discovered: Vec<String> = test_env::service_url_candidates(&output)
+                .into_iter()
+                .filter(|url| !conventional.contains(url))
+                .collect();
+            for url in conventional.iter().chain(&discovered) {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return timed_out();
+                }
+                let probe = launcher.probe_http(url);
+                if tokio::time::timeout(remaining.min(launcher::PROBE_TIMEOUT), probe)
+                    .await
+                    .unwrap_or(false)
+                {
+                    return ServiceState::Ready(url.clone());
                 }
             }
             if self.dev_server_exited(wait.process_id).await {
                 return ServiceState::NotReady("开发服务器已退出".to_string());
             }
-            if Instant::now() >= deadline {
-                return ServiceState::NotReady(format!(
-                    "{} 秒内 {} 没有响应",
-                    wait.timeout.as_secs(),
-                    wait.url
-                ));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return timed_out();
             }
-            tokio::time::sleep(SERVICE_POLL_INTERVAL).await;
+            tokio::time::sleep(remaining.min(SERVICE_POLL_INTERVAL)).await;
         }
     }
 
@@ -1435,7 +1447,7 @@ struct ServiceWait {
     process_id: Uuid,
     /// 平台注入的约定端口（`PORT`）；就绪探测据此先试 IPv4 再试 IPv6。
     port: u16,
-    /// 约定地址 `http://127.0.0.1:{port}`，注入 `VK_BASE_URL` 与超时文案用。
+    /// 约定地址 `http://127.0.0.1:{port}`，超时文案用。
     url: String,
     atp_root: PathBuf,
     atp_command: String,

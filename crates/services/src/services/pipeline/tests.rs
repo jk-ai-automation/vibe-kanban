@@ -1768,3 +1768,29 @@ async fn 测试阶段_后台任务出错兜底不覆盖已推进的尝试() {
     assert_eq!(场.当前().await, (Test, Running));
     assert_eq!(场.视图().await.run.status, PipelineRunStatus::Running);
 }
+
+/// 每次探测都卡到接近单次超时：截止时间在每次探测前检查并截断探测，
+/// 不会因为一轮要探很多候选而远超 `ready_timeout_s`。
+#[tokio::test]
+async fn 测试阶段_探测很慢时也按就绪超时收尾() {
+    let 场 = 场景::新建("加法接口").await;
+    场.写仓库模板(
+        "version: 1\nstages:\n  - key: test_design\n    skill: prd2testcase\n    artifacts: [test-cases.csv, trace-matrix.md]\n  - key: test\n    skill: atp-run\n    artifacts: [test-report.json]\n    ready_timeout_s: 1\n",
+    );
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    场.launcher.probe_delay_ms.store(800, Ordering::SeqCst);
+    // 约定端口 2 个候选，日志里再认出 4 个：一轮 6 次探测。
+    *场.launcher.dev_server_output.lock().unwrap() =
+        "Local: http://localhost:5173/\nNetwork: http://localhost:5174/\n".to_string();
+    let started = std::time::Instant::now();
+    let before = 场.走到测试阶段前().await;
+    场.等到智能体启动数(before + 1).await;
+
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(2500),
+        "等了 {elapsed:?}"
+    );
+    let service = 场.提示词行("被测地址：");
+    assert!(service.starts_with("未就绪（1 秒内"), "{service}");
+}

@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -174,6 +174,8 @@ pub(crate) struct FakeLauncher {
     pub(crate) dev_server_processes: Mutex<Vec<Uuid>>,
     /// 这些地址探测成功；`"*"` 表示任何地址都成功。
     pub(crate) ready_urls: Mutex<Vec<String>>,
+    /// 每次探测先睡这么多毫秒再返回（模拟连不上时卡到超时的探测）。
+    pub(crate) probe_delay_ms: AtomicU64,
     /// 开发服务器的输出。
     pub(crate) dev_server_output: Mutex<String>,
     /// 被要求停的开发服务器进程 id（按要求的先后）。
@@ -194,6 +196,7 @@ impl FakeLauncher {
             dev_server_envs: Mutex::new(Vec::new()),
             dev_server_processes: Mutex::new(Vec::new()),
             ready_urls: Mutex::new(Vec::new()),
+            probe_delay_ms: AtomicU64::new(0),
             dev_server_output: Mutex::new(String::new()),
             dev_server_stopped_ids: Mutex::new(Vec::new()),
         }
@@ -360,6 +363,10 @@ impl StageLauncher for FakeLauncher {
     }
 
     async fn probe_http(&self, url: &str) -> bool {
+        let delay = self.probe_delay_ms.load(Ordering::SeqCst);
+        if delay > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
         self.ready_urls
             .lock()
             .unwrap()

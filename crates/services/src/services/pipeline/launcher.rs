@@ -80,7 +80,8 @@ pub trait StageLauncher: Send + Sync {
 }
 
 pub const DEFAULT_ATP_COMMAND: &str = "atp";
-const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// 单次就绪探测的超时。引擎还会用就绪截止前的剩余时间进一步截断。
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// 把模板的 checks 拼成一个脚本：`set -e`，任一命令失败即以非零退出。
 pub fn checks_script(checks: &[String]) -> String {
@@ -128,11 +129,25 @@ fn output_text(messages: &[LogMsg]) -> String {
 pub struct ContainerStageLauncher<C> {
     container: C,
     config: Arc<RwLock<Config>>,
+    /// 就绪探测用的客户端，构造时建一次复用。建不出来时探测一律不就绪。
+    probe_client: Option<reqwest::Client>,
 }
 
 impl<C> ContainerStageLauncher<C> {
     pub fn new(container: C, config: Arc<RwLock<Config>>) -> Self {
-        Self { container, config }
+        // 不走系统代理：配了 HTTP_PROXY 时代理会替回环地址回 502，服务没起也被判成就绪。
+        let probe_client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(PROBE_TIMEOUT)
+            .danger_accept_invalid_certs(true)
+            .build()
+            .inspect_err(|e| tracing::warn!("构造就绪探测用的 HTTP 客户端失败: {e}"))
+            .ok();
+        Self {
+            container,
+            config,
+            probe_client,
+        }
     }
 }
 
@@ -317,16 +332,10 @@ where
     }
 
     async fn probe_http(&self, url: &str) -> bool {
-        // 不走系统代理：配了 HTTP_PROXY 时代理会替回环地址回 502，服务没起也被判成就绪。
-        let Ok(client) = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(PROBE_TIMEOUT)
-            .danger_accept_invalid_certs(true)
-            .build()
-        else {
-            return false;
-        };
-        client.get(url).send().await.is_ok()
+        match &self.probe_client {
+            Some(client) => client.get(url).send().await.is_ok(),
+            None => false,
+        }
     }
 
     async fn process_output(&self, execution_process_id: Uuid) -> String {
