@@ -4,7 +4,11 @@
 //! 执行进程退出回调可能并发到达，串行后状态机不会交错。锁内会调用启动器
 //! （开会话、起进程），启动器不会回调本服务，所以不会死锁。
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use api_types::issue::Issue;
 use db::{
@@ -37,6 +41,7 @@ use super::{
     plugin,
     prompt::{self, StagePromptInput},
     template::{self, PipelineTemplate},
+    test_env::{self, ServiceState, TestEnvironment},
     transition::{self, FinishedProcess, PipelineExitEvent, Transition},
 };
 
@@ -699,6 +704,10 @@ impl PipelineService {
         PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Cancelled, None).await?;
         if was_running && let Some(workspace_id) = run.workspace_id {
             self.inner.launcher.stop_workspace(workspace_id).await;
+            // stop_workspace 不停开发服务器；测试阶段起的要一并收掉（含还在等就绪的）。
+            if run.current_stage_key == PipelineStageKey::Test {
+                self.inner.launcher.stop_dev_servers(workspace_id).await;
+            }
         }
         self.view_for_run_id(run_id).await
     }
@@ -926,25 +935,76 @@ impl PipelineService {
                 Vec::new()
             }
         };
-        let skill = plugin::qualify_skill(&stage.skill);
-        let prompt = prompt::build_stage_prompt(&StagePromptInput {
-            skill: &skill,
-            simple_id: &issue.simple_id,
-            title: &issue.title,
-            artifacts_dir: &dir,
-            required: &stage.artifacts,
-            existing: &existing,
-            previous_versions: &previous_versions,
-            feedback: feedback.as_deref(),
-            test_env: None,
-        });
-        let run_setup = !PipelineStageRuns::any_launched(pool, run.id).await?;
+        let base = PromptBase {
+            skill: plugin::qualify_skill(&stage.skill),
+            simple_id: issue.simple_id.clone(),
+            title: issue.title.clone(),
+            dir: dir.clone(),
+            required: stage.artifacts.clone(),
+            existing,
+            previous_versions,
+            feedback,
+        };
+        if stage_run.stage_key != PipelineStageKey::Test {
+            return self
+                .start_agent(
+                    run.id,
+                    stage_run.id,
+                    workspace_id,
+                    &executor_config,
+                    base.render(None),
+                    plugin_dirs,
+                )
+                .await;
+        }
+        match self
+            .prepare_test_env(workspace_id, &dir, stage.ready_timeout_s)
+            .await?
+        {
+            TestPrep::Ready(env) => {
+                self.start_agent(
+                    run.id,
+                    stage_run.id,
+                    workspace_id,
+                    &executor_config,
+                    base.render(Some(&env)),
+                    plugin_dirs,
+                )
+                .await
+            }
+            TestPrep::Waiting(wait) => {
+                self.spawn_test_launch(PendingTestLaunch {
+                    run_id: run.id,
+                    stage_run_id: stage_run.id,
+                    workspace_id,
+                    executor_config,
+                    base,
+                    plugin_dirs,
+                    wait,
+                });
+                Ok(())
+            }
+        }
+    }
+
+    /// 启动智能体会话并把会话、进程记到尝试上。
+    async fn start_agent(
+        &self,
+        run_id: Uuid,
+        stage_run_id: Uuid,
+        workspace_id: Uuid,
+        executor_config: &ExecutorConfig,
+        prompt: String,
+        plugin_dirs: Vec<PathBuf>,
+    ) -> Result<(), PipelineError> {
+        let pool = self.pool();
+        let run_setup = !PipelineStageRuns::any_launched(pool, run_id).await?;
         let step = self
             .inner
             .launcher
             .start_agent_session(
                 workspace_id,
-                &executor_config,
+                executor_config,
                 prompt,
                 run_setup,
                 plugin_dirs,
@@ -952,11 +1012,194 @@ impl PipelineService {
             .await?;
         PipelineStageRuns::mark_started(
             pool,
-            stage_run.id,
+            stage_run_id,
             step.session_id,
             step.execution_process_id,
         )
         .await?;
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // 内部：测试阶段的环境准备（U4）
+    //
+    // 进入测试阶段时先在锁内做确定性的准备（读用例 → 起开发服务器 → 搭 atp 项目根），
+    // 需要等服务就绪时转到锁外的后台任务里等，就绪或确定起不来后再回到锁内启动智能体。
+    // 等待期间尝试是 running 但还没有会话（session_id 为空）。
+    // ------------------------------------------------------------------
+
+    /// 测试阶段的确定性准备（U4 设计 §4.1、§4.2）。只在需要等服务时返回 `Waiting`。
+    async fn prepare_test_env(
+        &self,
+        workspace_id: Uuid,
+        dir: &Path,
+        ready_timeout_s: u64,
+    ) -> Result<TestPrep, PipelineError> {
+        let launcher = &self.inner.launcher;
+        let atp_command = launcher.atp_command().await;
+        let skipped = |service: ServiceState, atp_command: String| {
+            TestPrep::Ready(TestEnvironment {
+                service,
+                atp_root: None,
+                atp_command,
+            })
+        };
+
+        let Ok(csv_text) = tokio::fs::read_to_string(dir.join(test_env::TEST_CASES_FILE)).await
+        else {
+            return Ok(skipped(
+                ServiceState::Skipped(format!("没有 {}", test_env::TEST_CASES_FILE)),
+                atp_command,
+            ));
+        };
+        match test_env::count_automatable_cases(&csv_text) {
+            Err(reason) => return Ok(skipped(ServiceState::NotReady(reason), atp_command)),
+            Ok(0) => {
+                return Ok(skipped(
+                    ServiceState::Skipped("用例全部是人工用例，跳过接口路".to_string()),
+                    atp_command,
+                ));
+            }
+            Ok(_) => {}
+        }
+
+        let port = test_env::free_port()?;
+        let url = format!("http://127.0.0.1:{port}");
+        let env = [
+            ("PORT".to_string(), port.to_string()),
+            ("VK_BASE_URL".to_string(), url.clone()),
+        ];
+        let Some(process_id) = launcher.start_dev_server(workspace_id, &env).await? else {
+            return Ok(skipped(
+                ServiceState::Skipped("仓库没有配置开发服务器脚本，跳过接口路".to_string()),
+                atp_command,
+            ));
+        };
+        let atp_root = match test_env::prepare_atp_root(dir, &csv_text) {
+            Ok(root) => root,
+            Err(e) => {
+                launcher.stop_dev_servers(workspace_id).await;
+                return Err(e.into());
+            }
+        };
+        Ok(TestPrep::Waiting(ServiceWait {
+            process_id,
+            port,
+            url,
+            atp_root,
+            atp_command,
+            timeout: Duration::from_secs(ready_timeout_s),
+        }))
+    }
+
+    /// 等被测服务就绪：每轮先依次探约定端口的 IPv4/IPv6 地址，再探日志里识别到的其余候选；
+    /// 开发服务器退出或超时即放弃。**不持有引擎锁**。
+    async fn wait_for_service(&self, wait: &ServiceWait) -> ServiceState {
+        let launcher = &self.inner.launcher;
+        let deadline = Instant::now() + wait.timeout;
+        let conventional = test_env::port_candidates(wait.port);
+        loop {
+            for url in &conventional {
+                if launcher.probe_http(url).await {
+                    return ServiceState::Ready(url.clone());
+                }
+            }
+            let output = launcher.process_output(wait.process_id).await;
+            for url in test_env::service_url_candidates(&output) {
+                if !conventional.contains(&url) && launcher.probe_http(&url).await {
+                    return ServiceState::Ready(url);
+                }
+            }
+            if self.dev_server_exited(wait.process_id).await {
+                return ServiceState::NotReady("开发服务器已退出".to_string());
+            }
+            if Instant::now() >= deadline {
+                return ServiceState::NotReady(format!(
+                    "{} 秒内 {} 没有响应",
+                    wait.timeout.as_secs(),
+                    wait.url
+                ));
+            }
+            tokio::time::sleep(SERVICE_POLL_INTERVAL).await;
+        }
+    }
+
+    /// 开发服务器进程是否已不在运行（读库出错时按仍在运行处理，交给超时兜底）。
+    async fn dev_server_exited(&self, process_id: Uuid) -> bool {
+        match ExecutionProcess::find_by_id(self.pool(), process_id).await {
+            Ok(Some(process)) => process.status != ExecutionProcessStatus::Running,
+            Ok(None) => true,
+            Err(_) => false,
+        }
+    }
+
+    fn spawn_test_launch(&self, pending: PendingTestLaunch) {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let state = service.wait_for_service(&pending.wait).await;
+            let _guard = service.inner.lock.lock().await;
+            let workspace_id = pending.workspace_id;
+            if let Err(e) = service.finish_test_launch_locked(pending, state).await {
+                tracing::error!("测试阶段启动智能体时出错: {e}");
+                service.inner.launcher.stop_dev_servers(workspace_id).await;
+            }
+        });
+    }
+
+    /// 服务就绪（或确定起不来）之后：尝试仍在等待中才启动智能体，否则只收拾开发服务器。
+    ///
+    /// 暂停不拦：暂停只影响后续阶段的进入，与已在跑的阶段一致，本阶段照常启动智能体。
+    async fn finish_test_launch_locked(
+        &self,
+        pending: PendingTestLaunch,
+        state: ServiceState,
+    ) -> Result<(), PipelineError> {
+        let pool = self.pool();
+        let launcher = &self.inner.launcher;
+        let run = self.load_run(pending.run_id).await?;
+        let stage_run = PipelineStageRuns::find_by_id(pool, pending.stage_run_id).await?;
+        let waiting = stage_run.as_ref().is_some_and(|stage_run| {
+            stage_run.status == PipelineStageStatus::Running && stage_run.session_id.is_none()
+        });
+        let Some(stage_run) = stage_run.filter(|_| waiting && !run.status.is_finished()) else {
+            // 尝试已不在等待（取消、服务重启恢复记失败……）。只有本次起的开发服务器仍在跑才停：
+            // 已不在跑说明被别的路径停过，或已被同工作区新一轮测试的 start_dev_server 替换，
+            // 这时再按工作区停会误杀新一轮的服务。
+            if !self.dev_server_exited(pending.wait.process_id).await {
+                launcher.stop_dev_servers(pending.workspace_id).await;
+            }
+            return Ok(());
+        };
+        if matches!(state, ServiceState::NotReady(_)) {
+            launcher.stop_dev_servers(pending.workspace_id).await;
+        }
+        let env = TestEnvironment {
+            service: state,
+            atp_root: Some(pending.wait.atp_root.clone()),
+            atp_command: pending.wait.atp_command.clone(),
+        };
+        if let Err(e) = self
+            .start_agent(
+                run.id,
+                stage_run.id,
+                pending.workspace_id,
+                &pending.executor_config,
+                pending.base.render(Some(&env)),
+                pending.plugin_dirs,
+            )
+            .await
+        {
+            launcher.stop_dev_servers(pending.workspace_id).await;
+            if is_state_changed(&e) {
+                tracing::info!(
+                    stage_run_id = %stage_run.id,
+                    "阶段状态已被其他操作改变，放弃本次启动记录"
+                );
+            } else {
+                tracing::warn!(stage_run_id = %stage_run.id, "测试阶段启动智能体失败: {e}");
+                self.fail_run(&run, &stage_run, &e.to_string()).await?;
+            }
+        }
         Ok(())
     }
 
@@ -1072,6 +1315,66 @@ impl PipelineService {
         }
     }
 }
+
+/// 提示词里与测试环境无关的部分。测试阶段要等服务就绪后才能补全，所以先存成自有数据。
+struct PromptBase {
+    skill: String,
+    simple_id: String,
+    title: String,
+    dir: PathBuf,
+    required: Vec<String>,
+    existing: Vec<String>,
+    previous_versions: Vec<String>,
+    feedback: Option<String>,
+}
+
+impl PromptBase {
+    fn render(&self, test_env: Option<&TestEnvironment>) -> String {
+        prompt::build_stage_prompt(&StagePromptInput {
+            skill: &self.skill,
+            simple_id: &self.simple_id,
+            title: &self.title,
+            artifacts_dir: &self.dir,
+            required: &self.required,
+            existing: &self.existing,
+            previous_versions: &self.previous_versions,
+            feedback: self.feedback.as_deref(),
+            test_env,
+        })
+    }
+}
+
+/// 测试阶段准备的结果。
+enum TestPrep {
+    /// 环境已定，立即启动智能体。
+    Ready(TestEnvironment),
+    /// 开发服务器已起，要等它就绪。
+    Waiting(ServiceWait),
+}
+
+struct ServiceWait {
+    process_id: Uuid,
+    /// 平台注入的约定端口（`PORT`）；就绪探测据此先试 IPv4 再试 IPv6。
+    port: u16,
+    /// 约定地址 `http://127.0.0.1:{port}`，注入 `VK_BASE_URL` 与超时文案用。
+    url: String,
+    atp_root: PathBuf,
+    atp_command: String,
+    timeout: Duration,
+}
+
+/// 等服务就绪期间需要带到后台任务里的全部东西。
+struct PendingTestLaunch {
+    run_id: Uuid,
+    stage_run_id: Uuid,
+    workspace_id: Uuid,
+    executor_config: ExecutorConfig,
+    base: PromptBase,
+    plugin_dirs: Vec<PathBuf>,
+    wait: ServiceWait,
+}
+
+const SERVICE_POLL_INTERVAL: Duration = Duration::from_millis(300);
 
 const STATE_CHANGED: &str = "流水线状态已被其他操作改变，请刷新后重试";
 

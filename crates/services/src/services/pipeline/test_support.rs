@@ -207,6 +207,20 @@ impl FakeLauncher {
         self.launches().last().cloned().expect("还没有任何启动")
     }
 
+    /// 把起过的、仍在运行的开发服务器进程标成 killed（模拟容器停进程）。
+    async fn kill_dev_servers(&self) {
+        let ids = self.dev_server_processes.lock().unwrap().clone();
+        for id in ids {
+            sqlx::query(
+                "UPDATE execution_processes SET status = 'killed' WHERE id = ? AND status = 'running'",
+            )
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .expect("标记开发服务器已停");
+        }
+    }
+
     fn record(&self, launch: FakeLaunch) -> LaunchedStep {
         let step = LaunchedStep {
             session_id: launch.session_id,
@@ -311,6 +325,8 @@ impl StageLauncher for FakeLauncher {
         if !self.dev_server.load(Ordering::SeqCst) {
             return Ok(None);
         }
+        // 与容器实现一致：起新的之前先停掉旧的（只改进程状态，不记进 dev_servers_stopped）。
+        self.kill_dev_servers().await;
         let session_id = Uuid::new_v4();
         Session::create(
             &self.pool,
@@ -331,6 +347,7 @@ impl StageLauncher for FakeLauncher {
 
     async fn stop_dev_servers(&self, workspace_id: Uuid) {
         self.dev_servers_stopped.lock().unwrap().push(workspace_id);
+        self.kill_dev_servers().await;
     }
 
     async fn probe_http(&self, url: &str) -> bool {

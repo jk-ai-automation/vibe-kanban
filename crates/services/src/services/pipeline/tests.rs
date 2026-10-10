@@ -1,7 +1,7 @@
 //! 引擎集成测试：真 SQLite + 真引擎 + qa-mode 同款产出物，假启动器代替容器。
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
 };
 
@@ -239,6 +239,78 @@ impl 场景 {
             }
         }
         panic!("需求不在任何阶段列里");
+    }
+
+    /// 启动并走到模板里测试阶段的前一个阶段，结束它（有人工关卡就通过）进入测试阶段。
+    /// 返回进入测试阶段**之前**的智能体启动数。
+    async fn 走到测试阶段前(&self) -> usize {
+        self.走到测试阶段前_并在进入前(|_| {}).await
+    }
+
+    /// 同 [`Self::走到测试阶段前`]，在结束测试阶段的前一个阶段之前调用 `f(&产出物目录)`。
+    async fn 走到测试阶段前_并在进入前(&self, f: impl FnOnce(&Path)) -> usize {
+        let view = self.启动().await.unwrap();
+        let keys: Vec<PipelineStageKey> = view.template.stages.iter().map(|s| s.key).collect();
+        let at = keys
+            .iter()
+            .position(|key| *key == Test)
+            .expect("模板里应有测试阶段");
+        assert!(at > 0, "测试阶段前至少要有一个阶段");
+        let previous = keys[at - 1];
+        self.推进到(previous).await;
+        f(&self.产出物目录());
+        let before = self.智能体启动数();
+        self.结束最近一次启动(true).await;
+        if self.当前().await == (previous, WaitingGate) {
+            self.通过关卡().await;
+        }
+        assert_eq!(self.当前().await, (Test, Running));
+        before
+    }
+
+    /// 等后台任务把智能体启动起来（测试阶段有开发服务器时启动在锁外的任务里）。
+    async fn 等到智能体启动数(&self, expected: usize) {
+        for _ in 0..100 {
+            if self.智能体启动数() >= expected {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("等了 5 秒智能体启动数仍不到 {expected}");
+    }
+
+    fn 智能体启动数(&self) -> usize {
+        self.launcher
+            .launches()
+            .iter()
+            .filter(|launch| launch.kind == FakeLaunchKind::Agent)
+            .count()
+    }
+
+    fn 提示词行(&self, label: &str) -> String {
+        self.launcher
+            .last()
+            .prompt
+            .lines()
+            .find_map(|line| line.strip_prefix(label).map(str::to_string))
+            .unwrap_or_else(|| panic!("提示词里没有 {label} 行"))
+    }
+
+    /// 等开发服务器「起」出来（后台任务开始等待），返回第 `index` 个开发服务器进程。
+    async fn 等到开发服务器(&self, index: usize) -> Uuid {
+        for _ in 0..100 {
+            if let Some(id) = self
+                .launcher
+                .dev_server_processes
+                .lock()
+                .unwrap()
+                .get(index)
+            {
+                return *id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("等了 2 秒还没有第 {index} 个开发服务器");
     }
 
     fn 尝试(view: &IssuePipelineView, key: PipelineStageKey) -> Vec<(i64, PipelineStageStatus)> {
@@ -1328,5 +1400,240 @@ async fn 非_claude_code_执行器启动被拒() {
             .unwrap()
             .is_none(),
         "被拒时不许留下运行记录"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// U4：测试阶段先备环境再起智能体
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn 测试阶段_仓库没有开发服务器脚本时跳过接口路() {
+    let 场 = 场景::新建("加法接口").await;
+    场.走到测试阶段前().await;
+
+    assert_eq!(场.当前().await.0, PipelineStageKey::Test);
+    assert_eq!(
+        场.提示词行("被测地址："),
+        "无（仓库没有配置开发服务器脚本，跳过接口路）"
+    );
+    assert_eq!(场.提示词行("atp 项目根："), "无");
+    assert_eq!(场.提示词行("atp 命令："), "atp");
+}
+
+#[tokio::test]
+async fn 测试阶段_没有用例文件时跳过接口路() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    场.走到测试阶段前_并在进入前(|artifacts_dir| {
+        std::fs::remove_file(artifacts_dir.join("test-cases.csv")).unwrap();
+    })
+    .await;
+
+    assert_eq!(场.提示词行("被测地址："), "无（没有 test-cases.csv）");
+    assert_eq!(场.提示词行("atp 项目根："), "无");
+    assert!(场.launcher.dev_server_envs.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn 测试阶段_服务就绪后带着地址与项目根启动智能体() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    场.launcher.ready_urls.lock().unwrap().push("*".to_string());
+    let before = 场.走到测试阶段前().await;
+    场.等到智能体启动数(before + 1).await;
+
+    let envs = 场.launcher.dev_server_envs.lock().unwrap().clone();
+    let port = envs[0]
+        .iter()
+        .find(|(key, _)| key == "PORT")
+        .unwrap()
+        .1
+        .clone();
+    let url = format!("http://127.0.0.1:{port}");
+    assert!(envs[0].contains(&("VK_BASE_URL".to_string(), url.clone())));
+    assert_eq!(场.提示词行("被测地址："), url);
+
+    let root = PathBuf::from(场.提示词行("atp 项目根："));
+    assert!(root.join("test_cases/vk_gen/vk_gen.csv").is_file());
+    let view = 场.视图().await;
+    let test = view.stages.last().unwrap();
+    assert_eq!(test.stage_key, Test);
+    assert_eq!(test.session_id, Some(场.launcher.last().session_id));
+}
+
+#[tokio::test]
+async fn 测试阶段_脚本忽略端口时从日志识别地址() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    场.launcher
+        .ready_urls
+        .lock()
+        .unwrap()
+        .push("http://127.0.0.1:5173".to_string());
+    *场.launcher.dev_server_output.lock().unwrap() =
+        "  ➜  Local:   http://localhost:5173/\n".to_string();
+    let before = 场.走到测试阶段前().await;
+    场.等到智能体启动数(before + 1).await;
+
+    assert_eq!(场.提示词行("被测地址："), "http://127.0.0.1:5173");
+}
+
+#[tokio::test]
+async fn 测试阶段_日志里先出现数据库地址也能找到真实地址() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    场.launcher
+        .ready_urls
+        .lock()
+        .unwrap()
+        .push("http://127.0.0.1:5173".to_string());
+    *场.launcher.dev_server_output.lock().unwrap() =
+        "ECONNREFUSED 127.0.0.1:5432\n  ➜  Local:   http://localhost:5173/\n".to_string();
+    let before = 场.走到测试阶段前().await;
+    场.等到智能体启动数(before + 1).await;
+
+    assert_eq!(场.提示词行("被测地址："), "http://127.0.0.1:5173");
+}
+
+#[tokio::test]
+async fn 测试阶段_超时没就绪时如实告诉技能并停掉服务() {
+    let 场 = 场景::新建("加法接口").await;
+    场.写仓库模板(
+        "version: 1\nstages:\n  - key: requirement\n    skill: vk-requirement\n    artifacts: [requirement.md]\n  - key: test_design\n    skill: prd2testcase\n    artifacts: [test-cases.csv, trace-matrix.md]\n  - key: test\n    skill: atp-run\n    artifacts: [test-report.json]\n    ready_timeout_s: 1\n    gate:\n      auto: all_cases_passed\n",
+    );
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    let before = 场.走到测试阶段前().await;
+    场.等到智能体启动数(before + 1).await;
+
+    let service = 场.提示词行("被测地址：");
+    assert!(
+        service.starts_with("未就绪（1 秒内 http://127.0.0.1:"),
+        "{service}"
+    );
+    assert!(service.ends_with("没有响应）"), "{service}");
+    assert_eq!(
+        场.launcher.dev_servers_stopped.lock().unwrap().as_slice(),
+        &[场.workspace_id]
+    );
+
+    // 假启动器按提示词写出的是「未就绪」报告 → 关卡判失败。模板里没有开发阶段，
+    // 归因 code 的回退落回测试阶段本身重跑，所以看第一次尝试。
+    场.结束(&场.launcher.last(), true).await;
+    let view = 场.视图().await;
+    assert_eq!(场景::尝试(&view, Test)[0], (1, Failed));
+}
+
+#[tokio::test]
+async fn 测试阶段_开发服务器中途退出时不等到超时() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    let before = 场.走到测试阶段前().await;
+    // 等开发服务器「起」出来，再把它标成已失败。
+    let process = 场.等到开发服务器(0).await;
+    sqlx::query("UPDATE execution_processes SET status = 'failed', exit_code = 1 WHERE id = ?")
+        .bind(process)
+        .execute(场.test_db.pool())
+        .await
+        .unwrap();
+    场.等到智能体启动数(before + 1).await;
+
+    assert_eq!(场.提示词行("被测地址："), "未就绪（开发服务器已退出）");
+}
+
+#[tokio::test]
+async fn 测试阶段_等待期间取消则不再启动智能体() {
+    let 场 = 场景::新建("加法接口").await;
+    场.写仓库模板(
+        "version: 1\nstages:\n  - key: test_design\n    skill: prd2testcase\n    artifacts: [test-cases.csv, trace-matrix.md]\n  - key: test\n    skill: atp-run\n    artifacts: [test-report.json]\n    ready_timeout_s: 1\n",
+    );
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    let before = 场.走到测试阶段前().await;
+    场.等到开发服务器(0).await;
+    let run_id = 场.视图().await.run.id;
+    场.service.cancel(run_id).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
+    assert_eq!(场.智能体启动数(), before, "取消后不应再启动智能体");
+    assert!(
+        场.launcher
+            .dev_servers_stopped
+            .lock()
+            .unwrap()
+            .contains(&场.workspace_id)
+    );
+}
+
+#[tokio::test]
+async fn 测试阶段_全是人工用例时不起开发服务器() {
+    let 场 = 场景::新建("加法纯函数").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    // 进入测试阶段前把 CSV 改成只有人工用例。
+    场.走到测试阶段前_并在进入前(|artifacts_dir| {
+        let path = artifacts_dir.join("test-cases.csv");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+        let noauto = lines[0].split(',').position(|c| c == "NOAUTO").unwrap();
+        let mut cells: Vec<String> = lines[1].split(',').map(str::to_string).collect();
+        cells[noauto] = "Y".to_string();
+        lines[1] = cells.join(",");
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+    })
+    .await;
+
+    assert_eq!(
+        场.提示词行("被测地址："),
+        "无（用例全部是人工用例，跳过接口路）"
+    );
+    assert!(场.launcher.dev_server_envs.lock().unwrap().is_empty());
+}
+
+/// 暂停只影响后续阶段的进入：等服务期间暂停，本阶段照常启动智能体（与已在跑的阶段一致）。
+#[tokio::test]
+async fn 测试阶段_等待期间暂停仍照常启动智能体() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    let before = 场.走到测试阶段前().await;
+    场.等到开发服务器(0).await;
+    let run_id = 场.视图().await.run.id;
+    场.service.pause(run_id).await.unwrap();
+    场.launcher.ready_urls.lock().unwrap().push("*".to_string());
+    场.等到智能体启动数(before + 1).await;
+
+    let view = 场.视图().await;
+    assert_eq!(view.run.status, PipelineRunStatus::Paused);
+    assert_eq!(view.stages.last().unwrap().status, Running);
+    assert!(view.stages.last().unwrap().session_id.is_some());
+    assert!(场.launcher.dev_servers_stopped.lock().unwrap().is_empty());
+}
+
+/// 等服务期间尝试被记失败（服务重启恢复）后「继续」：新尝试重新备环境；旧的后台任务醒来时
+/// 尝试已不在等待，不起智能体，也不能把新尝试的开发服务器停掉。
+#[tokio::test]
+async fn 测试阶段_等待期间尝试失败后继续_旧任务不碰新服务() {
+    let 场 = 场景::新建("加法接口").await;
+    场.launcher.dev_server.store(true, Ordering::SeqCst);
+    let before = 场.走到测试阶段前().await;
+    场.等到开发服务器(0).await;
+    assert_eq!(场.service.recover_interrupted().await.unwrap(), 1);
+    let view = 场.视图().await;
+    assert_eq!(view.run.status, PipelineRunStatus::Failed);
+    assert_eq!(场景::尝试(&view, Test), vec![(1, Failed)]);
+
+    场.service.resume(view.run.id).await.unwrap();
+    场.等到开发服务器(1).await;
+    场.launcher.ready_urls.lock().unwrap().push("*".to_string());
+    场.等到智能体启动数(before + 1).await;
+    // 给旧任务足够时间醒来并处理完。
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+
+    assert_eq!(场.智能体启动数(), before + 1, "只有新尝试启动智能体");
+    assert_eq!(
+        场景::尝试(&场.视图().await, Test),
+        vec![(1, Failed), (2, Running)]
+    );
+    assert!(
+        场.launcher.dev_servers_stopped.lock().unwrap().is_empty(),
+        "旧任务不应停掉新尝试的开发服务器"
     );
 }
