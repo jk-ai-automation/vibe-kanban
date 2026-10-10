@@ -5,6 +5,7 @@
 //! （开会话、起进程），启动器不会回调本服务，所以不会死锁。
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -81,6 +82,9 @@ struct Inner {
     db: DBService,
     launcher: Arc<dyn StageLauncher>,
     lock: Mutex<()>,
+    /// 测试尝试 id → 本尝试起的开发服务器进程 id。停服务只停这一个进程，不碰用户在界面上
+    /// 对同一工作区手动起的开发服务器。只在内存里：服务重启后为空，不再停（进程随服务退出）。
+    test_dev_servers: std::sync::Mutex<HashMap<Uuid, Uuid>>,
 }
 
 impl PipelineService {
@@ -90,6 +94,7 @@ impl PipelineService {
                 db,
                 launcher,
                 lock: Mutex::new(()),
+                test_dev_servers: std::sync::Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -315,10 +320,8 @@ impl PipelineService {
             return Ok(());
         };
         // 测试阶段的终点进程（智能体成功、失败或被手动停止）：被测服务不再需要。
-        if stage_run.stage_key == PipelineStageKey::Test
-            && let Some(workspace_id) = run.workspace_id
-        {
-            self.inner.launcher.stop_dev_servers(workspace_id).await;
+        if stage_run.stage_key == PipelineStageKey::Test {
+            self.stop_test_dev_server(stage_run.id);
         }
         // 用户手动停止：不重跑、不计轮次，运行暂停等用户「继续」。
         if process.status == ExecutionProcessStatus::Killed {
@@ -688,7 +691,7 @@ impl PipelineService {
         if run.status.is_finished() {
             return Err(PipelineError::Conflict("流水线已结束".to_string()));
         }
-        let mut was_running = false;
+        let mut running_attempt = None;
         if let Some(latest) = PipelineStageRuns::find_latest_for_run(pool, run.id).await?
             && matches!(
                 latest.status,
@@ -697,7 +700,7 @@ impl PipelineService {
                     | PipelineStageStatus::WaitingGate
             )
         {
-            was_running = latest.status == PipelineStageStatus::Running;
+            running_attempt = (latest.status == PipelineStageStatus::Running).then_some(latest.id);
             PipelineStageRuns::set_status(
                 pool,
                 latest.id,
@@ -708,12 +711,12 @@ impl PipelineService {
             .await?;
         }
         PipelineRuns::update_status(pool, run.id, PipelineRunStatus::Cancelled, None).await?;
-        if was_running && let Some(workspace_id) = run.workspace_id {
+        if let Some(attempt) = running_attempt
+            && let Some(workspace_id) = run.workspace_id
+        {
             self.inner.launcher.stop_workspace(workspace_id).await;
-            // stop_workspace 不停开发服务器；测试阶段起的要一并收掉（含还在等就绪的）。
-            if run.current_stage_key == PipelineStageKey::Test {
-                self.inner.launcher.stop_dev_servers(workspace_id).await;
-            }
+            // stop_workspace 不停开发服务器；测试尝试起的要一并收掉（含还在等就绪的）。
+            self.stop_test_dev_server(attempt);
         }
         self.view_for_run_id(run_id).await
     }
@@ -964,7 +967,7 @@ impl PipelineService {
                 .await;
         }
         match self
-            .prepare_test_env(workspace_id, &dir, stage.ready_timeout_s)
+            .prepare_test_env(workspace_id, stage_run.id, &dir, stage.ready_timeout_s)
             .await?
         {
             TestPrep::Ready(env) => {
@@ -1038,6 +1041,7 @@ impl PipelineService {
     async fn prepare_test_env(
         &self,
         workspace_id: Uuid,
+        stage_run_id: Uuid,
         dir: &Path,
         ready_timeout_s: u64,
     ) -> Result<TestPrep, PipelineError> {
@@ -1081,10 +1085,15 @@ impl PipelineService {
                 atp_command,
             ));
         };
+        self.inner
+            .test_dev_servers
+            .lock()
+            .unwrap()
+            .insert(stage_run_id, process_id);
         let atp_root = match test_env::prepare_atp_root(dir, &csv_text) {
             Ok(root) => root,
             Err(e) => {
-                launcher.stop_dev_servers(workspace_id).await;
+                self.stop_test_dev_server(stage_run_id);
                 return Err(e.into());
             }
         };
@@ -1145,10 +1154,9 @@ impl PipelineService {
             let state = service.wait_for_service(&pending.wait).await;
             let _guard = service.inner.lock.lock().await;
             let (run_id, stage_run_id) = (pending.run_id, pending.stage_run_id);
-            let workspace_id = pending.workspace_id;
             if let Err(e) = service.finish_test_launch_locked(pending, state).await {
                 tracing::error!("测试阶段启动智能体时出错: {e}");
-                service.inner.launcher.stop_dev_servers(workspace_id).await;
+                service.stop_test_dev_server(stage_run_id);
                 if let Err(db_error) = service
                     .fail_waiting_test_attempt_locked(run_id, stage_run_id, &e)
                     .await
@@ -1212,23 +1220,19 @@ impl PipelineService {
         state: ServiceState,
     ) -> Result<(), PipelineError> {
         let pool = self.pool();
-        let launcher = &self.inner.launcher;
         let run = self.load_run(pending.run_id).await?;
         let stage_run = PipelineStageRuns::find_by_id(pool, pending.stage_run_id).await?;
         let waiting = stage_run.as_ref().is_some_and(|stage_run| {
             stage_run.status == PipelineStageStatus::Running && stage_run.session_id.is_none()
         });
         let Some(stage_run) = stage_run.filter(|_| waiting && !run.status.is_finished()) else {
-            // 尝试已不在等待（取消、服务重启恢复记失败……）。只有本次起的开发服务器仍在跑才停：
-            // 已不在跑说明被别的路径停过，或已被同工作区新一轮测试的 start_dev_server 替换，
-            // 这时再按工作区停会误杀新一轮的服务。
-            if !self.dev_server_exited(pending.wait.process_id).await {
-                launcher.stop_dev_servers(pending.workspace_id).await;
-            }
+            // 尝试已不在等待（取消、服务重启恢复记失败……）：只停本尝试起的那个进程，
+            // 不会误杀同工作区新一轮测试的服务。
+            self.stop_test_dev_server(pending.stage_run_id);
             return Ok(());
         };
         if matches!(state, ServiceState::NotReady(_)) {
-            launcher.stop_dev_servers(pending.workspace_id).await;
+            self.stop_test_dev_server(stage_run.id);
         }
         let env = TestEnvironment {
             service: state,
@@ -1246,7 +1250,7 @@ impl PipelineService {
             )
             .await
         {
-            launcher.stop_dev_servers(pending.workspace_id).await;
+            self.stop_test_dev_server(stage_run.id);
             if is_state_changed(&e) {
                 tracing::info!(
                     stage_run_id = %stage_run.id,
@@ -1258,6 +1262,24 @@ impl PipelineService {
             }
         }
         Ok(())
+    }
+
+    /// 停掉测试尝试起的开发服务器（没登记或已停过就什么也不做）。在锁外的任务里停：
+    /// 容器停进程要先发 SIGINT 再等至少 2 秒，不能占着全局锁。
+    fn stop_test_dev_server(&self, stage_run_id: Uuid) {
+        let Some(process_id) = self
+            .inner
+            .test_dev_servers
+            .lock()
+            .unwrap()
+            .remove(&stage_run_id)
+        else {
+            return;
+        };
+        let launcher = self.inner.launcher.clone();
+        tokio::spawn(async move {
+            launcher.stop_dev_server(process_id).await;
+        });
     }
 
     /// 这个终点进程是否属于本阶段当前的执行链。

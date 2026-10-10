@@ -176,8 +176,8 @@ pub(crate) struct FakeLauncher {
     pub(crate) ready_urls: Mutex<Vec<String>>,
     /// 开发服务器的输出。
     pub(crate) dev_server_output: Mutex<String>,
-    /// 被要求停开发服务器的工作区。
-    pub(crate) dev_servers_stopped: Mutex<Vec<Uuid>>,
+    /// 被要求停的开发服务器进程 id（按要求的先后）。
+    pub(crate) dev_server_stopped_ids: Mutex<Vec<Uuid>>,
 }
 
 impl FakeLauncher {
@@ -195,7 +195,7 @@ impl FakeLauncher {
             dev_server_processes: Mutex::new(Vec::new()),
             ready_urls: Mutex::new(Vec::new()),
             dev_server_output: Mutex::new(String::new()),
-            dev_servers_stopped: Mutex::new(Vec::new()),
+            dev_server_stopped_ids: Mutex::new(Vec::new()),
         }
     }
 
@@ -325,7 +325,7 @@ impl StageLauncher for FakeLauncher {
         if !self.dev_server.load(Ordering::SeqCst) {
             return Ok(None);
         }
-        // 与容器实现一致：起新的之前先停掉旧的（只改进程状态，不记进 dev_servers_stopped）。
+        // 与容器实现一致：起新的之前先停掉旧的（只改进程状态，不记进 dev_server_stopped_ids）。
         self.kill_dev_servers().await;
         let session_id = Uuid::new_v4();
         Session::create(
@@ -345,9 +345,18 @@ impl StageLauncher for FakeLauncher {
         Ok(Some(id))
     }
 
-    async fn stop_dev_servers(&self, workspace_id: Uuid) {
-        self.dev_servers_stopped.lock().unwrap().push(workspace_id);
-        self.kill_dev_servers().await;
+    async fn stop_dev_server(&self, execution_process_id: Uuid) {
+        self.dev_server_stopped_ids
+            .lock()
+            .unwrap()
+            .push(execution_process_id);
+        sqlx::query(
+            "UPDATE execution_processes SET status = 'killed' WHERE id = ? AND status = 'running'",
+        )
+        .bind(execution_process_id)
+        .execute(&self.pool)
+        .await
+        .expect("标记开发服务器已停");
     }
 
     async fn probe_http(&self, url: &str) -> bool {

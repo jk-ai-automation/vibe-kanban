@@ -313,6 +313,32 @@ impl 场景 {
         panic!("等了 2 秒还没有第 {index} 个开发服务器");
     }
 
+    /// 引擎要求停掉的开发服务器进程（停服务在锁外的任务里做）。
+    fn 停掉的开发服务器(&self) -> Vec<Uuid> {
+        self.launcher.dev_server_stopped_ids.lock().unwrap().clone()
+    }
+
+    /// 等引擎要求停掉开发服务器进程 `id`。
+    async fn 等到停掉开发服务器(&self, id: Uuid) {
+        for _ in 0..100 {
+            if self.停掉的开发服务器().contains(&id) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("等了 2 秒开发服务器 {id} 还没被要求停掉");
+    }
+
+    /// 给锁外停服务的任务留出时间后，断言没有要求停任何开发服务器。
+    async fn 稍候断言没停开发服务器(&self) {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            self.停掉的开发服务器().is_empty(),
+            "{:?}",
+            self.停掉的开发服务器()
+        );
+    }
+
     fn 尝试(view: &IssuePipelineView, key: PipelineStageKey) -> Vec<(i64, PipelineStageStatus)> {
         view.stages
             .iter()
@@ -1504,6 +1530,7 @@ async fn 测试阶段_超时没就绪时如实告诉技能并停掉服务() {
     );
     场.launcher.dev_server.store(true, Ordering::SeqCst);
     let before = 场.走到测试阶段前().await;
+    let process = 场.等到开发服务器(0).await;
     场.等到智能体启动数(before + 1).await;
 
     let service = 场.提示词行("被测地址：");
@@ -1512,10 +1539,8 @@ async fn 测试阶段_超时没就绪时如实告诉技能并停掉服务() {
         "{service}"
     );
     assert!(service.ends_with("没有响应）"), "{service}");
-    assert_eq!(
-        场.launcher.dev_servers_stopped.lock().unwrap().as_slice(),
-        &[场.workspace_id]
-    );
+    场.等到停掉开发服务器(process).await;
+    assert_eq!(场.停掉的开发服务器(), vec![process]);
 
     // 假启动器按提示词写出的是「未就绪」报告 → 关卡判失败。模板里没有开发阶段，
     // 归因 code 的回退落回测试阶段本身重跑，所以看第一次尝试。
@@ -1549,19 +1574,13 @@ async fn 测试阶段_等待期间取消则不再启动智能体() {
     );
     场.launcher.dev_server.store(true, Ordering::SeqCst);
     let before = 场.走到测试阶段前().await;
-    场.等到开发服务器(0).await;
+    let process = 场.等到开发服务器(0).await;
     let run_id = 场.视图().await.run.id;
     场.service.cancel(run_id).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
     assert_eq!(场.智能体启动数(), before, "取消后不应再启动智能体");
-    assert!(
-        场.launcher
-            .dev_servers_stopped
-            .lock()
-            .unwrap()
-            .contains(&场.workspace_id)
-    );
+    assert_eq!(场.停掉的开发服务器(), vec![process]);
 }
 
 #[tokio::test]
@@ -1604,7 +1623,7 @@ async fn 测试阶段_等待期间暂停仍照常启动智能体() {
     assert_eq!(view.run.status, PipelineRunStatus::Paused);
     assert_eq!(view.stages.last().unwrap().status, Running);
     assert!(view.stages.last().unwrap().session_id.is_some());
-    assert!(场.launcher.dev_servers_stopped.lock().unwrap().is_empty());
+    场.稍候断言没停开发服务器().await;
 }
 
 /// 等服务期间尝试被记失败（服务重启恢复）后「继续」：新尝试重新备环境；旧的后台任务醒来时
@@ -1621,7 +1640,7 @@ async fn 测试阶段_等待期间尝试失败后继续_旧任务不碰新服务
     assert_eq!(场景::尝试(&view, Test), vec![(1, Failed)]);
 
     场.service.resume(view.run.id).await.unwrap();
-    场.等到开发服务器(1).await;
+    let new_process = 场.等到开发服务器(1).await;
     场.launcher.ready_urls.lock().unwrap().push("*".to_string());
     场.等到智能体启动数(before + 1).await;
     // 给旧任务足够时间醒来并处理完。
@@ -1633,7 +1652,7 @@ async fn 测试阶段_等待期间尝试失败后继续_旧任务不碰新服务
         vec![(1, Failed), (2, Running)]
     );
     assert!(
-        场.launcher.dev_servers_stopped.lock().unwrap().is_empty(),
+        !场.停掉的开发服务器().contains(&new_process),
         "旧任务不应停掉新尝试的开发服务器"
     );
 }
@@ -1648,15 +1667,14 @@ async fn 测试阶段_结束后停掉开发服务器() {
     场.launcher.dev_server.store(true, Ordering::SeqCst);
     场.launcher.ready_urls.lock().unwrap().push("*".to_string());
     let before = 场.走到测试阶段前().await;
+    let process = 场.等到开发服务器(0).await;
     场.等到智能体启动数(before + 1).await;
-    assert!(场.launcher.dev_servers_stopped.lock().unwrap().is_empty());
+    场.稍候断言没停开发服务器().await;
 
     场.结束(&场.launcher.last(), true).await;
 
-    assert_eq!(
-        场.launcher.dev_servers_stopped.lock().unwrap().as_slice(),
-        &[场.workspace_id]
-    );
+    场.等到停掉开发服务器(process).await;
+    assert_eq!(场.停掉的开发服务器(), vec![process]);
 }
 
 #[tokio::test]
@@ -1665,6 +1683,7 @@ async fn 测试阶段_手动停止智能体也停掉开发服务器() {
     场.launcher.dev_server.store(true, Ordering::SeqCst);
     场.launcher.ready_urls.lock().unwrap().push("*".to_string());
     let before = 场.走到测试阶段前().await;
+    let process = 场.等到开发服务器(0).await;
     场.等到智能体启动数(before + 1).await;
 
     场.结束为(
@@ -1676,10 +1695,8 @@ async fn 测试阶段_手动停止智能体也停掉开发服务器() {
     .await;
 
     assert_eq!(场.视图().await.run.status, PipelineRunStatus::Paused);
-    assert_eq!(
-        场.launcher.dev_servers_stopped.lock().unwrap().as_slice(),
-        &[场.workspace_id]
-    );
+    场.等到停掉开发服务器(process).await;
+    assert_eq!(场.停掉的开发服务器(), vec![process]);
 }
 
 #[tokio::test]
@@ -1687,7 +1704,7 @@ async fn 其它阶段结束时不碰开发服务器() {
     let 场 = 场景::新建("加法接口").await;
     场.启动().await.unwrap();
     场.结束(&场.launcher.last(), true).await;
-    assert!(场.launcher.dev_servers_stopped.lock().unwrap().is_empty());
+    场.稍候断言没停开发服务器().await;
 }
 
 /// 后台任务在启动智能体之前出错（读库失败等）时，尝试不能卡在「running 且无会话」：兜底记失败。

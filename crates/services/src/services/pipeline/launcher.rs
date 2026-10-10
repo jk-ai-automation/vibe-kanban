@@ -58,16 +58,16 @@ pub trait StageLauncher: Send + Sync {
     /// 停掉工作区里正在跑的进程（取消运行时用）。
     async fn stop_workspace(&self, workspace_id: Uuid);
 
-    /// 测试阶段：先停掉工作区里已有的开发服务器，再起**第一个**配置了开发服务器脚本的
-    /// 仓库，脚本前注入 `env`。没有仓库配脚本时返回 `Ok(None)`。
+    /// 测试阶段：先停掉工作区里已有的开发服务器（新一轮起服务前清场），再起**第一个**
+    /// 配置了开发服务器脚本的仓库，脚本前注入 `env`。没有仓库配脚本时返回 `Ok(None)`。
     async fn start_dev_server(
         &self,
         workspace_id: Uuid,
         env: &[(String, String)],
     ) -> Result<Option<Uuid>, PipelineError>;
 
-    /// 停掉工作区里所有开发服务器进程（`stop_workspace` 不停它们）。
-    async fn stop_dev_servers(&self, workspace_id: Uuid);
+    /// 只停这一个开发服务器进程（`stop_workspace` 不停开发服务器）；已不在运行就什么也不做。
+    async fn stop_dev_server(&self, execution_process_id: Uuid);
 
     /// 探测一次：能在超时内拿到任何 HTTP 响应（不看状态码）就算就绪。
     async fn probe_http(&self, url: &str) -> bool;
@@ -144,6 +144,17 @@ where
         Workspace::find_by_id(&self.container.db().pool, workspace_id)
             .await?
             .ok_or_else(|| PipelineError::NotFound(format!("工作区 {workspace_id}")))
+    }
+
+    /// 停一个进程，失败只记日志。
+    async fn stop_process(&self, process: &ExecutionProcess) {
+        if let Err(e) = self
+            .container
+            .stop_execution(process, ExecutionProcessStatus::Killed)
+            .await
+        {
+            tracing::warn!(execution_process_id = %process.id, "停止开发服务器失败: {e}");
+        }
     }
 }
 
@@ -249,7 +260,15 @@ where
         }) else {
             return Ok(None);
         };
-        self.stop_dev_servers(workspace_id).await;
+        // 清场：停掉工作区里已有的开发服务器。
+        match ExecutionProcess::find_running_dev_servers_by_workspace(pool, workspace_id).await {
+            Ok(running) => {
+                for process in running {
+                    self.stop_process(&process).await;
+                }
+            }
+            Err(e) => tracing::warn!(%workspace_id, "查询运行中的开发服务器失败: {e}"),
+        }
 
         // 独立会话：开发服务器的退出事件不会被当成某个阶段的终点进程。
         let session = Session::create(
@@ -285,26 +304,14 @@ where
         Ok(Some(process.id))
     }
 
-    async fn stop_dev_servers(&self, workspace_id: Uuid) {
-        let running = match ExecutionProcess::find_running_dev_servers_by_workspace(
-            &self.container.db().pool,
-            workspace_id,
-        )
-        .await
-        {
-            Ok(running) => running,
-            Err(e) => {
-                tracing::warn!(%workspace_id, "查询运行中的开发服务器失败: {e}");
-                return;
+    async fn stop_dev_server(&self, execution_process_id: Uuid) {
+        match ExecutionProcess::find_by_id(&self.container.db().pool, execution_process_id).await {
+            Ok(Some(process)) if process.status == ExecutionProcessStatus::Running => {
+                self.stop_process(&process).await;
             }
-        };
-        for process in running {
-            if let Err(e) = self
-                .container
-                .stop_execution(&process, ExecutionProcessStatus::Killed)
-                .await
-            {
-                tracing::warn!(execution_process_id = %process.id, "停止开发服务器失败: {e}");
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(%execution_process_id, "读取开发服务器进程失败: {e}");
             }
         }
     }
@@ -383,7 +390,7 @@ impl StageLauncher for NoopStageLauncher {
         Err(PipelineError::Launch("未接入执行层".to_string()))
     }
 
-    async fn stop_dev_servers(&self, _workspace_id: Uuid) {}
+    async fn stop_dev_server(&self, _execution_process_id: Uuid) {}
 
     async fn probe_http(&self, _url: &str) -> bool {
         false
@@ -435,7 +442,7 @@ mod tests {
         assert!(launcher.start_dev_server(id, &[]).await.is_err());
         assert!(!launcher.probe_http("http://127.0.0.1:1").await);
         assert_eq!(launcher.atp_command().await, "atp");
-        launcher.stop_dev_servers(id).await;
+        launcher.stop_dev_server(id).await;
     }
 
     #[test]
