@@ -99,6 +99,12 @@ impl MsgStore {
 
     /// History from the `offset`-th stored message on, plus the current number of stored
     /// messages (pass it back as the next `offset`). Only the new messages are cloned.
+    ///
+    /// The offset counts *stored* messages, not messages ever pushed: once the history
+    /// exceeds `HISTORY_BYTES` and is trimmed from the front, earlier offsets point past
+    /// the wrong messages (some new ones are skipped, and the count stops advancing until
+    /// it catches up). The pipeline only uses this while waiting for a dev server to
+    /// become ready, which logs far less than the ~100 MB cap, so it does not happen there.
     pub fn history_since(&self, offset: usize) -> (Vec<LogMsg>, usize) {
         let inner = self.inner.read().unwrap();
         let messages = inner
