@@ -166,6 +166,18 @@ pub(crate) struct FakeLauncher {
     pub(crate) fail_start: AtomicBool,
     /// 打开后智能体启动期间把 running 的尝试改成 skipped，模拟「启动途中状态被别的路径改掉」。
     pub(crate) skip_running_on_start: AtomicBool,
+    /// 打开后 `start_dev_server` 会「起」一个开发服务器（落一条 running 的进程）。
+    pub(crate) dev_server: AtomicBool,
+    /// 每次起开发服务器时注入的环境变量。
+    pub(crate) dev_server_envs: Mutex<Vec<Vec<(String, String)>>>,
+    /// 起出来的开发服务器进程 id。
+    pub(crate) dev_server_processes: Mutex<Vec<Uuid>>,
+    /// 这些地址探测成功；`"*"` 表示任何地址都成功。
+    pub(crate) ready_urls: Mutex<Vec<String>>,
+    /// 开发服务器的输出。
+    pub(crate) dev_server_output: Mutex<String>,
+    /// 被要求停开发服务器的工作区。
+    pub(crate) dev_servers_stopped: Mutex<Vec<Uuid>>,
 }
 
 impl FakeLauncher {
@@ -178,6 +190,12 @@ impl FakeLauncher {
             write_artifacts: AtomicBool::new(true),
             fail_start: AtomicBool::new(false),
             skip_running_on_start: AtomicBool::new(false),
+            dev_server: AtomicBool::new(false),
+            dev_server_envs: Mutex::new(Vec::new()),
+            dev_server_processes: Mutex::new(Vec::new()),
+            ready_urls: Mutex::new(Vec::new()),
+            dev_server_output: Mutex::new(String::new()),
+            dev_servers_stopped: Mutex::new(Vec::new()),
         }
     }
 
@@ -283,6 +301,52 @@ impl StageLauncher for FakeLauncher {
 
     async fn stop_workspace(&self, workspace_id: Uuid) {
         self.stopped.lock().unwrap().push(workspace_id);
+    }
+
+    async fn start_dev_server(
+        &self,
+        workspace_id: Uuid,
+        env: &[(String, String)],
+    ) -> Result<Option<Uuid>, PipelineError> {
+        if !self.dev_server.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        let session_id = Uuid::new_v4();
+        Session::create(
+            &self.pool,
+            &CreateSession {
+                executor: Some("dev-server".to_string()),
+                name: None,
+            },
+            session_id,
+            workspace_id,
+        )
+        .await
+        .map_err(|e| PipelineError::Launch(e.to_string()))?;
+        let id = 落进程(&self.pool, session_id, ExecutionProcessRunReason::DevServer).await?;
+        self.dev_server_envs.lock().unwrap().push(env.to_vec());
+        self.dev_server_processes.lock().unwrap().push(id);
+        Ok(Some(id))
+    }
+
+    async fn stop_dev_servers(&self, workspace_id: Uuid) {
+        self.dev_servers_stopped.lock().unwrap().push(workspace_id);
+    }
+
+    async fn probe_http(&self, url: &str) -> bool {
+        self.ready_urls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|ready| ready == "*" || ready == url)
+    }
+
+    async fn process_output(&self, _execution_process_id: Uuid) -> String {
+        self.dev_server_output.lock().unwrap().clone()
+    }
+
+    async fn atp_command(&self) -> String {
+        "atp".to_string()
     }
 }
 

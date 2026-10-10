@@ -68,6 +68,10 @@ pub struct Config {
     pub relay_enabled: bool,
     #[serde(default)]
     pub host_nickname: Option<String>,
+    /// 流水线测试阶段调用 atp 的命令，例如 `uv run --project /path/to/atp atp`；
+    /// 不填用 `atp`。
+    #[serde(default)]
+    pub pipeline_atp_command: Option<String>,
 }
 
 impl Config {
@@ -99,6 +103,7 @@ impl Config {
             send_message_shortcut: SendMessageShortcut::default(),
             relay_enabled: true,
             host_nickname: None,
+            pipeline_atp_command: None,
         }
     }
 
@@ -155,6 +160,7 @@ impl Default for Config {
             send_message_shortcut: SendMessageShortcut::default(),
             relay_enabled: true,
             host_nickname: None,
+            pipeline_atp_command: None,
         }
     }
 }

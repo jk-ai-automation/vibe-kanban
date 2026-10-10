@@ -305,7 +305,10 @@ impl Deployment for LocalDeployment {
         container.set_pipeline_exit_notifier(pipeline_exit_tx);
         let pipeline = PipelineService::new(
             db.clone(),
-            Arc::new(ContainerStageLauncher::new(container.clone())),
+            Arc::new(ContainerStageLauncher::new(
+                container.clone(),
+                config.clone(),
+            )),
         );
         {
             let pipeline = pipeline.clone();
