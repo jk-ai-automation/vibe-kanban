@@ -449,6 +449,23 @@ mod tests {
     }
 
     #[test]
+    fn 测试技能的仓库路失败一律归因_code() {
+        // case 会退回用例设计阶段，那里只产出 test-cases.csv，修不了仓库测试与环境
+        let text = skill_text("atp-run");
+        for needle in [
+            r#"{"id":"repo-tests-not-run","status":"failed","attribution":"code""#,
+            r#"{"id":"no-tests","status":"failed","attribution":"code""#,
+            "`source: \"repo\"` 的失败一律归因 `code`",
+        ] {
+            assert!(text.contains(needle), "atp-run 技能正文缺少 {needle}");
+        }
+        assert!(
+            !text.contains(r#""attribution":"case","message":"<原因>""#),
+            "仓库路不能再有归因 case 的写法"
+        );
+    }
+
+    #[test]
     fn 平台技能正文提到的产出文件名与契约一致() {
         for stage in builtin_template().stages {
             if stage.artifacts.is_empty() {

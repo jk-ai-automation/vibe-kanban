@@ -193,7 +193,7 @@ develop 阶段不产出文件，关卡看 `checks`。**（C3）** `repos` 表没
 | 用例 | `source` | `"atp"`（接口路）或 `"repo"`（仓库测试命令） |
 | 顶层 | `report_path` | atp 的 HTML 报告，**相对产出物目录**，必须在 `atp/test_results/` 下且以 `.html` 结尾；界面经 `GET /api/local/pipeline/artifacts/{id}/html-report` 打开 |
 
-任一路「没跑起来」（被测服务未就绪、atp 命令不可用、atp 退出码 2/3、测试命令起不来）必须记成一条 `failed` 用例并在 `message` 写明原因。接口路整体没跑起来时用例编号固定为 `service-not-ready`。
+任一路「没跑起来」（被测服务未就绪、atp 命令不可用、atp 退出码 2/3、测试命令起不来）必须记成一条 `failed` 用例并在 `message` 写明原因。接口路整体没跑起来时用例编号固定为 `service-not-ready`。仓库测试命令起不来时编号为 `repo-tests-not-run`；两路都没有用例时记一条 `no-tests`，此时 `total = failed = 1`、`passed = 0`（`total` 恒等于 `cases` 条数，没有例外）。`source: "repo"` 的失败（含 `repo-tests-not-run`、`no-tests`）一律归因 `code`，`case` 只用于 atp 用例——`case` 退回的用例设计阶段只产出 `test-cases.csv`，修不了仓库测试与环境。
 
 ## 5. qa-mode 模拟执行器约定
 

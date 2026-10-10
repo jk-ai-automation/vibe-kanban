@@ -2724,6 +2724,8 @@ git commit -m "设置：流水线技能页可填 atp 命令"
 
 ### Task 12: 重写 `atp-run` 技能
 
+> 下面的技能正文是写计划时的草稿；**最终技能以 `assets/pipeline-plugin/skills/atp-run/SKILL.md` 为准**（按 atp 实测与终审意见修正过，例如仓库路失败一律归因 `code`、`no-tests` 计入 `total`），本节不逐字同步。
+
 **Files:**
 - Modify: `assets/pipeline-plugin/skills/atp-run/SKILL.md`
 - Modify: `crates/services/src/services/pipeline/plugin.rs`（`mod tests`，约 400-440 行）

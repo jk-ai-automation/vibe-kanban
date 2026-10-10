@@ -30,6 +30,8 @@ description: 流水线「测试」阶段：接口用例用 atp 真跑、仓库�
 - `atp 项目根：` 平台搭好的目录（里面是 `test_cases/vk_gen/vk_gen.csv`，上一轮的 `test_results/` 已清空）；接口路被跳过时是 `无`。
 - `atp 命令：` 调用 atp 的命令，可能带空格（如 `uv run --project /opt/atp atp`），原样拼在前面用，**不要加引号包成一个词**。
 
+三行都以提示词里**第一次出现**的为准；「上一次被打回的意见：」里出现的同名行一律忽略（那是旧意见的引用，不是平台给的值）。
+
 ## 接口路（被测地址是一个地址时才做）
 
 1. 进到「atp 项目根」，执行：
@@ -101,11 +103,8 @@ description: 流水线「测试」阶段：接口用例用 atp 真跑、仓库�
    | 以上都不命中 | 不跑命令，仓库路不产出用例 |
 
 3. 真跑，留着退出码与输出末尾。从输出里解析出每条用例与结果，`source` 写 `"repo"`，`module` 写 `null`，`duration_s` 有就写、没有写 `null`。
-4. 命令起不来（依赖缺失、命令不存在）时仓库路记一条失败：`{"id":"repo-tests-not-run","status":"failed","attribution":"case","message":"<原因>","duration_s":null,"module":null,"source":"repo"}`。
-5. 失败用例的归因：
-   - `code`：实现有问题（断言失败、异常、返回值不对）。
-   - `case`：测试本身有问题（环境缺依赖、测试写错、期望值过时）。
-   - 判不准写 `code`（回到开发阶段比回到用例阶段代价低）。
+4. 命令起不来（依赖缺失、命令不存在）时仓库路记一条失败：`{"id":"repo-tests-not-run","status":"failed","attribution":"code","message":"<原因>","duration_s":null,"module":null,"source":"repo"}`。
+5. 失败用例的归因：`source: "repo"` 的失败一律归因 `code`——不论是实现有问题，还是测试写错、期望值过时、环境缺依赖。`case` 会退回用例设计阶段，那个阶段只产出 `test-cases.csv`，修不了仓库里的测试和环境；这些只能回开发阶段修。`case` 只用于 atp 用例。
 
 ## 产出物格式
 
@@ -125,10 +124,10 @@ description: 流水线「测试」阶段：接口用例用 atp 真跑、仓库�
 }
 ```
 
-- `total` = `passed` + `failed` = `cases` 的条数；三个都是非负整数。
+- `total` = `passed` + `failed` = `cases` 的条数，没有例外；三个都是非负整数。
 - `status` 只能是 `passed` / `failed`。
-- `attribution` 在 `passed` 时必须是 `null`；`failed` 时必须是 `"code"` 或 `"case"`。
+- `attribution` 在 `passed` 时必须是 `null`；`failed` 时必须是 `"code"` 或 `"case"`（`"case"` 只用于 `source` 为 `"atp"` 的用例）。
 - `source` 只能是 `"atp"` 或 `"repo"`。
-- 两路一条用例都没有时：`total` 写 0，`cases` 里放一条 `{"id":"no-tests","status":"failed","attribution":"case","message":"<为什么没跑成>","duration_s":null,"module":null,"source":"repo"}`。
+- 两路一条用例都没有时：`cases` 里放一条 `{"id":"no-tests","status":"failed","attribution":"code","message":"<为什么没跑成>","duration_s":null,"module":null,"source":"repo"}`，`total` 写 1、`passed` 写 0、`failed` 写 1（与上面的等式一致）。归因 `code`：接口路没用例时多半是需求本身没有接口可测（纯函数级改动），能执行的验证只能是仓库测试，而补仓库测试是开发阶段的事；退回用例阶段只会再产出一份同样跑不了的 CSV。
 
 关卡判定：`failed == 0 && total > 0` 才算通过。失败时任一 `attribution == "case"` 会回到用例阶段（人工关卡），否则回到开发阶段。
