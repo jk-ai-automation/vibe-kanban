@@ -936,6 +936,7 @@ impl PipelineService {
             existing: &existing,
             previous_versions: &previous_versions,
             feedback: feedback.as_deref(),
+            test_env: None,
         });
         let run_setup = !PipelineStageRuns::any_launched(pool, run.id).await?;
         let step = self
