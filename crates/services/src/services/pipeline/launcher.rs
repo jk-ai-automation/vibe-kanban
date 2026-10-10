@@ -310,7 +310,9 @@ where
     }
 
     async fn probe_http(&self, url: &str) -> bool {
+        // 不走系统代理：配了 HTTP_PROXY 时代理会替回环地址回 502，服务没起也被判成就绪。
         let Ok(client) = reqwest::Client::builder()
+            .no_proxy()
             .timeout(PROBE_TIMEOUT)
             .danger_accept_invalid_certs(true)
             .build()
