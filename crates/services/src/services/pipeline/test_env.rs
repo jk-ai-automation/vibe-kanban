@@ -51,7 +51,9 @@ pub struct TestEnvironment {
     pub atp_command: String,
 }
 
-/// 可自动化用例数：`NOAUTO` 不是 `Y` 的行按 `CaseID` 去重（同一编号多行是多个步骤）。
+/// 可自动化用例数：`NOAUTO` 为空的行按 `CaseID` 去重（同一编号多行是多个步骤）。
+/// 「空」的口径与 atp 一致（`legacy_csv/matching.py` 的 `is_empty_value`）：去首尾空白、
+/// 转小写后是 `""`、`nan` 或 `none`；其它任何非空值（`Y`、`N`、`是`……）都算人工步骤。
 pub fn count_automatable_cases(csv_text: &str) -> Result<usize, String> {
     let mut reader = csv::ReaderBuilder::new()
         .flexible(true)
@@ -73,16 +75,17 @@ pub fn count_automatable_cases(csv_text: &str) -> Result<usize, String> {
     for record in reader.records() {
         let record = record.map_err(|e| format!("{TEST_CASES_FILE} 解析失败：{e}"))?;
         let id = record.get(case_id).unwrap_or_default().trim();
-        let manual = record
-            .get(noauto)
-            .unwrap_or_default()
-            .trim()
-            .eq_ignore_ascii_case("y");
+        let manual = is_manual_step(record.get(noauto).unwrap_or_default());
         if !id.is_empty() && !manual {
             cases.insert(id.to_string());
         }
     }
     Ok(cases.len())
+}
+
+/// atp 跳过手工步骤的判定：`NOAUTO` 去首尾空白、转小写后不是 `""` / `nan` / `none`。
+fn is_manual_step(noauto: &str) -> bool {
+    !matches!(noauto.trim().to_lowercase().as_str(), "" | "nan" | "none")
 }
 
 static ANSI: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x1b\[[0-9;?]*[A-Za-z]").unwrap());
@@ -348,6 +351,24 @@ mod tests {
             ("a_003", " y "),
         ]);
         assert_eq!(count_automatable_cases(&text), Ok(1));
+    }
+
+    #[test]
+    fn 人工用例判定与_atp_一致_非空即人工() {
+        for manual in ["N", "n", "是", "manual", "0", "Y", " N "] {
+            assert_eq!(
+                count_automatable_cases(&csv_with(&[("a_001", manual)])),
+                Ok(0),
+                "NOAUTO={manual:?} 应算人工"
+            );
+        }
+        for automatable in ["", "  ", "nan", "NaN", " NAN ", "none", "None", "NONE"] {
+            assert_eq!(
+                count_automatable_cases(&csv_with(&[("a_001", automatable)])),
+                Ok(1),
+                "NOAUTO={automatable:?} 应算自动化"
+            );
+        }
     }
 
     #[test]

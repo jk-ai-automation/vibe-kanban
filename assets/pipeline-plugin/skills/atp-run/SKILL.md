@@ -78,7 +78,9 @@ description: 流水线「测试」阶段：接口用例用 atp 真跑、仓库�
    - 因前序用例失败而中止的，跟随前序用例的归因。
    - 判不准写 `code`。
 
-5. 在 `test_results/` 下找 `test_report_*.html`（文件名形如 `test_report_20261002_101500.html`，有多个取最新的一个；也可直接用输出里 `HTML 报告：` 那一行的文件名）。找到就把顶层 `report_path` 写成 `atp/test_results/<文件名>`；没有就不写这个字段。
+5. 被测地址是一个地址、atp 也正常退出，但接口路**一条用例都没计入报告**（`results.json` 的 `cases` 为空，或全被当作人工用例排除）时，接口路记一条失败：`id` 写 `service-not-ready`，`attribution` 写 `code`，`message` 写「atp 没有执行任何用例」加输出末尾几行，`duration_s`、`module` 写 `null`，`source` 写 `"atp"`。（平台只在有可自动化用例时才拉起服务，所以这种情况说明 atp 与平台对用例的理解不一致，不能当通过。）
+
+6. 在 `test_results/` 下找 `test_report_*.html`（文件名形如 `test_report_20261002_101500.html`，有多个取最新的一个；也可直接用输出里 `HTML 报告：` 那一行的文件名）。找到就把顶层 `report_path` 写成 `atp/test_results/<文件名>`；没有就不写这个字段。
 
 **被测地址是 `未就绪（原因）` 时**：不执行上面的命令，接口路只记一条：
 

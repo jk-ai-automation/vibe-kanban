@@ -20,7 +20,7 @@
 | §4.2 用环境变量 `VK_ATP_CMD` 把 atp 命令传给技能 | 写进提示词的固定行 `atp 命令：…` | 现有执行层没有「给智能体会话注入环境变量」的通道，提示词固定行是引擎与技能/模拟器之间已有的契约形式（`executors::pipeline_prompt`） |
 | §4.2 keymap 一并放入 | 不做 | `prd2testcase` 不产出 keymap，产出物清单里没有它 |
 | §4.1 就绪探测 | 在后台任务里做，不占引擎锁 | 引擎所有状态变更共用一把全局锁，在锁里等 60 秒会卡住所有需求的关卡、暂停、取消 |
-| （新增）| CSV 里没有可自动化用例（全部 `NOAUTO=Y`）时不起开发服务器，直接跳过接口路 | 纯函数需求不该白等一个服务 |
+| （新增）| CSV 里没有可自动化用例（所有行 `NOAUTO` 非空，与 atp 一致：去首尾空白、转小写后不是空 / `nan` / `none` 即算人工）时不起开发服务器，直接跳过接口路 | 纯函数需求不该白等一个服务 |
 | （新增）| 多个仓库都配了开发服务器脚本时，只起**第一个** | 一个端口只能给一个服务；多服务编排不在本期 |
 | 地址识别返回全部候选、localhost 同时探 IPv4/IPv6 | 审查发现：日志里先出现数据库地址会误判；Node 17+ 上 localhost 可能只绑 ::1 |
 | U3 技能文件里写「U4 换成 atp 仓库维护的正式版」 | `atp-run` 仍由本仓库维护 | 它依赖平台提示词的固定行，放在 atp 仓库会形成跨仓库契约 |
@@ -547,7 +547,7 @@ pub struct TestEnvironment {
     pub atp_command: String,
 }
 
-/// 可自动化用例数：`NOAUTO` 不是 `Y` 的行按 `CaseID` 去重（同一编号多行是多个步骤）。
+/// 可自动化用例数：`NOAUTO` 为空（与 atp 一致：空 / nan / none）的行按 `CaseID` 去重（同一编号多行是多个步骤）。
 pub fn count_automatable_cases(csv_text: &str) -> Result<usize, String> {
     let mut reader = csv::ReaderBuilder::new()
         .flexible(true)
@@ -2819,7 +2819,7 @@ description: 流水线「测试」阶段：接口用例用 atp 真跑、仓库�
    | `module` | 原样 |
    | `source` | `"atp"` |
 
-   CSV 里 `NOAUTO=Y` 的人工用例 atp 不会执行，**不计入报告**。
+   CSV 里 `NOAUTO` 非空（与 atp 一致）的人工用例 atp 不会执行，**不计入报告**。
 
 4. 给每条失败用例判归因。先看 `test_results/` 下结果 CSV 里该用例的 `RootCause` 列与实际返回：
    - `code`：服务返回的内容与期望不符（状态码不对、字段缺失、值不对）、服务报 5xx、连接被拒。
