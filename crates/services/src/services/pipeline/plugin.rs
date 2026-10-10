@@ -427,6 +427,28 @@ mod tests {
     }
 
     #[test]
+    fn 测试技能认得平台给的三行与固定编号() {
+        use executors::pipeline_prompt::{
+            ATP_COMMAND_LABEL, ATP_ROOT_LABEL, SERVICE_NOT_READY_CASE_ID, SERVICE_NOT_READY_PREFIX,
+            SERVICE_URL_LABEL,
+        };
+        let text = skill_text("atp-run");
+        for needle in [
+            SERVICE_URL_LABEL,
+            ATP_ROOT_LABEL,
+            ATP_COMMAND_LABEL,
+            SERVICE_NOT_READY_PREFIX,
+            SERVICE_NOT_READY_CASE_ID,
+            "legacy run --all",
+            "--html-report",
+            "report_path",
+            "duration_s",
+        ] {
+            assert!(text.contains(needle), "atp-run 技能正文缺少 {needle}");
+        }
+    }
+
+    #[test]
     fn 平台技能正文提到的产出文件名与契约一致() {
         for stage in builtin_template().stages {
             if stage.artifacts.is_empty() {
